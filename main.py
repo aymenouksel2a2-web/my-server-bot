@@ -10,19 +10,20 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from playwright.async_api import async_playwright
 import playwright_stealth as p_stealth
 
-# --- 1. إعداد Flask (لإبقاء البوت حياً على Render) ---
+# --- 1. إعداد Flask لـ Render ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running. Service is active!"
+    return "Bot is running with Proxy and Automation!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- 2. قاموس الجلسات (تخزين حالة التشغيل وكائن المتصفح) ---
+# --- 2. إعدادات الجلسة والبروكسي ---
 active_sessions = {}
+PROXY_SERVER = "http://34.14.143.185:3128" # البروكسي الخاص بك
 
 # --- 3. وظيفة البث المباشر (Start) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -36,19 +37,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not raw_url.startswith(('http://', 'https://')):
         raw_url = 'https://' + raw_url
 
-    # تهيئة الجلسة (نخزن المتصفح كـ None في البداية)
     active_sessions[chat_id] = {
         'is_running': True, 
         'step': 'accept_terms',
         'browser_instance': None 
     }
     
-    await update.message.reply_text("🎭 جاري تشغيل المتصفح السحابي وتنفيذ المهام...")
+    await update.message.reply_text("🎭 جاري تشغيل المتصفح السحابي باستخدام البروكسي...")
 
     try:
         async with async_playwright() as p:
-            # تشغيل المتصفح وتخزينه في القاموس ليتمكن /stop من إغلاقه
-            browser = await p.chromium.launch(headless=True)
+            # 🚀 إعداد البروكسي داخل المتصفح
+            browser = await p.chromium.launch(
+                headless=True,
+                proxy={
+                    "server": PROXY_SERVER
+                }
+            )
             active_sessions[chat_id]['browser_instance'] = browser
             
             browser_context = await browser.new_context(
@@ -60,7 +65,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             page = await browser_context.new_page()
             
-            # تفعيل التخفي
+            # تفعيل التخفي لإخفاء أثر البروكسي والأتمتة
             try:
                 await p_stealth.stealth_async(page)
             except:
@@ -72,26 +77,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             live_message = await context.bot.send_photo(
                 chat_id=chat_id, 
                 photo=screenshot_bytes, 
-                caption="🔴 بث مباشر من السيرفر\n⏳ جاري تنفيذ المهام الآلية..."
+                caption="🔴 بث مباشر (Proxy Active)\n⏳ جاري تنفيذ المهام الآلية..."
             )
 
-            # حلقة الرادار
             while active_sessions.get(chat_id, {}).get('is_running'):
                 current_step = active_sessions[chat_id].get('step')
 
                 try:
-                    # المرحلة 1: قبول الشروط
+                    # فحص شاشة التحقق Verify it's you
+                    if await page.get_by_text("Verify it's you", exact=False).first.is_visible(timeout=200):
+                        print("⚠️ جوجل تطلب التحقق من الهوية!")
+                        another_way = page.get_by_text("Try another way", exact=False).first
+                        if await another_way.is_visible():
+                            await another_way.click(force=True)
+                            await asyncio.sleep(2)
+
+                    # المرحلة 1: قبول شروط جوجل
                     if current_step == 'accept_terms':
-                        for text in ["I understand", "Ik begrijp het", "Accept all", "I agree", "Agree"]:
+                        button_texts = ["I understand", "Ik begrijp het", "Accept all", "I agree", "Agree"]
+                        for text in button_texts:
                             btn = page.get_by_text(text, exact=False).first
                             if await btn.is_visible(timeout=300):
+                                await asyncio.sleep(random.uniform(1, 2))
                                 await btn.click(force=True)
                                 active_sessions[chat_id]['step'] = 'wait_for_console'
                                 break
 
-                    # المرحلة 2: رصد لوحة التحكم
+                    # المرحلة 2: رصد لوحة التحكم والتحويل للـ Shell
                     elif current_step == 'wait_for_console':
-                        if "console.cloud.google.com" in page.url:
+                        if "console.cloud.google.com" in page.url or await page.get_by_text("Cloud overview").is_visible(timeout=300):
                             page_text = await page.content()
                             match = re.search(r'qwiklabs-gcp-[a-zA-Z0-9\-]+', page_text)
                             project_id = match.group(0) if match else ""
@@ -109,19 +123,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             await start_btn.click(force=True)
                             active_sessions[chat_id]['step'] = 'wait_for_authorize'
 
-                    # المرحلة 4: Authorize
+                    # المرحلة 4: زر Authorize
                     elif current_step == 'wait_for_authorize':
                         auth_btn = page.get_by_text("Authorize", exact=True).first
                         if await auth_btn.is_visible(timeout=300):
                             await auth_btn.click(force=True)
                             active_sessions[chat_id]['step'] = 'done'
-                            await context.bot.send_message(chat_id=chat_id, text="🎉 تم تجهيز التيرمينال!")
+                            await context.bot.send_message(chat_id=chat_id, text="🎉 تم تجهيز التيرمينال بنجاح!")
                 except:
                     pass
 
                 await asyncio.sleep(4)
-                if not active_sessions.get(chat_id, {}).get('is_running'):
-                    break
+                if not active_sessions.get(chat_id, {}).get('is_running'): break
                 
                 try:
                     new_screenshot = await page.screenshot()
@@ -134,49 +147,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if "Message is not modified" in str(e): continue
                 except Exception: continue
 
-            # إغلاق نهائي عند انتهاء الحلقة بشكل طبيعي
-            if browser:
-                await browser.close()
+            if browser: await browser.close()
             
     except Exception as e:
-        # إذا تم إغلاق المتصفح بواسطة /stop، سيظهر خطأ هنا، نقوم بتجاهله
         if "Target closed" not in str(e):
             await update.message.reply_text(f"❌ خطأ: {str(e)}")
     finally:
-        if chat_id in active_sessions:
-            del active_sessions[chat_id]
+        if chat_id in active_sessions: del active_sessions[chat_id]
 
-# --- 4. وظيفة إيقاف العملية بالكامل (Stop) ---
+# --- 4. وظيفة إيقاف العملية ---
 async def stop_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    
     if chat_id in active_sessions:
-        await update.message.reply_text("⏳ جاري إيقاف العملية وإغلاق المتصفح تماماً...")
-        
-        # 1. إيقاف حلقة الـ While
         active_sessions[chat_id]['is_running'] = False
-        
-        # 2. إغلاق المتصفح فوراً إذا كان مفتوحاً
         browser = active_sessions[chat_id].get('browser_instance')
         if browser:
-            try:
-                await browser.close()
-                print(f"Browser for chat {chat_id} closed via /stop")
-            except Exception as e:
-                print(f"Error closing browser: {e}")
-        
-        await update.message.reply_text("⏹️ تم إنهاء كافة العمليات بنجاح.")
+            try: await browser.close()
+            except: pass
+        await update.message.reply_text("⏹️ تم إيقاف العملية بالكامل.")
     else:
-        await update.message.reply_text("❌ لا توجد عملية نشطة لإيقافها.")
+        await update.message.reply_text("❌ لا توجد عملية نشطة.")
 
-# --- 5. التشغيل ---
+# --- 5. التشغيل الرئيسي ---
 if __name__ == '__main__':
     TOKEN = os.environ.get("TELEGRAM_TOKEN")
-    
     if TOKEN:
         threading.Thread(target=run_flask, daemon=True).start()
         application = ApplicationBuilder().token(TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("stop", stop_stream))
-        print("Bot is starting...")
+        print("Bot is starting with Proxy configuration...")
         application.run_polling()
