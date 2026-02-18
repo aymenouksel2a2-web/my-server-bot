@@ -14,7 +14,7 @@ from pyvirtualdisplay import Display
 # --- إعداد Flask ---
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bot is running with Ultimate Clean Incognito!"
+def home(): return "Bot is running perfectly!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -25,7 +25,7 @@ active_sessions = {}
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
-    # 🎯 التعديل 1: قراءة الرابط الطويل جداً بشكل آمن وكامل (بدون استخدام context.args)
+    # قراءة الرابط الطويل جداً بشكل آمن وكامل
     if len(update.message.text.split()) < 2:
         await update.message.reply_text("❌ أرسل الرابط بعد الأمر...")
         return
@@ -37,7 +37,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     active_sessions[chat_id] = {'is_running': True, 'step': 'accept_terms', 'browser_instance': None, 'display': None}
-    await update.message.reply_text("🎭 جاري فتح جلسة (Incognito) جديدة ونظيفة 100%...")
+    await update.message.reply_text("🎭 جاري فتح الجلسة...")
 
     disp = Display(visible=0, size=(1280, 800))
     disp.start()
@@ -45,7 +45,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         async with async_playwright() as p:
-            # 🎯 التعديل 2: إضافة أوامر تدمير الكاش وإجبار التصفح المخفي النظيف
+            # 🎯 تم إزالة أوامر الكاش التي تسببت في الشاشة البيضاء
             browser = await p.chromium.launch(
                 headless=False, 
                 args=[
@@ -59,15 +59,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     '--disable-infobars',
                     '--disable-extensions',
                     '--disable-background-networking',
-                    '--mute-audio',
-                    '--incognito',                 # 👈 إجبار المتصفح على وضع التخفي من الجذور
-                    '--disable-application-cache', # 👈 تعطيل الكاش تماماً
-                    '--disk-cache-dir=/dev/null'   # 👈 توجيه الكاش إلى الفراغ (مسحه فوراً)
+                    '--mute-audio'
                 ]
             )
             active_sessions[chat_id]['browser_instance'] = browser
             
-            # إنشاء سياق معزول تماماً
+            # هذه الدالة تضمن 100% جلسة نظيفة بدون أي بيانات سابقة
             browser_context = await browser.new_context(
                 no_viewport=True,
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -75,21 +72,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 timezone_id='America/New_York'
             )
             
-            # 🎯 التعديل 3: مسح أي كوكيز عالقة احتياطياً قبل فتح الصفحة
-            await browser_context.clear_cookies()
-            
             page = await browser_context.new_page()
             
             try: await p_stealth.stealth_async(page)
             except: await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
-            await page.goto(raw_url, timeout=120000, wait_until="load")
+            # التوجه للرابط
+            await page.goto(raw_url, timeout=120000)
+            
+            # 🎯 إضافة انتظار 4 ثوانٍ للسماح للرابط الطويل (SSO) بإنهاء التحميل والتحويل
+            await asyncio.sleep(4)
             
             screenshot_bytes = await page.screenshot(type='jpeg', quality=60)
             live_message = await context.bot.send_photo(
                 chat_id=chat_id, 
                 photo=screenshot_bytes, 
-                caption="🔴 بث مباشر (جلسة نظيفة تماماً)\n⏳ جاري تنفيذ المهام..."
+                caption="🔴 بث مباشر\n⏳ جاري تنفيذ المهام..."
             )
 
             while active_sessions.get(chat_id, {}).get('is_running'):
@@ -180,7 +178,7 @@ async def stop_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser:
             try: await browser.close()
             except: pass
-        await update.message.reply_text("⏹️ تم إنهاء البث ومسح الجلسة بالكامل.")
+        await update.message.reply_text("⏹️ تم إنهاء البث.")
     else:
         await update.message.reply_text("⚠️ لا يوجد بث نشط لإيقافه.")
 
@@ -191,5 +189,5 @@ if __name__ == '__main__':
         application = ApplicationBuilder().token(TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("stop", stop_stream))
-        print("🚀 Bot is starting with PERFECT Incognito Mode...")
+        print("🚀 Bot is starting...")
         application.run_polling()
