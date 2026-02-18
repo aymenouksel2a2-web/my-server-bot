@@ -7,11 +7,12 @@ WORKDIR /app
 # نسخ ملفات المشروع إلى السيرفر
 COPY . .
 
-# تنصيب مكتبات البايثون (Telegram + Flask)
+# تنصيب مكتبات البايثون
 RUN pip install --no-cache-dir -r requirements.txt
 
-# تحميل متصفح كروم فقط (لضمان وجوده)
+# تحميل متصفح Chromium والاعتمادات اللازمة لنظام Linux
 RUN playwright install chromium
+RUN playwright install-deps chromium
 
 # أمر التشغيل
 CMD ["python", "main.py"]
