@@ -6,7 +6,7 @@ from telegram import Update, InputMediaPhoto
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from playwright.async_api import async_playwright
 
-# إعدادات Flask (لإبقاء البوت حياً)
+# 1. إعدادات Flask (لإبقاء البوت حياً على Render)
 app = Flask(__name__)
 
 @app.route('/')
@@ -17,9 +17,10 @@ def run_flask():
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
 
-# قاموس لحفظ حالة البث لكل مستخدم (لتشغيله وإيقافه)
+# 2. قاموس لحفظ حالة البث لكل مستخدم (لتشغيله وإيقافه)
 active_sessions = {}
 
+# 3. وظيفة البث المباشر (Start)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
@@ -39,16 +40,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # تعيين حالة البث إلى "يعمل"
     active_sessions[chat_id] = {'is_running': True}
-    await update.message.reply_text(f"⏳ جاري تجهيز البث المباشر للموقع:\n{url}")
+    await update.message.reply_text(f"⏳ جاري تجهيز البث المباشر للموقع...\nقد يستغرق الأمر بضع ثوانٍ لتخطي شاشات التحميل.")
 
     try:
         async with async_playwright() as p:
+            # تشغيل المتصفح في الخلفية
             browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page(viewport={'width': 1280, 'height': 800})
             
-            await page.goto(url, timeout=60000)
+            # إضافة User-Agent لكي لا يتم حظر البوت من قبل مواقع مثل جوجل
+            context_browser = await browser.new_context(
+                viewport={'width': 1280, 'height': 800},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+            page = await context_browser.new_page()
             
-            # التقاط أول صورة في الذاكرة (بدون حفظها في ملف لتسريع العملية)
+            # الذهاب للرابط والانتظار حتى يكتمل تحميل المحتوى الأساسي
+            await page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            
+            # انتظار إضافي (5 ثوانٍ) للسماح لأي سكريبتات أو تحويلات بالانتهاء قبل التقاط أول صورة
+            await asyncio.sleep(5)
+            
+            # التقاط أول صورة في الذاكرة
             screenshot_bytes = await page.screenshot()
             
             # إرسال الرسالة الأولى التي سنقوم بتحديثها لاحقاً
@@ -86,6 +98,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         print(f"Update error: {e}")
 
             # عند الخروج من الحلقة (إرسال /stop)
+            await context_browser.close()
             await browser.close()
             await context.bot.send_message(chat_id=chat_id, text="⏹️ تم إيقاف البث وإغلاق المتصفح بنجاح.")
             
@@ -96,7 +109,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if chat_id in active_sessions:
             del active_sessions[chat_id]
 
-
+# 4. وظيفة إيقاف البث (Stop)
 async def stop_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     
@@ -107,17 +120,18 @@ async def stop_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("لا يوجد بث يعمل حالياً لإيقافه.")
 
-
-# التشغيل الرئيسي
+# 5. التشغيل الرئيسي
 if __name__ == '__main__':
     TOKEN = os.environ.get("TELEGRAM_TOKEN")
     
     if not TOKEN:
         print("Error: TELEGRAM_TOKEN not found!")
     else:
+        # تشغيل سيرفر الويب الوهمي
         flask_thread = threading.Thread(target=run_flask)
         flask_thread.start()
 
+        # بناء البوت
         application = ApplicationBuilder().token(TOKEN).build()
         
         # ربط الأوامر بالوظائف
