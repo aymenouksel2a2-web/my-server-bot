@@ -5,7 +5,7 @@ import random
 import re
 from flask import Flask
 from telegram import Update, InputMediaPhoto
-from telegram.error import BadRequest, RetryAfter # 👈 استيراد خطأ حظر تيليجرام
+from telegram.error import BadRequest, RetryAfter
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from playwright.async_api import async_playwright
 import playwright_stealth as p_stealth
@@ -14,7 +14,7 @@ from pyvirtualdisplay import Display
 # --- إعداد Flask ---
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bot is running with Ultimate Optimization!"
+def home(): return "Bot is running with Ultimate Clean Incognito!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -25,28 +25,27 @@ active_sessions = {}
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
 
-    if not context.args:
+    # 🎯 التعديل 1: قراءة الرابط الطويل جداً بشكل آمن وكامل (بدون استخدام context.args)
+    if len(update.message.text.split()) < 2:
         await update.message.reply_text("❌ أرسل الرابط بعد الأمر...")
         return
-
-    raw_url = context.args[0]
     
-    # منع تشغيل أكثر من جلسة لنفس المستخدم
+    raw_url = update.message.text.split(maxsplit=1)[1].strip()
+
     if chat_id in active_sessions and active_sessions[chat_id].get('is_running'):
         await update.message.reply_text("⚠️ لديك بث يعمل بالفعل، قم بإيقافه أولاً بـ /stop")
         return
 
     active_sessions[chat_id] = {'is_running': True, 'step': 'accept_terms', 'browser_instance': None, 'display': None}
-    await update.message.reply_text("🎭 جاري تشغيل المتصفح المحسن والبدء في البث السريع...")
+    await update.message.reply_text("🎭 جاري فتح جلسة (Incognito) جديدة ونظيفة 100%...")
 
-    # 🖥️ تشغيل الشاشة الوهمية وحفظها في الجلسة لإغلاقها لاحقاً
     disp = Display(visible=0, size=(1280, 800))
     disp.start()
     active_sessions[chat_id]['display'] = disp
 
     try:
         async with async_playwright() as p:
-            # 🎯 التخفيف الأقصى لاستهلاك السيرفر
+            # 🎯 التعديل 2: إضافة أوامر تدمير الكاش وإجبار التصفح المخفي النظيف
             browser = await p.chromium.launch(
                 headless=False, 
                 args=[
@@ -58,19 +57,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     '--disable-blink-features=AutomationControlled',
                     '--start-maximized',
                     '--disable-infobars',
-                    '--disable-extensions',           # تعطيل الإضافات لتخفيف الرام
-                    '--disable-background-networking',# منع اتصالات الخلفية غير الضرورية
-                    '--mute-audio'                    # كتم الصوت لتوفير المعالجة
+                    '--disable-extensions',
+                    '--disable-background-networking',
+                    '--mute-audio',
+                    '--incognito',                 # 👈 إجبار المتصفح على وضع التخفي من الجذور
+                    '--disable-application-cache', # 👈 تعطيل الكاش تماماً
+                    '--disk-cache-dir=/dev/null'   # 👈 توجيه الكاش إلى الفراغ (مسحه فوراً)
                 ]
             )
             active_sessions[chat_id]['browser_instance'] = browser
             
+            # إنشاء سياق معزول تماماً
             browser_context = await browser.new_context(
                 no_viewport=True,
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                 locale='en-US',
                 timezone_id='America/New_York'
             )
+            
+            # 🎯 التعديل 3: مسح أي كوكيز عالقة احتياطياً قبل فتح الصفحة
+            await browser_context.clear_cookies()
             
             page = await browser_context.new_page()
             
@@ -79,12 +85,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await page.goto(raw_url, timeout=120000, wait_until="load")
             
-            # 🚀 التقاط الصورة الأولى بصيغة JPEG الخفيفة جداً بدلاً من PNG
             screenshot_bytes = await page.screenshot(type='jpeg', quality=60)
             live_message = await context.bot.send_photo(
                 chat_id=chat_id, 
                 photo=screenshot_bytes, 
-                caption="🔴 بث مباشر (نسخة محسنة وسريعة)\n⏳ جاري تنفيذ المهام..."
+                caption="🔴 بث مباشر (جلسة نظيفة تماماً)\n⏳ جاري تنفيذ المهام..."
             )
 
             while active_sessions.get(chat_id, {}).get('is_running'):
@@ -136,12 +141,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
 
-                # انتظار ثابت بين اللقطات لتخفيف العبء على تيليجرام
                 await asyncio.sleep(3)
                 if not active_sessions.get(chat_id, {}).get('is_running'): break
                 
                 try:
-                    # 🚀 استخدام JPEG مضغوط بنسبة 50% لتسريع نقل البث وتقليل الباندويث
                     new_screenshot = await page.screenshot(type='jpeg', quality=50)
                     await context.bot.edit_message_media(
                         chat_id=chat_id, 
@@ -151,7 +154,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except BadRequest as e:
                     if "Message is not modified" in str(e): continue
                 except RetryAfter as e:
-                    # 🛡️ حماية تيليجرام: إذا غضب تيليجرام، ننتظر المدة التي يطلبها بالضبط!
                     print(f"⚠️ Telegram Rate Limit! Waiting {e.retry_after} seconds...")
                     await asyncio.sleep(e.retry_after)
                 except Exception: 
@@ -165,10 +167,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ خطأ تقني: {error_msg}")
             
     finally:
-        # 🧹 تنظيف الذاكرة بشكل آمن جداً
         if chat_id in active_sessions:
             d = active_sessions[chat_id].get('display')
-            if d: d.stop() # إغلاق الشاشة الوهمية لتحرير الرام
+            if d: d.stop() 
             del active_sessions[chat_id]
 
 async def stop_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -179,7 +180,7 @@ async def stop_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if browser:
             try: await browser.close()
             except: pass
-        await update.message.reply_text("⏹️ تم إنهاء البث بنجاح.")
+        await update.message.reply_text("⏹️ تم إنهاء البث ومسح الجلسة بالكامل.")
     else:
         await update.message.reply_text("⚠️ لا يوجد بث نشط لإيقافه.")
 
@@ -190,5 +191,5 @@ if __name__ == '__main__':
         application = ApplicationBuilder().token(TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("stop", stop_stream))
-        print("🚀 Bot is starting with ULTIMATE Optimization...")
+        print("🚀 Bot is starting with PERFECT Incognito Mode...")
         application.run_polling()
