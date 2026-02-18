@@ -17,46 +17,55 @@ def run_flask():
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
 
-# 2. وظيفة التصفح (Browser Automation)
-async def open_google(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# 2. وظيفة الترحيب أو تصوير الروابط
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    await update.message.reply_text("⏳ جاري فتح المتصفح... انتظر قليلاً")
-
-    try:
-        # تشغيل المتصفح (Playwright)
-        async with async_playwright() as p:
-            # launch: تشغيل المتصفح في وضع الخفاء (headless=True مهم جداً للسيرفرات)
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-
-            # الخطوة 1: الذهاب للموقع
-            await update.message.reply_text("1️⃣: جاري الدخول إلى Google...")
-            await page.goto("https://www.google.com")
+    
+    # التحقق مما إذا كان هناك نص (رابط) بعد الأمر /start
+    if context.args:
+        url = context.args[0]
+        
+        # التأكد من أن الرابط يبدأ بـ http:// أو https://
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
             
-            # التقاط صورة وإرسالها
-            screenshot_path = "step1.png"
-            await page.screenshot(path=screenshot_path)
-            await context.bot.send_photo(chat_id=chat_id, photo=open(screenshot_path, 'rb'), caption="الصفحة الرئيسية")
-
-            # الخطوة 2: البحث عن شيء ما (مثال: Render)
-            await update.message.reply_text("2️⃣: جاري كتابة كلمة البحث...")
-            # البحث عن مربع النص وكتابة Render
-            await page.fill('textarea[name="q"]', 'Render Cloud Hosting') 
-            await page.keyboard.press('Enter')
+        await update.message.reply_text(f"⏳ جاري فتح الرابط:\n{url}\nالرجاء الانتظار قليلاً...")
+        
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                # تحديد أبعاد شاشة واضحة (مثل شاشة اللابتوب)
+                page = await browser.new_page(viewport={'width': 1280, 'height': 800})
+                
+                # الذهاب للرابط (مع إعطائه وقت إضافي للتحميل في حال كان الموقع ثقيلاً)
+                await page.goto(url, timeout=60000)
+                
+                # التقاط الصورة
+                screenshot_path = "website.png"
+                await page.screenshot(path=screenshot_path)
+                
+                # إرسال الصورة لتيليجرام
+                await context.bot.send_photo(
+                    chat_id=chat_id, 
+                    photo=open(screenshot_path, 'rb'), 
+                    caption=f"📸 لقطة شاشة للموقع:\n{url}"
+                )
+                
+                await browser.close()
+        except Exception as e:
+            # في حال كان الرابط خاطئاً أو الموقع لا يعمل
+            await update.message.reply_text(f"❌ حدث خطأ أثناء محاولة فتح الرابط:\n{str(e)}")
             
-            # الانتظار قليلاً للتحميل
-            await page.wait_for_timeout(2000)
+    else:
+        # إذا أرسل المستخدم /start فقط بدون روابط
+        welcome_message = (
+            "أهلاً بك! 👋\n\n"
+            "أنا بوت تصوير المواقع. لتصوير أي موقع، فقط أرسل الأمر متبوعاً بالرابط.\n\n"
+            "**مثال:**\n"
+            "`/start github.com`\nأو\n`/start https://render.com`"
+        )
+        await update.message.reply_text(welcome_message, parse_mode='Markdown')
 
-            # التقاط صورة للنتائج
-            screenshot_path_2 = "step2.png"
-            await page.screenshot(path=screenshot_path_2)
-            await context.bot.send_photo(chat_id=chat_id, photo=open(screenshot_path_2, 'rb'), caption="نتائج البحث")
-
-            await browser.close()
-            await update.message.reply_text("✅ تمت العملية بنجاح!")
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ حدث خطأ: {str(e)}")
 
 # 3. التشغيل الرئيسي
 if __name__ == '__main__':
@@ -72,8 +81,8 @@ if __name__ == '__main__':
         # تشغيل البوت
         application = ApplicationBuilder().token(TOKEN).build()
         
-        # إضافة أمر /google لتجربة المتصفح
-        application.add_handler(CommandHandler("google", open_google))
+        # ربط أمر /start بالوظيفة الجديدة
+        application.add_handler(CommandHandler("start", start))
         
         print("Bot is starting...")
         application.run_polling()
