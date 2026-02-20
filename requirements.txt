@@ -1,5 +1,5 @@
-python-telegram-bot
-Flask
-playwright
-playwright-stealth
+pyTelegramBotAPI
+selenium
+undetected-chromedriver
 PyVirtualDisplay
+Pillow
