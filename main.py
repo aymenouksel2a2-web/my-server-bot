@@ -1,193 +1,250 @@
+import telebot
 import os
-import threading
-import asyncio
-import random
+import time
+import traceback
+import urllib.parse
 import re
-from flask import Flask
-from telegram import Update, InputMediaPhoto
-from telegram.error import BadRequest, RetryAfter
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from playwright.async_api import async_playwright
-import playwright_stealth as p_stealth
+from io import BytesIO
+import undetected_chromedriver as uc
 from pyvirtualdisplay import Display
+from telebot.types import InputMediaPhoto
+from PIL import Image
 
-# --- إعداد Flask ---
-app = Flask(__name__)
-@app.route('/')
-def home(): return "Bot is running perfectly!"
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
-active_sessions = {}
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-
-    # قراءة الرابط الطويل جداً بشكل آمن وكامل
-    if len(update.message.text.split()) < 2:
-        await update.message.reply_text("❌ أرسل الرابط بعد الأمر...")
-        return
+# --- الخادم الوهمي لتخطي فحص Render السحابي ---
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot is Healthy, Fast, and Running on Render!")
     
-    raw_url = update.message.text.split(maxsplit=1)[1].strip()
+    def log_message(self, format, *args):
+        pass
 
-    if chat_id in active_sessions and active_sessions[chat_id].get('is_running'):
-        await update.message.reply_text("⚠️ لديك بث يعمل بالفعل، قم بإيقافه أولاً بـ /stop")
+def run_dummy_server():
+    # Render يعطينا البورت تلقائياً عبر متغير النظام PORT
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), DummyHandler)
+    server.serve_forever()
+# -------------------------------------------------
+
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+bot = telebot.TeleBot(BOT_TOKEN)
+
+# --- دالة التقاط الصور التيربو ---
+def get_light_jpg_screenshot(driver):
+    png_data = driver.get_screenshot_as_png()
+    img = Image.open(BytesIO(png_data))
+    img = img.convert('RGB')
+    img.thumbnail((800, 600)) 
+    output = BytesIO()
+    img.save(output, format='JPEG', quality=30, optimize=True)
+    output.seek(0)
+    output.name = 'screen.jpg'
+    return output
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(message, "أهلاً بك! البوت يعمل الآن بقوة على سيرفرات Render ☁️⚡. أرسل /live للبدء 🚀")
+
+@bot.message_handler(commands=['live'])
+def ask_for_sso_url(message):
+    msg = bot.reply_to(message, "🔗 الرجاء إرسال **رابط تسجيل الدخول** الطويل:")
+    bot.register_next_step_handler(msg, start_livestream)
+
+def start_livestream(message):
+    sso_url = message.text
+    if not sso_url.startswith("http"):
+        bot.reply_to(message, "❌ الرابط غير صالح. أرسل /live للمحاولة مجدداً.")
         return
 
-    active_sessions[chat_id] = {'is_running': True, 'step': 'accept_terms', 'browser_instance': None, 'display': None}
-    await update.message.reply_text("🎭 جاري فتح الجلسة...")
-
-    disp = Display(visible=0, size=(1280, 800))
-    disp.start()
-    active_sessions[chat_id]['display'] = disp
-
+    # --- استخراج بيانات المشروع ---
     try:
-        async with async_playwright() as p:
-            # 🎯 تم إزالة أوامر الكاش التي تسببت في الشاشة البيضاء
-            browser = await p.chromium.launch(
-                headless=False, 
-                args=[
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu',
-                    '--disable-software-rasterizer',
-                    '--disable-blink-features=AutomationControlled',
-                    '--start-maximized',
-                    '--disable-infobars',
-                    '--disable-extensions',
-                    '--disable-background-networking',
-                    '--mute-audio'
-                ]
-            )
-            active_sessions[chat_id]['browser_instance'] = browser
-            
-            # هذه الدالة تضمن 100% جلسة نظيفة بدون أي بيانات سابقة
-            browser_context = await browser.new_context(
-                no_viewport=True,
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                locale='en-US',
-                timezone_id='America/New_York'
-            )
-            
-            page = await browser_context.new_page()
-            
-            try: await p_stealth.stealth_async(page)
-            except: await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
-            # التوجه للرابط
-            await page.goto(raw_url, timeout=120000)
-            
-            # 🎯 إضافة انتظار 4 ثوانٍ للسماح للرابط الطويل (SSO) بإنهاء التحميل والتحويل
-            await asyncio.sleep(4)
-            
-            screenshot_bytes = await page.screenshot(type='jpeg', quality=60)
-            live_message = await context.bot.send_photo(
-                chat_id=chat_id, 
-                photo=screenshot_bytes, 
-                caption="🔴 بث مباشر\n⏳ جاري تنفيذ المهام..."
-            )
-
-            while active_sessions.get(chat_id, {}).get('is_running'):
-                current_step = active_sessions[chat_id].get('step')
-
-                try:
-                    # 📌 المرحلة 1: قبول شروط جوجل
-                    if current_step == 'accept_terms':
-                        understand_btn = page.locator("text='I understand'").first
-                        if await understand_btn.is_visible(timeout=500):
-                            await asyncio.sleep(random.uniform(1.0, 2.0)) 
-                            await understand_btn.click(force=True)
-                            active_sessions[chat_id]['step'] = 'wait_for_console'
-                        else:
-                            for text in ["Ik begrijp het", "Accept all", "I agree", "Agree", "Confirm"]:
-                                btn = page.get_by_text(text, exact=False).first
-                                if await btn.is_visible(timeout=200):
-                                    await btn.click(force=True)
-                                    active_sessions[chat_id]['step'] = 'wait_for_console'
-                                    break
-
-                    # 📌 المرحلة 2: رصد لوحة التحكم
-                    elif current_step == 'wait_for_console':
-                        if "console.cloud.google.com" in page.url or await page.get_by_text("Cloud overview").is_visible(timeout=500):
-                            page_text = await page.content()
-                            match = re.search(r'qwiklabs-gcp-[a-zA-Z0-9\-]+', page_text)
-                            project_id = match.group(0) if match else ""
-                            shell_url = f"https://console.cloud.google.com/cloudshell?project={project_id}"
-                            await page.goto(shell_url, timeout=120000)
-                            active_sessions[chat_id]['step'] = 'start_cloud_shell'
-
-                    # 📌 المرحلة 3: شروط Cloud Shell
-                    elif current_step == 'start_cloud_shell':
-                        start_btn = page.get_by_text("Start Cloud Shell", exact=False).first
-                        if await start_btn.is_visible(timeout=500):
-                            checkbox = page.get_by_role("checkbox").first
-                            if await checkbox.is_visible(): await checkbox.check(force=True)
-                            await asyncio.sleep(1)
-                            await start_btn.click(force=True)
-                            active_sessions[chat_id]['step'] = 'wait_for_authorize'
-
-                    # 📌 المرحلة 4: Authorize
-                    elif current_step == 'wait_for_authorize':
-                        auth_btn = page.get_by_text("Authorize", exact=True).first
-                        if await auth_btn.is_visible(timeout=500):
-                            await auth_btn.click(force=True)
-                            active_sessions[chat_id]['step'] = 'done'
-                            await context.bot.send_message(chat_id=chat_id, text="🎉 تم تجهيز التيرمينال بنجاح!")
-                except Exception:
-                    pass
-
-                await asyncio.sleep(3)
-                if not active_sessions.get(chat_id, {}).get('is_running'): break
+        parsed_url = urllib.parse.urlparse(sso_url)
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+        project_id = None
+        walkthrough_id = ""
+        
+        if 'relay' in query_params:
+            relay_url = query_params['relay'][0]
+            relay_parsed = urllib.parse.urlparse(relay_url)
+            relay_params = urllib.parse.parse_qs(relay_parsed.query)
+            if 'project' in relay_params:
+                project_id = relay_params['project'][0]
+            if 'walkthrough_id' in relay_params:
+                walkthrough_id = relay_params['walkthrough_id'][0]
+        
+        if not project_id:
+            match = re.search(r'project(?:%3D|=)(qwiklabs-gcp-[a-zA-Z0-9-]+)', sso_url)
+            if match:
+                project_id = match.group(1)
                 
-                try:
-                    new_screenshot = await page.screenshot(type='jpeg', quality=50)
-                    await context.bot.edit_message_media(
-                        chat_id=chat_id, 
-                        message_id=live_message.message_id, 
-                        media=InputMediaPhoto(new_screenshot)
-                    )
-                except BadRequest as e:
-                    if "Message is not modified" in str(e): continue
-                except RetryAfter as e:
-                    print(f"⚠️ Telegram Rate Limit! Waiting {e.retry_after} seconds...")
-                    await asyncio.sleep(e.retry_after)
-                except Exception: 
-                    continue
+        if not project_id:
+            bot.reply_to(message, "❌ لم أتمكن من العثور على اسم المشروع. تأكد من الرابط.")
+            return
+        
+        shell_url = f"https://shell.cloud.google.com/?project={project_id}&show=terminal"
+        if walkthrough_id:
+            shell_url += f"&walkthrough_id={urllib.parse.quote(walkthrough_id, safe='')}"
+            
+        bot.send_message(message.chat.id, f"✅ تم اكتشاف المشروع: `{project_id}`\n🚀 سيتم الانتقال للـ Shell بسرعة!", parse_mode="Markdown")
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ حدث خطأ أثناء تحليل الرابط:\n{e}")
+        return
 
-            if browser: await browser.close()
+    msg = bot.reply_to(message, "⚡ [1/7] جاري تجهيز بيئة Render...")
+    
+    display = Display(visible=0, size=(1280, 720), color_depth=24)
+    display.start()
+    
+    try:
+        options = uc.ChromeOptions()
+        options.page_load_strategy = 'eager'
+        options.add_argument("--incognito")
+        options.add_argument("--disable-site-isolation-trials")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-setuid-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--window-size=1280,720")
+        
+        options.add_argument("--disable-extensions")
+        options.add_argument("--mute-audio")
+        options.add_argument("--disable-notifications")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--disable-default-apps")
+        
+        driver = uc.Chrome(
+            options=options, 
+            use_subprocess=True,
+            driver_executable_path="/usr/bin/chromedriver",
+            browser_executable_path="/usr/bin/chromium"
+        )
+        
+        driver.set_window_size(1280, 720)
+        driver.set_page_load_timeout(45) 
+        
+        bot.edit_message_text("⚡ [2/7] المحرك جاهز! بدء عملية الاختراق...", chat_id=message.chat.id, message_id=msg.message_id)
+        
+        live_msg = bot.send_photo(message.chat.id, get_light_jpg_screenshot(driver), caption="🔴 بث مباشر (التهيئة)...")
+        
+        try: driver.get(sso_url)
+        except Exception: pass 
+            
+        time.sleep(2)
+        
+        bot.edit_message_text("⚡ [3/7] جاري تسجيل الدخول والقفز الفوري...", chat_id=message.chat.id, message_id=msg.message_id)
+        
+        try:
+            bot.edit_message_media(chat_id=message.chat.id, message_id=live_msg.message_id, media=InputMediaPhoto(get_light_jpg_screenshot(driver), caption="🔴 بث مباشر (مرحلة الموافقة)..."))
+        except: pass
+
+        # --- قفزة النينجا ---
+        try:
+            understand_btn = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.ID, "confirm")))
+            driver.execute_script("arguments[0].click();", understand_btn)
+            driver.get(shell_url) 
+        except Exception:
+            driver.get(shell_url)
+
+        bot.edit_message_text("⚡ [4/7] جاري تحميل واجهة Cloud Shell...", chat_id=message.chat.id, message_id=msg.message_id)
+        bot.edit_message_text("⚡ [5/7] تخويل الصلاحيات (Authorize)...", chat_id=message.chat.id, message_id=msg.message_id)
+        
+        for _ in range(4): 
+            time.sleep(3)
+            try:
+                bot.edit_message_media(chat_id=message.chat.id, message_id=live_msg.message_id, media=InputMediaPhoto(get_light_jpg_screenshot(driver), caption="🔴 بث مباشر (جاري تحميل الـ Cloud Shell)..."))
+            except: pass
+
+        try:
+            js_auth_script = """
+            var btns = document.querySelectorAll('button, span, div');
+            for(var i=0; i<btns.length; i++){
+                if(btns[i].innerText && btns[i].innerText.trim().toLowerCase() === 'authorize'){
+                    btns[i].click();
+                    return true;
+                }
+            }
+            return false;
+            """
+            clicked_auth = driver.execute_script(js_auth_script)
+            if not clicked_auth:
+                auth_btn = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, "//*[contains(translate(text(), 'AUTHORIZE', 'authorize'), 'authorize')] | //button[contains(., 'Authorize')]"))
+                )
+                auth_btn.click()
+        except Exception:
+            pass
+
+        time.sleep(3)
+
+        bot.edit_message_text("⚡ [6/7] تنظيف الشاشة للمحطة (Terminal)...", chat_id=message.chat.id, message_id=msg.message_id)
+        try:
+            js_close_editor = """
+            var btns = document.querySelectorAll('button, a');
+            for(var i=0; i<btns.length; i++){
+                var title = btns[i].getAttribute('title') || btns[i].getAttribute('aria-label') || '';
+                if(title.toLowerCase().includes('close editor') || title.toLowerCase().includes('toggle editor')){
+                    btns[i].click();
+                    return true;
+                }
+            }
+            return false;
+            """
+            driver.execute_script(js_close_editor)
+        except Exception:
+            pass
+            
+        bot.delete_message(message.chat.id, msg.message_id)
+
+        # --- حلقة البث المستقرة ---
+        while True:
+            time.sleep(3) 
+            try:
+                photo = get_light_jpg_screenshot(driver)
+                bot.edit_message_media(
+                    chat_id=message.chat.id,
+                    message_id=live_msg.message_id,
+                    media=InputMediaPhoto(photo, caption=f"🔴 بث مباشر ⚡: {project_id}")
+                )
+            except Exception as update_error:
+                error_msg = str(update_error).lower()
+                if "is not modified" in error_msg:
+                    continue
+                elif "too many requests" in error_msg or "flood" in error_msg:
+                    print("⚠️ تيليغرام غاضب من السرعة، استراحة 5 ثوانٍ...")
+                    time.sleep(5) 
+                else:
+                    print(f"⚠️ خطأ تحديث: {update_error}")
             
     except Exception as e:
-        error_msg = str(e)
-        if "Target closed" not in error_msg:
-            await update.message.reply_text(f"❌ خطأ تقني: {error_msg}")
-            
+        error_details = traceback.format_exc()
+        bot.send_message(message.chat.id, f"❌ حدث خطأ داخلي:\n{e}\n\nالتفاصيل:\n{error_details[-800:]}")
     finally:
-        if chat_id in active_sessions:
-            d = active_sessions[chat_id].get('display')
-            if d: d.stop() 
-            del active_sessions[chat_id]
-
-async def stop_stream(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if chat_id in active_sessions:
-        active_sessions[chat_id]['is_running'] = False
-        browser = active_sessions[chat_id].get('browser_instance')
-        if browser:
-            try: await browser.close()
+        if 'driver' in locals() and driver is not None:
+            try: driver.quit()
             except: pass
-        await update.message.reply_text("⏹️ تم إنهاء البث.")
-    else:
-        await update.message.reply_text("⚠️ لا يوجد بث نشط لإيقافه.")
+        if 'display' in locals():
+            try: display.stop()
+            except: pass
 
-if __name__ == '__main__':
-    TOKEN = os.environ.get("TELEGRAM_TOKEN")
-    if TOKEN:
-        threading.Thread(target=run_flask, daemon=True).start()
-        application = ApplicationBuilder().token(TOKEN).build()
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("stop", stop_stream))
-        print("🚀 Bot is starting...")
-        application.run_polling()
+print("جاري تشغيل خادم الويب الوهمي لـ Render...")
+threading.Thread(target=run_dummy_server, daemon=True).start()
+
+print("البوت يعمل بقوة على Render ⚡...")
+
+while True:
+    try:
+        bot.polling(non_stop=True, timeout=60)
+    except Exception as e:
+        print(f"⚠️ انقطع الاتصال، جاري إعادة المحاولة... ({e})")
+        time.sleep(5)
