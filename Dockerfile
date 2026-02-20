@@ -1,21 +1,27 @@
-# نستخدم صورة رسمية من Playwright
-FROM mcr.microsoft.com/playwright/python:v1.41.0-jammy
+FROM python:3.11-slim
 
-# تحديد مجلد العمل
+# تحديث وتثبيت المتصفح والشاشة الوهمية (Xvfb)
+RUN apt-get update && apt-get install -y \
+    wget \
+    gnupg \
+    unzip \
+    xvfb \
+    chromium \
+    chromium-driver \
+    && rm -rf /var/lib/apt/lists/*
+
+# إعداد مسار العمل
 WORKDIR /app
 
-# 🚀 تثبيت أداة الشاشة الوهمية Xvfb (مهم جداً لتخطي حماية جوجل)
-RUN apt-get update && apt-get install -y xvfb
+# نسخ الملفات
+COPY requirements.txt .
+COPY main.py .
 
-# نسخ ملفات المشروع
-COPY . .
-
-# تنصيب مكتبات البايثون
+# تثبيت مكتبات بايثون
 RUN pip install --no-cache-dir -r requirements.txt
 
-# تحميل المتصفح واعتماداته
-RUN playwright install chromium
-RUN playwright install-deps chromium
+# فتح البورت 8000 ليتعرف عليه Koyeb
+EXPOSE 8000
 
-# أمر التشغيل
+# تشغيل البوت
 CMD ["python", "main.py"]
