@@ -9,6 +9,7 @@ import undetected_chromedriver as uc
 from pyvirtualdisplay import Display
 from telebot.types import InputMediaPhoto
 from PIL import Image
+from datetime import datetime # تمت إضافة مكتبة الوقت هنا
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -56,7 +57,7 @@ def get_light_jpg_screenshot(driver):
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "أهلاً بك! البوت يعمل الآن بقوة (النسخة المصفحة 🛡️) على سيرفرات Render. أرسل /live للبدء 🚀")
+    bot.reply_to(message, "أهلاً بك! البوت يعمل الآن بقوة على سيرفرات Render. أرسل /live للبدء 🚀")
 
 @bot.message_handler(commands=['live'])
 def ask_for_sso_url(message):
@@ -146,10 +147,10 @@ def start_livestream(message):
         if photo:
             live_msg = bot.send_photo(message.chat.id, photo, caption="🔴 بث مباشر (التهيئة)...")
         else:
-            live_msg = bot.send_message(message.chat.id, "🔴 بث مباشر (جاري التهيئة، جاري انتظار الصورة الأولى)...")
+            live_msg = bot.send_message(message.chat.id, "🔴 بث مباشر (جاري التهيئة)...")
         
         try: driver.get(sso_url)
-        except TimeoutException: print("مهلة تحميل sso_url انتهت، لكن سنكمل.")
+        except TimeoutException: pass
         except Exception: pass 
             
         time.sleep(3)
@@ -202,7 +203,6 @@ def start_livestream(message):
                     btn = driver.find_element(By.XPATH, "//*[contains(translate(text(), 'START CLOUD SHELL', 'start cloud shell'), 'start cloud shell')]")
                     driver.execute_script("arguments[0].click();", btn)
                 except: pass
-            
             time.sleep(2) 
         except Exception:
             pass
@@ -256,40 +256,46 @@ def start_livestream(message):
             pass
             
         bot.delete_message(message.chat.id, msg.message_id)
-        
         try: bot.delete_message(message.chat.id, live_msg.message_id)
         except: pass
 
         last_msg_id = None
+        print("\n🚀 === بدأ البث المباشر المستمر ===")
 
-        # --- حلقة البث المستقرة (الذهبية: 5 ثوانٍ حذف وإرسال) ---
+        # --- حلقة البث المستقرة (رسائل متجددة ديناميكية التوقيت) ---
         while True:
-            time.sleep(5) # التوقيت المثالي الذهبي المريح للعين والسيرفر
+            time.sleep(5)
             try:
+                # طباعة في سجلات Render لمعرفة أن السيرفر حي يعمل
+                current_time = datetime.now().strftime("%H:%M:%S")
+                print(f"[{current_time}] 📸 جاري التقاط وإرسال صورة جديدة...")
+                
                 photo = get_light_jpg_screenshot(driver)
                 if photo:
+                    # إضافة التوقيت للنص يجبر تيليغرام على اعتبارها رسالة جديدة 100%
+                    caption_text = f"🔴 بث مباشر ⚡: `{project_id}`\n🕒 آخر تحديث: {current_time}"
+                    
                     new_msg = bot.send_photo(
                         chat_id=message.chat.id,
                         photo=photo,
-                        caption=f"🔴 بث مباشر ⚡: {project_id}",
-                        disable_notification=True # إرسال صامت لعدم إزعاجك
+                        caption=caption_text,
+                        parse_mode="Markdown",
+                        disable_notification=True
                     )
                     
+                    # حذف الرسالة السابقة بشكل منفصل لكي لا تعطل الإرسال
                     if last_msg_id:
                         try:
                             bot.delete_message(message.chat.id, last_msg_id)
-                        except Exception:
-                            pass
+                        except Exception as del_err:
+                            print(f"⚠️ لم أتمكن من حذف الرسالة السابقة: {del_err}")
                     
                     last_msg_id = new_msg.message_id
+                    print("✅ تم تحديث البث بنجاح!")
                     
             except Exception as update_error:
-                error_msg = str(update_error).lower()
-                if "too many requests" in error_msg or "flood" in error_msg:
-                    print("⚠️ تيليغرام غاضب، استراحة إضافية...")
-                    time.sleep(5) 
-                else:
-                    print(f"خطأ أثناء الحذف والإرسال: {update_error}")
+                print(f"❌ خطأ أثناء دورة البث: {update_error}")
+                time.sleep(3) # استراحة قصيرة إذا حدث خطأ لتجنب انهيار الحلقة
             
     except Exception as e:
         error_details = traceback.format_exc()
