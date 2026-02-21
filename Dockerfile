@@ -1,20 +1,21 @@
-FROM python:3.11-slim
+# استخدام نسخة بايثون خفيفة
+FROM python:3.10-slim
 
-# تثبيت Chromium و ChromeDriver
+# تحديث النظام وتثبيت متصفح Chromium و WebDriver
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
-    --no-install-recommends \
-    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# تحديد مجلد العمل داخل الخادم
 WORKDIR /app
 
+# نسخ ملف المتطلبات وتثبيت مكاتب بايثون
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# نسخ باقي ملفات المشروع (بما فيها main.py)
 COPY . .
 
-ENV PYTHONUNBUFFERED=1
-
-CMD ["python", "bot.py"]
+# أمر تشغيل البوت
+CMD ["python", "main.py"]
