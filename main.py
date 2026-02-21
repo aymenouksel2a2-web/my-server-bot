@@ -140,7 +140,6 @@ def start_livestream(message):
         )
         
         driver.set_window_size(1280, 720)
-        # إعطاء المتصفح مهلة 90 ثانية كاملة لكي لا ينهار في سيرفرات Render البطيئة
         driver.set_page_load_timeout(90) 
         
         bot.edit_message_text("⚡ [2/8] المحرك جاهز! بدء عملية الاختراق...", chat_id=message.chat.id, message_id=msg.message_id)
@@ -259,27 +258,44 @@ def start_livestream(message):
             pass
             
         bot.delete_message(message.chat.id, msg.message_id)
+        
+        # نحذف رسالة البث القديمة التي كنا نعدل عليها للبدء بصفحة جديدة
+        try: bot.delete_message(message.chat.id, live_msg.message_id)
+        except: pass
 
-        # --- حلقة البث المستقرة ---
+        last_msg_id = None
+
+        # --- حلقة البث المستقرة (طريقة الحذف والإرسال الصامت) ---
         while True:
-            time.sleep(3.5) # وقت أطول قليلاً ليناسب موارد ريندر
+            time.sleep(3) 
             try:
                 photo = get_light_jpg_screenshot(driver)
                 if photo:
-                    bot.edit_message_media(
+                    # نرسل الصورة الجديدة بصمت (بدون إشعار مزعج)
+                    new_msg = bot.send_photo(
                         chat_id=message.chat.id,
-                        message_id=live_msg.message_id,
-                        media=InputMediaPhoto(photo, caption=f"🔴 بث مباشر ⚡: {project_id}")
+                        photo=photo,
+                        caption=f"🔴 بث مباشر ⚡: {project_id}",
+                        disable_notification=True
                     )
+                    
+                    # نحذف الصورة القديمة للحفاظ على نظافة المحادثة
+                    if last_msg_id:
+                        try:
+                            bot.delete_message(message.chat.id, last_msg_id)
+                        except Exception:
+                            pass
+                    
+                    # نحدث معرف الرسالة للخطوة القادمة
+                    last_msg_id = new_msg.message_id
+                    
             except Exception as update_error:
                 error_msg = str(update_error).lower()
-                if "is not modified" in error_msg:
-                    continue
-                elif "too many requests" in error_msg or "flood" in error_msg:
+                if "too many requests" in error_msg or "flood" in error_msg:
                     print("⚠️ تيليغرام غاضب، استراحة 5 ثوانٍ...")
                     time.sleep(5) 
                 else:
-                    pass # تجاهل أي خطأ آخر لكي يستمر البث
+                    print(f"خطأ أثناء الحذف والإرسال: {update_error}")
             
     except Exception as e:
         error_details = traceback.format_exc()
