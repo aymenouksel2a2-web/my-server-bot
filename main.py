@@ -158,28 +158,42 @@ def start_livestream(message):
         bot.edit_message_text("⚡ [4/8] جاري تحميل واجهة Cloud Shell...", chat_id=message.chat.id, message_id=msg.message_id)
         time.sleep(6) # ننتظر قليلاً حتى تظهر نافذة الشروط
         
-        # --- السحر الجديد: الموافقة على شروط Cloud Shell (Terms of Service) ---
-        bot.edit_message_text("⚡ [5/8] جاري الموافقة على شروط الاستخدام...", chat_id=message.chat.id, message_id=msg.message_id)
+        # --- السحر الجديد والمُعالج: الموافقة على شروط الاستخدام ---
+        bot.edit_message_text("⚡ [5/8] جاري إجبار الموافقة على الشروط...", chat_id=message.chat.id, message_id=msg.message_id)
         try:
-            js_terms_script = """
-            // البحث عن صندوق التحديد (Checkbox) والموافقة عليه
-            var checkboxes = document.querySelectorAll('input[type="checkbox"]');
-            if(checkboxes.length > 0) {
-                if(!checkboxes[0].checked) checkboxes[0].click();
-            }
-            
-            // البحث عن زر Start Cloud Shell والضغط عليه
-            var btns = document.querySelectorAll('button, span, div, a');
-            for(var i=0; i<btns.length; i++){
-                if(btns[i].innerText && btns[i].innerText.toLowerCase().includes('start cloud shell')){
-                    btns[i].click();
-                    return true;
+            # 1. تحديد المربع بقوة وإرسال إشارة للمتصفح ليُفعل الزر
+            driver.execute_script("""
+                var chk = document.querySelector('input[type="checkbox"]');
+                if(chk && !chk.checked) {
+                    chk.click();
+                    chk.dispatchEvent(new Event('change', {bubbles: true}));
                 }
-            }
-            return false;
-            """
-            driver.execute_script(js_terms_script)
-            time.sleep(2) # انتظار لتختفي النافذة
+            """)
+            
+            time.sleep(1.5) # وقت كافٍ جداً ليتحول الزر من رمادي إلى أزرق
+            
+            # 2. البحث عن زر Start Cloud Shell وضربه بشتى الطرق
+            clicked = driver.execute_script("""
+                var spans = document.querySelectorAll('span, div, button');
+                for(var i=0; i<spans.length; i++){
+                    if(spans[i].textContent.trim().toLowerCase() === 'start cloud shell'){
+                        spans[i].click();
+                        if(spans[i].parentElement) spans[i].parentElement.click();
+                        return true;
+                    }
+                }
+                return false;
+            """)
+            
+            # 3. خطة هجوم بديلة (XPath) في حال لم تنجح الجافاسكريبت
+            if not clicked:
+                try:
+                    btn = driver.find_element(By.XPATH, "//*[contains(translate(text(), 'START CLOUD SHELL', 'start cloud shell'), 'start cloud shell')]")
+                    driver.execute_script("arguments[0].click();", btn)
+                except:
+                    pass
+            
+            time.sleep(2) # انتظار لتختفي النافذة المنبثقة
         except Exception as e:
             print("نافذة الشروط لم تظهر أو تم تجاوزها.")
         # ----------------------------------------------------------------------
