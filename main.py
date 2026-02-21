@@ -29,7 +29,6 @@ class DummyHandler(BaseHTTPRequestHandler):
         pass
 
 def run_dummy_server():
-    # Render يعطينا البورت تلقائياً عبر متغير النظام PORT
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), DummyHandler)
     server.serve_forever()
@@ -100,7 +99,7 @@ def start_livestream(message):
         bot.reply_to(message, f"❌ حدث خطأ أثناء تحليل الرابط:\n{e}")
         return
 
-    msg = bot.reply_to(message, "⚡ [1/7] جاري تجهيز بيئة Render...")
+    msg = bot.reply_to(message, "⚡ [1/8] جاري تجهيز بيئة Render...")
     
     display = Display(visible=0, size=(1280, 720), color_depth=24)
     display.start()
@@ -133,7 +132,7 @@ def start_livestream(message):
         driver.set_window_size(1280, 720)
         driver.set_page_load_timeout(45) 
         
-        bot.edit_message_text("⚡ [2/7] المحرك جاهز! بدء عملية الاختراق...", chat_id=message.chat.id, message_id=msg.message_id)
+        bot.edit_message_text("⚡ [2/8] المحرك جاهز! بدء عملية الاختراق...", chat_id=message.chat.id, message_id=msg.message_id)
         
         live_msg = bot.send_photo(message.chat.id, get_light_jpg_screenshot(driver), caption="🔴 بث مباشر (التهيئة)...")
         
@@ -142,7 +141,7 @@ def start_livestream(message):
             
         time.sleep(2)
         
-        bot.edit_message_text("⚡ [3/7] جاري تسجيل الدخول والقفز الفوري...", chat_id=message.chat.id, message_id=msg.message_id)
+        bot.edit_message_text("⚡ [3/8] جاري تسجيل الدخول والقفز الفوري...", chat_id=message.chat.id, message_id=msg.message_id)
         
         try:
             bot.edit_message_media(chat_id=message.chat.id, message_id=live_msg.message_id, media=InputMediaPhoto(get_light_jpg_screenshot(driver), caption="🔴 بث مباشر (مرحلة الموافقة)..."))
@@ -156,13 +155,41 @@ def start_livestream(message):
         except Exception:
             driver.get(shell_url)
 
-        bot.edit_message_text("⚡ [4/7] جاري تحميل واجهة Cloud Shell...", chat_id=message.chat.id, message_id=msg.message_id)
-        bot.edit_message_text("⚡ [5/7] تخويل الصلاحيات (Authorize)...", chat_id=message.chat.id, message_id=msg.message_id)
+        bot.edit_message_text("⚡ [4/8] جاري تحميل واجهة Cloud Shell...", chat_id=message.chat.id, message_id=msg.message_id)
+        time.sleep(6) # ننتظر قليلاً حتى تظهر نافذة الشروط
+        
+        # --- السحر الجديد: الموافقة على شروط Cloud Shell (Terms of Service) ---
+        bot.edit_message_text("⚡ [5/8] جاري الموافقة على شروط الاستخدام...", chat_id=message.chat.id, message_id=msg.message_id)
+        try:
+            js_terms_script = """
+            // البحث عن صندوق التحديد (Checkbox) والموافقة عليه
+            var checkboxes = document.querySelectorAll('input[type="checkbox"]');
+            if(checkboxes.length > 0) {
+                if(!checkboxes[0].checked) checkboxes[0].click();
+            }
+            
+            // البحث عن زر Start Cloud Shell والضغط عليه
+            var btns = document.querySelectorAll('button, span, div, a');
+            for(var i=0; i<btns.length; i++){
+                if(btns[i].innerText && btns[i].innerText.toLowerCase().includes('start cloud shell')){
+                    btns[i].click();
+                    return true;
+                }
+            }
+            return false;
+            """
+            driver.execute_script(js_terms_script)
+            time.sleep(2) # انتظار لتختفي النافذة
+        except Exception as e:
+            print("نافذة الشروط لم تظهر أو تم تجاوزها.")
+        # ----------------------------------------------------------------------
+
+        bot.edit_message_text("⚡ [6/8] جاري انتظار تخويل الصلاحيات (Authorize)...", chat_id=message.chat.id, message_id=msg.message_id)
         
         for _ in range(4): 
             time.sleep(3)
             try:
-                bot.edit_message_media(chat_id=message.chat.id, message_id=live_msg.message_id, media=InputMediaPhoto(get_light_jpg_screenshot(driver), caption="🔴 بث مباشر (جاري تحميل الـ Cloud Shell)..."))
+                bot.edit_message_media(chat_id=message.chat.id, message_id=live_msg.message_id, media=InputMediaPhoto(get_light_jpg_screenshot(driver), caption="🔴 بث مباشر (البحث عن Authorize)..."))
             except: pass
 
         try:
@@ -187,7 +214,7 @@ def start_livestream(message):
 
         time.sleep(3)
 
-        bot.edit_message_text("⚡ [6/7] تنظيف الشاشة للمحطة (Terminal)...", chat_id=message.chat.id, message_id=msg.message_id)
+        bot.edit_message_text("⚡ [7/8] تنظيف الشاشة للمحطة (Terminal)...", chat_id=message.chat.id, message_id=msg.message_id)
         try:
             js_close_editor = """
             var btns = document.querySelectorAll('button, a');
@@ -224,7 +251,7 @@ def start_livestream(message):
                     print("⚠️ تيليغرام غاضب من السرعة، استراحة 5 ثوانٍ...")
                     time.sleep(5) 
                 else:
-                    print(f"⚠️ خطأ تحديث: {update_error}")
+                    pass
             
     except Exception as e:
         error_details = traceback.format_exc()
