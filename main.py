@@ -13,6 +13,7 @@ from PIL import Image
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -37,21 +38,25 @@ def run_dummy_server():
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# --- دالة التقاط الصور التيربو ---
+# --- دالة التقاط الصور التيربو (مع حماية من الانهيار) ---
 def get_light_jpg_screenshot(driver):
-    png_data = driver.get_screenshot_as_png()
-    img = Image.open(BytesIO(png_data))
-    img = img.convert('RGB')
-    img.thumbnail((800, 600)) 
-    output = BytesIO()
-    img.save(output, format='JPEG', quality=30, optimize=True)
-    output.seek(0)
-    output.name = 'screen.jpg'
-    return output
+    try:
+        png_data = driver.get_screenshot_as_png()
+        img = Image.open(BytesIO(png_data))
+        img = img.convert('RGB')
+        img.thumbnail((800, 600)) 
+        output = BytesIO()
+        img.save(output, format='JPEG', quality=30, optimize=True)
+        output.seek(0)
+        output.name = 'screen.jpg'
+        return output
+    except Exception as e:
+        print(f"⚠️ فشل التقاط الصورة مؤقتاً: {e}")
+        return None
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "أهلاً بك! البوت يعمل الآن بقوة على سيرفرات Render ☁️⚡. أرسل /live للبدء 🚀")
+    bot.reply_to(message, "أهلاً بك! البوت يعمل الآن بقوة (النسخة المصفحة 🛡️) على سيرفرات Render. أرسل /live للبدء 🚀")
 
 @bot.message_handler(commands=['live'])
 def ask_for_sso_url(message):
@@ -99,7 +104,7 @@ def start_livestream(message):
         bot.reply_to(message, f"❌ حدث خطأ أثناء تحليل الرابط:\n{e}")
         return
 
-    msg = bot.reply_to(message, "⚡ [1/8] جاري تجهيز بيئة Render...")
+    msg = bot.reply_to(message, "⚡ [1/8] جاري تجهيز بيئة Render المصفحة...")
     
     display = Display(visible=0, size=(1280, 720), color_depth=24)
     display.start()
@@ -116,11 +121,16 @@ def start_livestream(message):
         options.add_argument("--disable-software-rasterizer")
         options.add_argument("--window-size=1280,720")
         
+        # --- دروع إضافية لتقليل استهلاك الرام في Render ---
+        options.add_argument("--no-zygote")
+        options.add_argument("--disable-accelerated-2d-canvas")
+        options.add_argument("--disable-features=VizDisplayCompositor")
         options.add_argument("--disable-extensions")
         options.add_argument("--mute-audio")
         options.add_argument("--disable-notifications")
         options.add_argument("--disable-popup-blocking")
         options.add_argument("--disable-default-apps")
+        # --------------------------------------------------
         
         driver = uc.Chrome(
             options=options, 
@@ -130,21 +140,28 @@ def start_livestream(message):
         )
         
         driver.set_window_size(1280, 720)
-        driver.set_page_load_timeout(45) 
+        # إعطاء المتصفح مهلة 90 ثانية كاملة لكي لا ينهار في سيرفرات Render البطيئة
+        driver.set_page_load_timeout(90) 
         
         bot.edit_message_text("⚡ [2/8] المحرك جاهز! بدء عملية الاختراق...", chat_id=message.chat.id, message_id=msg.message_id)
         
-        live_msg = bot.send_photo(message.chat.id, get_light_jpg_screenshot(driver), caption="🔴 بث مباشر (التهيئة)...")
+        photo = get_light_jpg_screenshot(driver)
+        if photo:
+            live_msg = bot.send_photo(message.chat.id, photo, caption="🔴 بث مباشر (التهيئة)...")
+        else:
+            live_msg = bot.send_message(message.chat.id, "🔴 بث مباشر (جاري التهيئة، جاري انتظار الصورة الأولى)...")
         
         try: driver.get(sso_url)
+        except TimeoutException: print("مهلة تحميل sso_url انتهت، لكن سنكمل.")
         except Exception: pass 
             
-        time.sleep(2)
+        time.sleep(3)
         
         bot.edit_message_text("⚡ [3/8] جاري تسجيل الدخول والقفز الفوري...", chat_id=message.chat.id, message_id=msg.message_id)
         
         try:
-            bot.edit_message_media(chat_id=message.chat.id, message_id=live_msg.message_id, media=InputMediaPhoto(get_light_jpg_screenshot(driver), caption="🔴 بث مباشر (مرحلة الموافقة)..."))
+            photo = get_light_jpg_screenshot(driver)
+            if photo: bot.edit_message_media(chat_id=message.chat.id, message_id=live_msg.message_id, media=InputMediaPhoto(photo, caption="🔴 بث مباشر (مرحلة الموافقة)..."))
         except: pass
 
         # --- قفزة النينجا ---
@@ -153,15 +170,15 @@ def start_livestream(message):
             driver.execute_script("arguments[0].click();", understand_btn)
             driver.get(shell_url) 
         except Exception:
-            driver.get(shell_url)
+            try: driver.get(shell_url)
+            except TimeoutException: pass
 
         bot.edit_message_text("⚡ [4/8] جاري تحميل واجهة Cloud Shell...", chat_id=message.chat.id, message_id=msg.message_id)
-        time.sleep(6) # ننتظر قليلاً حتى تظهر نافذة الشروط
+        time.sleep(8) 
         
-        # --- السحر الجديد والمُعالج: الموافقة على شروط الاستخدام ---
+        # --- الموافقة على شروط الاستخدام ---
         bot.edit_message_text("⚡ [5/8] جاري إجبار الموافقة على الشروط...", chat_id=message.chat.id, message_id=msg.message_id)
         try:
-            # 1. تحديد المربع بقوة وإرسال إشارة للمتصفح ليُفعل الزر
             driver.execute_script("""
                 var chk = document.querySelector('input[type="checkbox"]');
                 if(chk && !chk.checked) {
@@ -169,10 +186,8 @@ def start_livestream(message):
                     chk.dispatchEvent(new Event('change', {bubbles: true}));
                 }
             """)
+            time.sleep(1.5) 
             
-            time.sleep(1.5) # وقت كافٍ جداً ليتحول الزر من رمادي إلى أزرق
-            
-            # 2. البحث عن زر Start Cloud Shell وضربه بشتى الطرق
             clicked = driver.execute_script("""
                 var spans = document.querySelectorAll('span, div, button');
                 for(var i=0; i<spans.length; i++){
@@ -185,25 +200,23 @@ def start_livestream(message):
                 return false;
             """)
             
-            # 3. خطة هجوم بديلة (XPath) في حال لم تنجح الجافاسكريبت
             if not clicked:
                 try:
                     btn = driver.find_element(By.XPATH, "//*[contains(translate(text(), 'START CLOUD SHELL', 'start cloud shell'), 'start cloud shell')]")
                     driver.execute_script("arguments[0].click();", btn)
-                except:
-                    pass
+                except: pass
             
-            time.sleep(2) # انتظار لتختفي النافذة المنبثقة
-        except Exception as e:
-            print("نافذة الشروط لم تظهر أو تم تجاوزها.")
-        # ----------------------------------------------------------------------
+            time.sleep(2) 
+        except Exception:
+            pass
 
         bot.edit_message_text("⚡ [6/8] جاري انتظار تخويل الصلاحيات (Authorize)...", chat_id=message.chat.id, message_id=msg.message_id)
         
         for _ in range(4): 
-            time.sleep(3)
+            time.sleep(4)
             try:
-                bot.edit_message_media(chat_id=message.chat.id, message_id=live_msg.message_id, media=InputMediaPhoto(get_light_jpg_screenshot(driver), caption="🔴 بث مباشر (البحث عن Authorize)..."))
+                photo = get_light_jpg_screenshot(driver)
+                if photo: bot.edit_message_media(chat_id=message.chat.id, message_id=live_msg.message_id, media=InputMediaPhoto(photo, caption="🔴 بث مباشر (البحث عن Authorize)..."))
             except: pass
 
         try:
@@ -249,23 +262,24 @@ def start_livestream(message):
 
         # --- حلقة البث المستقرة ---
         while True:
-            time.sleep(3) 
+            time.sleep(3.5) # وقت أطول قليلاً ليناسب موارد ريندر
             try:
                 photo = get_light_jpg_screenshot(driver)
-                bot.edit_message_media(
-                    chat_id=message.chat.id,
-                    message_id=live_msg.message_id,
-                    media=InputMediaPhoto(photo, caption=f"🔴 بث مباشر ⚡: {project_id}")
-                )
+                if photo:
+                    bot.edit_message_media(
+                        chat_id=message.chat.id,
+                        message_id=live_msg.message_id,
+                        media=InputMediaPhoto(photo, caption=f"🔴 بث مباشر ⚡: {project_id}")
+                    )
             except Exception as update_error:
                 error_msg = str(update_error).lower()
                 if "is not modified" in error_msg:
                     continue
                 elif "too many requests" in error_msg or "flood" in error_msg:
-                    print("⚠️ تيليغرام غاضب من السرعة، استراحة 5 ثوانٍ...")
+                    print("⚠️ تيليغرام غاضب، استراحة 5 ثوانٍ...")
                     time.sleep(5) 
                 else:
-                    pass
+                    pass # تجاهل أي خطأ آخر لكي يستمر البث
             
     except Exception as e:
         error_details = traceback.format_exc()
