@@ -1,5 +1,2 @@
-pyTelegramBotAPI
-selenium
-undetected-chromedriver
-PyVirtualDisplay
-Pillow
+pyTelegramBotAPI>=4.14.0
+selenium>=4.15.0
