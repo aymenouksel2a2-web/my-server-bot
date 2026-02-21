@@ -38,7 +38,7 @@ def run_dummy_server():
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# --- دالة التقاط الصور التيربو (مع حماية من الانهيار) ---
+# --- دالة التقاط الصور التيربو ---
 def get_light_jpg_screenshot(driver):
     try:
         png_data = driver.get_screenshot_as_png()
@@ -121,7 +121,6 @@ def start_livestream(message):
         options.add_argument("--disable-software-rasterizer")
         options.add_argument("--window-size=1280,720")
         
-        # --- دروع إضافية لتقليل استهلاك الرام في Render ---
         options.add_argument("--no-zygote")
         options.add_argument("--disable-accelerated-2d-canvas")
         options.add_argument("--disable-features=VizDisplayCompositor")
@@ -130,7 +129,6 @@ def start_livestream(message):
         options.add_argument("--disable-notifications")
         options.add_argument("--disable-popup-blocking")
         options.add_argument("--disable-default-apps")
-        # --------------------------------------------------
         
         driver = uc.Chrome(
             options=options, 
@@ -259,40 +257,36 @@ def start_livestream(message):
             
         bot.delete_message(message.chat.id, msg.message_id)
         
-        # نحذف رسالة البث القديمة التي كنا نعدل عليها للبدء بصفحة جديدة
         try: bot.delete_message(message.chat.id, live_msg.message_id)
         except: pass
 
         last_msg_id = None
 
-        # --- حلقة البث المستقرة (طريقة الحذف والإرسال الصامت) ---
+        # --- حلقة البث المستقرة (الذهبية: 5 ثوانٍ حذف وإرسال) ---
         while True:
-            time.sleep(3) 
+            time.sleep(5) # التوقيت المثالي الذهبي المريح للعين والسيرفر
             try:
                 photo = get_light_jpg_screenshot(driver)
                 if photo:
-                    # نرسل الصورة الجديدة بصمت (بدون إشعار مزعج)
                     new_msg = bot.send_photo(
                         chat_id=message.chat.id,
                         photo=photo,
                         caption=f"🔴 بث مباشر ⚡: {project_id}",
-                        disable_notification=True
+                        disable_notification=True # إرسال صامت لعدم إزعاجك
                     )
                     
-                    # نحذف الصورة القديمة للحفاظ على نظافة المحادثة
                     if last_msg_id:
                         try:
                             bot.delete_message(message.chat.id, last_msg_id)
                         except Exception:
                             pass
                     
-                    # نحدث معرف الرسالة للخطوة القادمة
                     last_msg_id = new_msg.message_id
                     
             except Exception as update_error:
                 error_msg = str(update_error).lower()
                 if "too many requests" in error_msg or "flood" in error_msg:
-                    print("⚠️ تيليغرام غاضب، استراحة 5 ثوانٍ...")
+                    print("⚠️ تيليغرام غاضب، استراحة إضافية...")
                     time.sleep(5) 
                 else:
                     print(f"خطأ أثناء الحذف والإرسال: {update_error}")
