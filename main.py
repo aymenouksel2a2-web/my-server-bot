@@ -9,12 +9,14 @@ from telebot.types import InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardB
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
+# --- المكتبات الجديدة الخاصة بالخادم الوهمي لمنصة Render ---
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 TOKEN = os.getenv('BOT_TOKEN')
 if not TOKEN:
-    raise ValueError("لم يتم العثور على التوكن! تأكد من تشغيل أمر export BOT_TOKEN أولاً.")
+    raise ValueError("لم يتم العثور على التوكن! تأكد من إضافة المتغير BOT_TOKEN في إعدادات Render.")
 
 bot = telebot.TeleBot(TOKEN)
-
 user_sessions = {}
 
 def get_driver():
@@ -38,7 +40,6 @@ def get_driver():
     driver = webdriver.Chrome(options=options)
     
     # 🎭 2. حقن أكواد JavaScript متقدمة لجعل الموقع يظن أنك إنسان حقيقي
-    # هذا يزيل المتغيرات التي تستخدمها جوجل لكشف البوتات
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
         "source": """
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
@@ -110,7 +111,7 @@ def start_stream(chat_id, url):
     except:
         pass 
         
-    time.sleep(3) # زيادة وقت الانتظار قليلاً للسماح للموقع بالتحميل وتجاوز الفحص
+    time.sleep(3) 
     
     png_data = driver.get_screenshot_as_png()
     bio = io.BytesIO(png_data)
@@ -162,5 +163,27 @@ def callback_query(call):
         if "query is too old" not in str(e).lower():
             pass
 
+# --- 🎭 3. إعداد خادم ويب وهمي لإرضاء منصة Render ---
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot is running successfully on Render!")
+        # تم إخفاء سجلات الطلبات (Logs) لكي لا تزعجك في لوحة تحكم Render
+    def log_message(self, format, *args):
+        pass
+
+def run_dummy_server():
+    # Render يحدد المنفذ تلقائياً عبر المتغير PORT، وإلا نستخدم 10000
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), DummyHandler)
+    print(f"الخادم الوهمي يعمل الآن على المنفذ {port}...")
+    server.serve_forever()
+
+# تشغيل الخادم الوهمي في مسار خلفي (Thread) منفصل حتى لا يوقف البوت
+threading.Thread(target=run_dummy_server, daemon=True).start()
+# --------------------------------------------------------
+
 print("البوت يعمل الآن (نظام التمويه المتقدم مفعل)...")
-bot.polling()
+bot.polling(non_stop=True)
