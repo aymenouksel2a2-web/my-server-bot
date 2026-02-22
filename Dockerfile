@@ -5,8 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium-driver \
     xvfb \
     fonts-liberation \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -15,8 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Render سيقوم بتمرير البورت ديناميكياً، ولكن نضع 8000 كقيمة افتراضية
-EXPOSE 8000
+EXPOSE 8080
 
-# استخدمنا -u لضمان ظهور السجلات (Logs) فوراً في لوحة تحكم Render
-CMD ["python", "-u", "main.py"]
+CMD ["python", "main.py"]
