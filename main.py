@@ -201,7 +201,7 @@ for(var p in window){if(/^cdc_/.test(p)){try{delete window[p]}catch(e){}}}
 
 
 # ══════════════════════════════════════════════════════════
-#  Browser Driver (تم تأكيد الوضع الخفي والجلسة النظيفة)
+#  Browser Driver
 # ══════════════════════════════════════════════════════════
 
 def get_driver():
@@ -223,7 +223,6 @@ def get_driver():
     options = Options()
     options.binary_location = browser
     
-    # تأكيد الوضع الخفي (Incognito) + جلسة نظيفة تماماً
     options.add_argument('--incognito')
     options.add_argument('--disable-application-cache')
     
@@ -251,7 +250,6 @@ def get_driver():
     service = Service(executable_path=patched_drv)
     driver = webdriver.Chrome(service=service, options=options)
 
-    # مسح أي ملفات تعريف ارتباط متبقية للاحتياط
     driver.execute_cdp_cmd('Network.clearBrowserCache', {})
     driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
 
@@ -620,29 +618,44 @@ def take_screenshot(driver):
 
 
 # ══════════════════════════════════════════════════════════
-#  Google Pages Handler (تم إعادة كتابته ليكون أقوى بالـ JS)
+#  Google Pages Handler
 # ══════════════════════════════════════════════════════════
 
 def handle_google_pages(driver, session):
     status = "مراقبة..."
+    
     try:
         body = driver.find_element(By.TAG_NAME, "body").text[:5000]
     except Exception:
-        return status
+        body = ""
 
+    # نستخرج الكود المصدري كاملاً للبحث عن مدخلات الـ inputs (التي أرسلتها لي)
+    try:
+        html_source = driver.page_source.lower()
+    except Exception:
+        html_source = body.lower()
+        
     body_lower = body.lower()
 
-    # 💡 الكود الجديد الأقوى بالـ JS لتخطي "I understand"
-    if "i understand" in body_lower or "أوافق" in body_lower or "موافق" in body_lower:
+    # 💡 التحديث الأساسي: استهداف وسم <input> وخاصية الـ id="confirm" أو القيمة
+    if "i understand" in html_source or "confirm" in html_source or "welcome to your new account" in html_source:
         try:
             clicked = driver.execute_script("""
-                var elements = document.querySelectorAll('button, div[role="button"], span, a');
+                // 1. نبحث أولاً عن الزر عبر الـ ID الذي أرسلته (أضمن وأسرع طريقة)
+                var confirmBtn = document.getElementById('confirm');
+                if (confirmBtn) {
+                    confirmBtn.click();
+                    return true;
+                }
+                
+                // 2. إذا لم نجده، نبحث في كل المدخلات (Inputs) والأزرار عن القيمة أو النص
+                var elements = document.querySelectorAll('button, div[role="button"], span, a, input');
                 for (var i = 0; i < elements.length; i++) {
                     var el = elements[i];
-                    var text = (el.innerText || el.textContent || '').toLowerCase().trim();
-                    if (text === 'i understand' || text.indexOf('i understand') !== -1 || text === 'i agree') {
+                    var text = (el.innerText || el.textContent || el.value || '').toLowerCase().trim();
+                    if (text === 'i understand' || text.indexOf('i understand') !== -1 || text === 'i agree' || text === 'أوافق') {
                         var rect = el.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0) { // تأكد أن الزر مرئي
+                        if (rect.width > 0 && rect.height > 0) {
                             el.click();
                             return true;
                         }
@@ -656,10 +669,10 @@ def handle_google_pages(driver, session):
         except Exception as e:
             log.debug(f"JS Click I understand failed: {e}")
             
-        # Fallback XPath in case JS fails
+        # 3. Fallback عبر الـ XPath للحالات القصوى
         try:
             btns = driver.find_elements(By.XPATH, 
-                "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'i understand')]")
+                "//input[@id='confirm'] | //input[@value='I understand'] | //*[@id='confirm'] | //input[@name='confirm']")
             for btn in btns:
                 if btn.is_displayed():
                     btn.click()
