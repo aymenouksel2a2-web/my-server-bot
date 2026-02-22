@@ -8,7 +8,6 @@ import random
 import shutil
 import gc
 import subprocess
-import urllib.parse
 import json
 import logging
 from datetime import datetime
@@ -131,35 +130,32 @@ def patch_chromedriver(original_path):
 
 
 def safe_navigate(driver, url):
-    """Navigate using multiple methods to avoid crashes."""
-    # Method 1: JS navigation (non-blocking, avoids Selenium timeout)
+    """Navigate using JS first to avoid Selenium timeout crashes."""
     try:
         js_url = json.dumps(url)
         driver.execute_script(f'window.location.href = {js_url};')
-        log.info(f"✅ Navigate [JS href]: {url[:80]}...")
+        log.info(f"✅ Navigate [JS]: {url[:100]}...")
         return True
     except Exception as e:
-        log.debug(f"JS href failed: {e}")
+        log.debug(f"JS nav failed: {e}")
 
-    # Method 2: JS location.assign
     try:
         js_url = json.dumps(url)
         driver.execute_script(f'window.location.assign({js_url});')
-        log.info(f"✅ Navigate [JS assign]: {url[:80]}...")
+        log.info(f"✅ Navigate [JS assign]: {url[:100]}...")
         return True
     except Exception as e:
         log.debug(f"JS assign failed: {e}")
 
-    # Method 3: Direct Selenium (may timeout but page still loads)
     try:
         driver.get(url)
-        log.info(f"✅ Navigate [driver.get]: {url[:80]}...")
+        log.info(f"✅ Navigate [get]: {url[:100]}...")
         return True
     except TimeoutException:
         log.info(f"⏱️ Navigate timeout (page loading): {url[:80]}...")
-        return True  # Page is still loading, that's OK
+        return True
     except Exception as e:
-        log.error(f"❌ All navigation failed: {e}")
+        log.error(f"❌ Navigation failed: {e}")
         return False
 
 
@@ -547,7 +543,7 @@ def handle_google_pages(driver, session):
 
     body_lower = body.lower()
 
-    # ── Authorize Cloud Shell (popup) ──
+    # ── Authorize Cloud Shell popup ──
     if "authorize cloud shell" in body_lower:
         try:
             btns = driver.find_elements(By.XPATH,
@@ -582,8 +578,7 @@ def handle_google_pages(driver, session):
                 "//a[contains(text(),'Continue')]|"
                 "//button[contains(text(),'Continue')]|"
                 "//button[.//span[contains(text(),'Continue')]]|"
-                "//*[@role='button'][contains(.,'Continue')]|"
-                "//*[contains(text(),'Continue')]")
+                "//*[@role='button'][contains(.,'Continue')]")
             for btn in btns:
                 try:
                     if btn.is_displayed() and btn.is_enabled():
@@ -717,99 +712,6 @@ def handle_google_pages(driver, session):
 
 
 # ══════════════════════════════════════════════════════════
-#  Dismiss Tutorial + Editor (after Cloud Shell loads)
-# ══════════════════════════════════════════════════════════
-
-DISMISS_JS = """
-(function() {
-    /* 1. Close Tutorial/Walkthrough panels */
-    var selectors = [
-        '[class*="walkthrough"]',
-        '[class*="tutorial"]',
-        '[class*="guide-panel"]',
-        '[class*="cfc-panel"]',
-        '[class*="cloudshell-tutorial"]'
-    ];
-    for (var p = 0; p < selectors.length; p++) {
-        var panels = document.querySelectorAll(selectors[p]);
-        for (var q = 0; q < panels.length; q++) {
-            var btns = panels[q].querySelectorAll('button, [role="button"]');
-            for (var r = 0; r < btns.length; r++) {
-                var btn = btns[r];
-                var aria = (btn.getAttribute('aria-label') || '').toLowerCase();
-                var title = (btn.getAttribute('title') || '').toLowerCase();
-                var text = (btn.innerText || '').toLowerCase().trim();
-                if (aria.indexOf('close') !== -1 ||
-                    title.indexOf('close') !== -1 ||
-                    text === 'x' || text === 'close' ||
-                    text === 'end tour' || text === 'quit' ||
-                    text === 'exit tutorial' || text === 'dismiss' ||
-                    text === 'exit') {
-                    try { if (btn.offsetParent !== null) btn.click(); }
-                    catch(e) {}
-                }
-            }
-        }
-    }
-
-    /* 2. Close specific buttons */
-    var closeSelectors = [
-        'button[aria-label="Close panel"]',
-        'button[aria-label="Close walkthrough"]',
-        'button[aria-label="Close tutorial"]',
-        'button[aria-label="Close"]',
-        '.walkthrough-close-button',
-        '.tutorial-close-button',
-        '.cfc-panel-close'
-    ];
-    for (var i = 0; i < closeSelectors.length; i++) {
-        var els = document.querySelectorAll(closeSelectors[i]);
-        for (var j = 0; j < els.length; j++) {
-            try { if (els[j].offsetParent !== null) els[j].click(); }
-            catch(e) {}
-        }
-    }
-
-    /* 3. Click "Open Terminal" if editor is shown */
-    var allBtns = document.querySelectorAll('button, a, [role="button"]');
-    for (var k = 0; k < allBtns.length; k++) {
-        var btnText = (allBtns[k].innerText || '').trim();
-        if (btnText === 'Open Terminal') {
-            try { if (allBtns[k].offsetParent !== null) allBtns[k].click(); }
-            catch(e) {}
-            break;
-        }
-    }
-
-    /* 4. Close tutorial start modals */
-    var modals = document.querySelectorAll(
-        '[role="dialog"], .modal, .cdk-overlay-pane');
-    for (var m = 0; m < modals.length; m++) {
-        var mBtns = modals[m].querySelectorAll('button');
-        for (var n = 0; n < mBtns.length; n++) {
-            var mText = (mBtns[n].innerText || '').toLowerCase().trim();
-            if (mText === 'close' || mText === 'dismiss' ||
-                mText === 'not now' || mText === 'skip' ||
-                mText === 'exit') {
-                try { if (mBtns[n].offsetParent !== null) mBtns[n].click(); }
-                catch(e) {}
-            }
-        }
-    }
-})();
-"""
-
-
-def dismiss_tutorial_and_editor(driver):
-    if not driver:
-        return
-    try:
-        driver.execute_script(DISMISS_JS)
-    except Exception as e:
-        log.debug(f"Dismiss failed: {e}")
-
-
-# ══════════════════════════════════════════════════════════
 #  Cloud Run Region Extraction
 # ══════════════════════════════════════════════════════════
 
@@ -871,8 +773,7 @@ setTimeout(function() {
             }
             document.dispatchEvent(
                 new KeyboardEvent('keydown', {'key': 'Escape'}));
-            var backdrop = document.querySelector(
-                '.cdk-overlay-backdrop');
+            var backdrop = document.querySelector('.cdk-overlay-backdrop');
             if (backdrop) backdrop.click();
             callback(regions.length > 0
                      ? regions.join('\\n') : 'NO_REGIONS');
@@ -936,98 +837,53 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
 
 # ══════════════════════════════════════════════════════════
-#  Walkthrough Extraction from SSO URL
-# ══════════════════════════════════════════════════════════
-
-def extract_walkthrough_info(sso_url):
-    """Extract walkthrough_id (display_token URL) from SSO URL."""
-    if not sso_url:
-        return None
-
-    # Decode URL progressively
-    decoded = sso_url
-    for _ in range(5):
-        new = urllib.parse.unquote(decoded)
-        if new == decoded:
-            break
-        decoded = new
-
-    # Method 1: Find display_in_context URL with display_token
-    match = re.search(
-        r'(https?://[^\s&"\']*display_in_context[^\s&"\']*'
-        r'display_token[^\s&"\']*)',
-        decoded)
-    if match:
-        result = match.group(1).rstrip('&').rstrip('?')
-        log.info(f"✅ Walkthrough found: {result[:80]}...")
-        return result
-
-    # Method 2: Find walkthrough_id parameter value
-    match = re.search(r'walkthrough_id=([^\s&"\']+)', decoded)
-    if match:
-        val = match.group(1).rstrip('&').rstrip('?')
-        log.info(f"✅ Walkthrough ID found: {val[:80]}...")
-        return val
-
-    # Method 3: Find display_token directly
-    match = re.search(
-        r'(https?://[^\s&"\']*display_token=[^\s&"\']+)',
-        decoded)
-    if match:
-        result = match.group(1).rstrip('&').rstrip('?')
-        log.info(f"✅ Display token found: {result[:80]}...")
-        return result
-
-    log.info("ℹ️ No walkthrough info found in URL")
-    return None
-
-
-# ══════════════════════════════════════════════════════════
-#  Cloud Shell Navigation (with proper walkthrough URL)
+#  Cloud Shell Navigation
+#  ═══ Terminal فقط ═══
+#  بدون walkthrough_id → لا tutorial
+#  show=terminal → لا editor
 # ══════════════════════════════════════════════════════════
 
 def open_cloud_shell(driver, session, chat_id):
-    """Open Cloud Shell with the correct walkthrough URL."""
+    """
+    Open Cloud Shell with TERMINAL ONLY.
+    
+    URL format:
+      https://shell.cloud.google.com/
+        ?enableapi=true
+        &project=PROJECT_ID
+        &pli=1
+        &show=terminal
+    
+    ❌ No walkthrough_id  → prevents Tutorial panel
+    ❌ No show=ide        → prevents Editor panel
+    ✅ show=terminal      → Terminal only
+    ✅ enableapi=true     → enables Cloud Shell API
+    """
     pid = session.get('project_id')
     if not pid:
         return False
 
     try:
-        # Extract walkthrough info from original SSO URL
-        walkthrough = extract_walkthrough_info(session.get('url', ''))
+        # ═══ بناء الرابط النظيف: Terminal فقط ═══
+        shell_url = (
+            f"https://shell.cloud.google.com/"
+            f"?enableapi=true"
+            f"&project={pid}"
+            f"&pli=1"
+            f"&show=terminal"
+        )
 
-        if walkthrough:
-            # ═══ Build FULL URL with walkthrough (as Qwiklabs expects) ═══
-            encoded_wt = urllib.parse.quote(walkthrough, safe='')
-            shell_url = (
-                f"https://shell.cloud.google.com/"
-                f"?enableapi=true"
-                f"&walkthrough_id={encoded_wt}"
-                f"&project={pid}"
-                f"&pli=1"
-                f"&show=ide%2Cterminal"
-            )
-            bot.send_message(chat_id,
-                "🚀 جاري فتح Cloud Shell مع Walkthrough...")
-            log.info(f"Shell URL (walkthrough): {shell_url[:120]}...")
-        else:
-            # ═══ Fallback: Terminal only ═══
-            shell_url = (
-                f"https://shell.cloud.google.com/"
-                f"?project={pid}&pli=1&show=terminal"
-            )
-            bot.send_message(chat_id,
-                "🚀 جاري فتح Cloud Shell (Terminal)...")
-            log.info(f"Shell URL (basic): {shell_url}")
+        bot.send_message(chat_id,
+            "🚀 جاري فتح Cloud Shell (Terminal فقط)...")
 
-        # Navigate using JS (avoids Selenium timeout crash)
+        log.info(f"🚀 Shell URL: {shell_url}")
+
         success = safe_navigate(driver, shell_url)
 
         if success:
             session['shell_opened'] = True
-            # Grace period: 60 seconds for Cloud Shell to load
             session['shell_loading_until'] = time.time() + 60
-            log.info("✅ Cloud Shell navigation started")
+            log.info("✅ Cloud Shell navigation started (terminal only)")
             return True
         else:
             log.error("❌ Cloud Shell navigation failed")
@@ -1050,7 +906,6 @@ def update_stream_image(driver, chat_id, session, status, flash):
             if session.get('project_id') else "")
     t_st = " | ⌨️" if session.get('terminal_ready') else ""
 
-    # Show loading indicator during Cloud Shell load
     loading_until = session.get('shell_loading_until', 0)
     if time.time() < loading_until:
         remaining = int(loading_until - time.time())
@@ -1101,7 +956,6 @@ def stream_loop(chat_id, gen):
     err_count = 0
     drv_err = 0
     cycle = 0
-    dismiss_count = 0
 
     while session['running'] and session.get('gen') == gen:
 
@@ -1129,13 +983,13 @@ def stream_loop(chat_id, gen):
             except Exception:
                 pass
 
-            # ═══ Step 2: Handle popups (fast) ═══
+            # ═══ Step 2: Handle popups ═══
             status = handle_google_pages(driver, session)
 
             # ═══ Step 3: Get current URL ═══
             current_url = get_current_url_safe(driver)
 
-            # ═══ Step 4: UPDATE SCREENSHOT FIRST (always!) ═══
+            # ═══ Step 4: UPDATE SCREENSHOT FIRST ═══
             try:
                 flash = update_stream_image(
                     driver, chat_id, session, status, flash)
@@ -1146,7 +1000,7 @@ def stream_loop(chat_id, gen):
                 if "message is not modified" not in em:
                     raise
 
-            # ═══ Step 5: Background tasks (after screenshot) ═══
+            # ═══ Step 5: Background tasks ═══
 
             on_console = ("console.cloud.google.com" in current_url
                           or "myaccount.google.com" in current_url)
@@ -1161,20 +1015,14 @@ def stream_loop(chat_id, gen):
                 if done:
                     session['run_api_checked'] = True
 
-            # 5B: Open Cloud Shell (with walkthrough URL)
+            # 5B: Open Cloud Shell (Terminal ONLY)
             elif (not session.get('shell_opened')
                   and session.get('run_api_checked')
                   and on_console):
                 open_cloud_shell(driver, session, chat_id)
 
-            # 5C: Dismiss tutorial/editor + terminal notification
+            # 5C: Terminal ready notification
             elif on_shell:
-                # Dismiss tutorial/editor (first 10 cycles ≈ 40-60 sec)
-                if dismiss_count < 10:
-                    dismiss_tutorial_and_editor(driver)
-                    dismiss_count += 1
-
-                # Terminal ready notification
                 if (session.get('terminal_ready')
                         and not session.get('terminal_notified')):
                     session['terminal_notified'] = True
@@ -1197,17 +1045,14 @@ def stream_loop(chat_id, gen):
             if "message is not modified" in em:
                 continue
 
-            # Skip timeout/network errors
             if any(k in em for k in TIMEOUT_KEYWORDS):
                 time.sleep(2)
                 continue
 
-            # ═══ GRACE PERIOD: Cloud Shell loading ═══
-            # Don't count errors during Shell loading phase
+            # Grace period during Cloud Shell loading
             loading_until = session.get('shell_loading_until', 0)
             if time.time() < loading_until:
-                log.info(f"⏳ Cloud Shell loading, ignoring: "
-                         f"{str(e)[:80]}")
+                log.info(f"⏳ Shell loading, ignoring: {str(e)[:80]}")
                 time.sleep(3)
                 continue
 
@@ -1238,7 +1083,6 @@ def stream_loop(chat_id, gen):
                         session['terminal_notified'] = False
                         session['run_api_checked'] = False
                         session['shell_loading_until'] = 0
-                        dismiss_count = 0
                         drv_err = 0
                         err_count = 0
                         time.sleep(5)
@@ -1282,13 +1126,6 @@ def start_stream(chat_id, url):
         bot.send_message(chat_id,
             "⚠️ تحذير: لم أتمكن من استخراج Project ID، "
             "بعض الميزات قد لا تعمل.")
-
-    # Log walkthrough extraction early
-    walkthrough = extract_walkthrough_info(url)
-    if walkthrough:
-        log.info(f"📋 Walkthrough detected: {walkthrough[:80]}...")
-    else:
-        log.info("📋 No walkthrough in URL")
 
     try:
         driver = get_driver()
