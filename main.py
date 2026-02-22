@@ -618,7 +618,7 @@ def take_screenshot(driver):
 
 
 # ══════════════════════════════════════════════════════════
-#  Google Pages Handler
+#  Google Pages Handler (تمت إضافة نافذة Terms of Service)
 # ══════════════════════════════════════════════════════════
 
 def handle_google_pages(driver, session):
@@ -629,7 +629,6 @@ def handle_google_pages(driver, session):
     except Exception:
         body = ""
 
-    # نستخرج الكود المصدري كاملاً للبحث عن مدخلات الـ inputs (التي أرسلتها لي)
     try:
         html_source = driver.page_source.lower()
     except Exception:
@@ -637,18 +636,55 @@ def handle_google_pages(driver, session):
         
     body_lower = body.lower()
 
-    # 💡 التحديث الأساسي: استهداف وسم <input> وخاصية الـ id="confirm" أو القيمة
+    # 💡 1. النافذة الجديدة: Terms of Service "Agree and continue"
+    if "agree and continue" in body_lower or "terms of service" in body_lower:
+        try:
+            clicked = driver.execute_script("""
+                var actionTaken = false;
+                
+                // أولاً: البحث عن الـ Checkbox الخاص بالموافقة والضغط عليه
+                var cbs = document.querySelectorAll('mat-checkbox, input[type="checkbox"], div[role="checkbox"]');
+                for(var i=0; i<cbs.length; i++){
+                    var cb = cbs[i];
+                    var rect = cb.getBoundingClientRect();
+                    if(rect.width > 0 && rect.height > 0) {
+                        var isChecked = cb.checked || cb.getAttribute('aria-checked') === 'true' || cb.classList.contains('mat-checkbox-checked');
+                        if(!isChecked) {
+                            cb.click();
+                            actionTaken = true;
+                        }
+                    }
+                }
+                
+                // ثانياً: البحث عن زر المتابعة والضغط عليه
+                var btns = document.querySelectorAll('button, div[role="button"], span, a');
+                for(var j=0; j<btns.length; j++){
+                    var txt = (btns[j].innerText || '').toLowerCase().trim();
+                    if(txt === 'agree and continue' || txt.indexOf('agree and continue') !== -1 || txt === 'موافقة ومتابعة') {
+                        var rectBtn = btns[j].getBoundingClientRect();
+                        if(rectBtn.width > 0 && rectBtn.height > 0) {
+                            btns[j].click();
+                            actionTaken = true;
+                        }
+                    }
+                }
+                return actionTaken;
+            """)
+            if clicked:
+                time.sleep(3)
+                return "✅ Terms Accepted ✔️"
+        except Exception as e:
+            log.debug(f"JS Terms Accept failed: {e}")
+
+    # 2. نافذة I understand الأولية
     if "i understand" in html_source or "confirm" in html_source or "welcome to your new account" in html_source:
         try:
             clicked = driver.execute_script("""
-                // 1. نبحث أولاً عن الزر عبر الـ ID الذي أرسلته (أضمن وأسرع طريقة)
                 var confirmBtn = document.getElementById('confirm');
                 if (confirmBtn) {
                     confirmBtn.click();
                     return true;
                 }
-                
-                // 2. إذا لم نجده، نبحث في كل المدخلات (Inputs) والأزرار عن القيمة أو النص
                 var elements = document.querySelectorAll('button, div[role="button"], span, a, input');
                 for (var i = 0; i < elements.length; i++) {
                     var el = elements[i];
@@ -666,18 +702,6 @@ def handle_google_pages(driver, session):
             if clicked:
                 time.sleep(3)
                 return "✅ I understand ✔️"
-        except Exception as e:
-            log.debug(f"JS Click I understand failed: {e}")
-            
-        # 3. Fallback عبر الـ XPath للحالات القصوى
-        try:
-            btns = driver.find_elements(By.XPATH, 
-                "//input[@id='confirm'] | //input[@value='I understand'] | //*[@id='confirm'] | //input[@name='confirm']")
-            for btn in btns:
-                if btn.is_displayed():
-                    btn.click()
-                    time.sleep(3)
-                    return "✅ I understand ✔️"
         except Exception:
             pass
 
