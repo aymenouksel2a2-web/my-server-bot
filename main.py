@@ -130,18 +130,29 @@ def patch_chromedriver(original_path):
 
 
 def safe_navigate(driver, url):
-    """Navigate using JS to avoid Selenium timeout crashes."""
+    """Navigate using JS first to avoid Selenium timeout crashes."""
     try:
         js_url = json.dumps(url)
         driver.execute_script(f'window.location.href = {js_url};')
-        log.info(f"✅ Navigate [JS]: {url[:100]}")
+        log.info(f"✅ Navigate [JS]: {url[:100]}...")
         return True
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"JS nav failed: {e}")
+
+    try:
+        js_url = json.dumps(url)
+        driver.execute_script(f'window.location.assign({js_url});')
+        log.info(f"✅ Navigate [JS assign]: {url[:100]}...")
+        return True
+    except Exception as e:
+        log.debug(f"JS assign failed: {e}")
+
     try:
         driver.get(url)
+        log.info(f"✅ Navigate [get]: {url[:100]}...")
         return True
     except TimeoutException:
+        log.info(f"⏱️ Navigate timeout (page loading): {url[:80]}...")
         return True
     except Exception as e:
         log.error(f"❌ Navigation failed: {e}")
@@ -153,18 +164,6 @@ def get_current_url_safe(driver):
         return driver.current_url
     except Exception:
         return ""
-
-
-def switch_to_latest_window(driver):
-    """Switch to the latest browser window/tab."""
-    if not driver:
-        return
-    try:
-        handles = driver.window_handles
-        if handles:
-            driver.switch_to.window(handles[-1])
-    except Exception:
-        pass
 
 
 # ══════════════════════════════════════════════════════════
@@ -222,10 +221,7 @@ def get_driver():
 
     options = Options()
     options.binary_location = browser
-    
     options.add_argument('--incognito')
-    options.add_argument('--disable-application-cache')
-    
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
@@ -250,9 +246,6 @@ def get_driver():
     service = Service(executable_path=patched_drv)
     driver = webdriver.Chrome(service=service, options=options)
 
-    driver.execute_cdp_cmd('Network.clearBrowserCache', {})
-    driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
-
     try:
         driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument',
                                {'source': STEALTH_JS})
@@ -268,7 +261,7 @@ def get_driver():
         pass
 
     driver.set_page_load_timeout(45)
-    log.info("✅ المتصفح جاهز (في الوضع الخفي)")
+    log.info("✅ المتصفح جاهز")
     return driver
 
 
@@ -330,88 +323,31 @@ def panel(cmd_mode=False):
 def is_on_shell_page(driver):
     if not driver:
         return False
-
-    switch_to_latest_window(driver)
-
     try:
         url = driver.current_url
-        if ("shell.cloud.google.com" in url
-                or "ide.cloud.google.com" in url):
-            log.debug(f"Shell detected [URL]: {url[:60]}")
-            return True
+        return ("shell.cloud.google.com" in url
+                or "ide.cloud.google.com" in url)
     except Exception:
-        pass
-
-    try:
-        has_terminal = driver.execute_script("""
-            return !!(
-                document.querySelector('.xterm') ||
-                document.querySelector('.xterm-helper-textarea') ||
-                document.querySelector('.xterm-screen') ||
-                document.querySelector('.xterm-rows')
-            );
-        """)
-        if has_terminal:
-            log.debug("Shell detected [DOM]: xterm elements found")
-            return True
-    except Exception:
-        pass
-
-    try:
-        title = driver.title.lower()
-        if 'cloud shell' in title:
-            log.debug(f"Shell detected [Title]: {title}")
-            return True
-    except Exception:
-        pass
-
-    return False
+        return False
 
 
 # ══════════════════════════════════════════════════════════
-#  Terminal Command Sending
+#  Terminal Interaction
 # ══════════════════════════════════════════════════════════
-
-DEVSHELL_CMD_JS = """
-try {
-    var cmd = arguments[0];
-    var params = JSON.stringify([
-        "Devshell","TerminalCommand",0,null,1,[
-        ["command", cmd],
-        ["isCloudShellFrontend","true"],
-        ["oicsSession","false"],
-        ["oicsTrusted","false"],
-        ["oicsImage",""],
-        ["qwiklabsUser","true"],
-        ["isGoogler","false"],
-        ["isCloudShellPwa","false"],
-        ["editorType","0"],
-        ["newUserSession","false"],
-        ["doesSession","false"],
-        ["vmSize","UNKNOWN"],
-        ["isEmbedded","false"]
-        ],0
-    ]);
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', '/event/Devshell/TerminalCommand?request=' +
-             encodeURIComponent(params) + '&authuser=0', false);
-    xhr.send();
-    return xhr.status;
-} catch(e) {
-    return -1;
-}
-"""
 
 def send_command_to_terminal(driver, command):
     if not driver:
         return False
 
-    switch_to_latest_window(driver)
     try:
+        handles = driver.window_handles
+        if handles:
+            driver.switch_to.window(handles[-1])
         driver.switch_to.default_content()
     except Exception:
         pass
 
+    # Method 1: xterm textarea via JS
     try:
         result = driver.execute_script("""
             function findTA(doc) {
@@ -420,8 +356,7 @@ def send_command_to_terminal(driver, command):
                 var all = doc.querySelectorAll('textarea');
                 for (var i = 0; i < all.length; i++) {
                     if (all[i].className.indexOf('xterm') !== -1 ||
-                        all[i].closest('.xterm') ||
-                        all[i].closest('.terminal'))
+                        all[i].closest('.xterm') || all[i].closest('.terminal'))
                         return all[i];
                 }
                 return null;
@@ -446,19 +381,16 @@ def send_command_to_terminal(driver, command):
                 actions.pause(random.uniform(0.02, 0.06))
             actions.send_keys(Keys.RETURN)
             actions.perform()
-            log.info(f"⌨️ [M1] sent: {command[:60]}")
-            try:
-                driver.execute_script(DEVSHELL_CMD_JS, command)
-            except Exception:
-                pass
+            log.info(f"⌨️ [M1] أمر: {command[:60]}")
             return True
     except Exception as e:
-        log.debug(f"M1 failed: {e}")
+        log.debug(f"Method 1: {e}")
 
+    # Method 2: Click on xterm element
     try:
         xterm_els = driver.find_elements(By.CSS_SELECTOR,
-            ".xterm-screen, .xterm-rows, "
-            "canvas.xterm-link-layer, .xterm, [class*='xterm']")
+            ".xterm-screen, .xterm-rows, canvas.xterm-link-layer, "
+            ".xterm, [class*='xterm']")
         for el in xterm_els:
             try:
                 if el.is_displayed() and el.size['width'] > 100:
@@ -470,17 +402,14 @@ def send_command_to_terminal(driver, command):
                         actions.pause(random.uniform(0.02, 0.06))
                     actions.send_keys(Keys.RETURN)
                     actions.perform()
-                    log.info(f"⌨️ [M2] sent: {command[:60]}")
-                    try:
-                        driver.execute_script(DEVSHELL_CMD_JS, command)
-                    except Exception:
-                        pass
+                    log.info(f"⌨️ [M2] أمر: {command[:60]}")
                     return True
             except Exception:
                 continue
     except Exception as e:
-        log.debug(f"M2 failed: {e}")
+        log.debug(f"Method 2: {e}")
 
+    # Method 3: Focus + active element
     try:
         driver.execute_script("""
             var el = document.querySelector('.xterm-helper-textarea') ||
@@ -494,36 +423,18 @@ def send_command_to_terminal(driver, command):
             active.send_keys(char)
             time.sleep(random.uniform(0.01, 0.04))
         active.send_keys(Keys.RETURN)
-        log.info(f"⌨️ [M3] sent: {command[:60]}")
-        try:
-            driver.execute_script(DEVSHELL_CMD_JS, command)
-        except Exception:
-            pass
+        log.info(f"⌨️ [M3] أمر: {command[:60]}")
         return True
     except Exception as e:
-        log.debug(f"M3 failed: {e}")
+        log.debug(f"Method 3: {e}")
 
-    try:
-        status = driver.execute_script(DEVSHELL_CMD_JS, command)
-        if status == 200:
-            log.info(f"⌨️ [M4-API] sent: {command[:60]}")
-            return True
-    except Exception as e:
-        log.debug(f"M4 failed: {e}")
-
-    log.warning(f"❌ All methods failed: {command[:60]}")
+    log.warning(f"❌ فشل إرسال: {command[:60]}")
     return False
 
-
-# ══════════════════════════════════════════════════════════
-#  Terminal Output Reading
-# ══════════════════════════════════════════════════════════
 
 def get_terminal_output(driver):
     if not driver:
         return None
-
-    switch_to_latest_window(driver)
 
     try:
         text = driver.execute_script("""
@@ -607,7 +518,9 @@ def take_screenshot(driver):
     if not driver:
         return None
     try:
-        switch_to_latest_window(driver)
+        handles = driver.window_handles
+        if handles:
+            driver.switch_to.window(handles[-1])
         png = driver.get_screenshot_as_png()
         bio = io.BytesIO(png)
         bio.name = f'ss_{int(time.time())}_{random.randint(100, 999)}.png'
@@ -623,121 +536,67 @@ def take_screenshot(driver):
 
 def handle_google_pages(driver, session):
     status = "مراقبة..."
-    
     try:
         body = driver.find_element(By.TAG_NAME, "body").text[:5000]
     except Exception:
-        body = ""
+        return status
 
-    try:
-        html_source = driver.page_source.lower()
-    except Exception:
-        html_source = body.lower()
-        
     body_lower = body.lower()
 
-    if "agree and continue" in body_lower or "terms of service" in body_lower:
-        try:
-            clicked = driver.execute_script("""
-                var actionTaken = false;
-                
-                var cbs = document.querySelectorAll('mat-checkbox, input[type="checkbox"], div[role="checkbox"]');
-                for(var i=0; i<cbs.length; i++){
-                    var cb = cbs[i];
-                    var rect = cb.getBoundingClientRect();
-                    if(rect.width > 0 && rect.height > 0) {
-                        var isChecked = cb.checked || cb.getAttribute('aria-checked') === 'true' || cb.classList.contains('mat-checkbox-checked');
-                        if(!isChecked) {
-                            cb.click();
-                            actionTaken = true;
-                        }
-                    }
-                }
-                
-                var btns = document.querySelectorAll('button, div[role="button"], span, a');
-                for(var j=0; j<btns.length; j++){
-                    var txt = (btns[j].innerText || '').toLowerCase().trim();
-                    if(txt === 'agree and continue' || txt.indexOf('agree and continue') !== -1 || txt === 'موافقة ومتابعة') {
-                        var rectBtn = btns[j].getBoundingClientRect();
-                        if(rectBtn.width > 0 && rectBtn.height > 0) {
-                            btns[j].click();
-                            actionTaken = true;
-                        }
-                    }
-                }
-                return actionTaken;
-            """)
-            if clicked:
-                time.sleep(3)
-                return "✅ Terms Accepted ✔️"
-        except Exception as e:
-            log.debug(f"JS Terms Accept failed: {e}")
-
-    if "i understand" in html_source or "confirm" in html_source or "welcome to your new account" in html_source:
-        try:
-            clicked = driver.execute_script("""
-                var confirmBtn = document.getElementById('confirm');
-                if (confirmBtn) {
-                    confirmBtn.click();
-                    return true;
-                }
-                var elements = document.querySelectorAll('button, div[role="button"], span, a, input');
-                for (var i = 0; i < elements.length; i++) {
-                    var el = elements[i];
-                    var text = (el.innerText || el.textContent || el.value || '').toLowerCase().trim();
-                    if (text === 'i understand' || text.indexOf('i understand') !== -1 || text === 'i agree' || text === 'أوافق') {
-                        var rect = el.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0) {
-                            el.click();
-                            return true;
-                        }
-                    }
-                }
-                return false;
-            """)
-            if clicked:
-                time.sleep(3)
-                return "✅ I understand ✔️"
-        except Exception:
-            pass
-
+    # ── Authorize Cloud Shell popup ──
     if "authorize cloud shell" in body_lower:
         try:
-            clicked = driver.execute_script("""
-                var btns = document.querySelectorAll('button');
-                for (var i=0; i<btns.length; i++){
-                    if ((btns[i].innerText||'').toLowerCase().includes('authorize')){
-                        btns[i].click(); return true;
-                    }
-                } return false;
-            """)
-            if clicked:
-                session['auth'] = True
-                time.sleep(2)
-                return "✅ Authorize ✔️"
+            btns = driver.find_elements(By.XPATH,
+                "//button[normalize-space(.)='Authorize']|"
+                "//button[contains(.,'Authorize')]")
+            for btn in btns:
+                try:
+                    btn_text = (btn.text or "").strip().lower()
+                    if btn.is_displayed() and "authorize" in btn_text:
+                        time.sleep(random.uniform(0.5, 1.0))
+                        try:
+                            btn.click()
+                        except Exception:
+                            driver.execute_script(
+                                "arguments[0].click();", btn)
+                        session['auth'] = True
+                        time.sleep(2)
+                        log.info("✅ Authorize Cloud Shell clicked")
+                        return "✅ Authorize ✔️"
+                except Exception:
+                    continue
         except Exception:
             pass
         return "🔐 Authorize..."
 
+    # ── Cloud Shell Continue popup ──
     if ("cloud shell" in body_lower
             and "continue" in body_lower
             and "free" in body_lower):
         try:
-            clicked = driver.execute_script("""
-                var btns = document.querySelectorAll('button, a, div[role="button"]');
-                for (var i=0; i<btns.length; i++){
-                    if ((btns[i].innerText||'').toLowerCase().includes('continue')){
-                        btns[i].click(); return true;
-                    }
-                } return false;
-            """)
-            if clicked:
-                time.sleep(3)
-                return "✅ Continue ✔️"
+            btns = driver.find_elements(By.XPATH,
+                "//a[contains(text(),'Continue')]|"
+                "//button[contains(text(),'Continue')]|"
+                "//button[.//span[contains(text(),'Continue')]]|"
+                "//*[@role='button'][contains(.,'Continue')]")
+            for btn in btns:
+                try:
+                    if btn.is_displayed() and btn.is_enabled():
+                        time.sleep(random.uniform(0.5, 1.5))
+                        try:
+                            btn.click()
+                        except Exception:
+                            driver.execute_script(
+                                "arguments[0].click();", btn)
+                        time.sleep(3)
+                        return "✅ Continue ✔️"
+                except Exception:
+                    continue
         except Exception:
             pass
         return "☁️ popup..."
 
+    # ── Verify ──
     if "verify it" in body_lower:
         try:
             btns = driver.find_elements(By.XPATH,
@@ -757,6 +616,23 @@ def handle_google_pages(driver, session):
             pass
         return "🔐 Verify..."
 
+    # ── I understand ──
+    if "I understand" in body:
+        try:
+            btns = driver.find_elements(By.XPATH,
+                "//*[contains(text(),'I understand')]")
+            for btn in btns:
+                try:
+                    if btn.is_displayed():
+                        btn.click()
+                        time.sleep(2)
+                        return "✅ I understand ✔️"
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    # ── Sign-in rejected ──
     if "couldn't sign you in" in body_lower:
         try:
             driver.delete_all_cookies()
@@ -767,6 +643,7 @@ def handle_google_pages(driver, session):
             pass
         return "⚠️ رفض..."
 
+    # ── Generic Authorize ──
     if ("authorize" in body_lower
             and ("cloud" in body_lower or "google" in body_lower)):
         try:
@@ -785,34 +662,23 @@ def handle_google_pages(driver, session):
         except Exception:
             pass
 
+    # ── Dismiss Gemini ──
     if "gemini" in body_lower and "dismiss" in body_lower:
         try:
-            driver.execute_script("""
-                var btns = document.querySelectorAll('button, a');
-                for(var i=0; i<btns.length; i++) {
-                    if((btns[i].innerText||'').toLowerCase().includes('dismiss')){
-                        btns[i].click();
-                    }
-                }
-            """)
-            time.sleep(1)
+            btns = driver.find_elements(By.XPATH,
+                "//button[contains(.,'Dismiss')]|"
+                "//a[contains(.,'Dismiss')]")
+            for btn in btns:
+                try:
+                    if btn.is_displayed():
+                        btn.click()
+                        time.sleep(1)
+                except Exception:
+                    continue
         except Exception:
             pass
 
-    if "recovered" in body_lower and "dismiss" in body_lower:
-        try:
-            driver.execute_script("""
-                var btns = document.querySelectorAll('button, a');
-                for(var i=0; i<btns.length; i++) {
-                    if((btns[i].innerText||'').toLowerCase().includes('dismiss')){
-                        btns[i].click();
-                    }
-                }
-            """)
-            time.sleep(1)
-        except Exception:
-            pass
-
+    # ── Trust project ──
     if "trust this project" in body_lower or "trust project" in body_lower:
         try:
             btns = driver.find_elements(By.XPATH,
@@ -829,19 +695,19 @@ def handle_google_pages(driver, session):
         except Exception:
             pass
 
+    # ── Status by URL ──
     try:
         url = driver.current_url
     except Exception:
         return status
 
-    if "accounts.google.com" in url:
-        return "🔐 تسجيل الدخول (الرابط منتهي؟)..."
-    elif "shell.cloud.google.com" in url or "ide.cloud.google.com" in url:
+    if "shell.cloud.google.com" in url or "ide.cloud.google.com" in url:
         session['terminal_ready'] = True
         return "✅ Terminal ⌨️"
     elif "console.cloud.google.com" in url:
         return "📊 Console"
-    
+    elif "accounts.google.com" in url:
+        return "🔐 تسجيل..."
     return status
 
 
@@ -971,17 +837,34 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
 
 # ══════════════════════════════════════════════════════════
-#  Cloud Shell Navigation (تم إصلاح الرابط المباشر للـ Terminal)
+#  Cloud Shell Navigation
+#  ═══ Terminal فقط ═══
+#  بدون walkthrough_id → لا tutorial
+#  show=terminal → لا editor
 # ══════════════════════════════════════════════════════════
 
 def open_cloud_shell(driver, session, chat_id):
+    """
+    Open Cloud Shell with TERMINAL ONLY.
+    
+    URL format:
+      https://shell.cloud.google.com/
+        ?enableapi=true
+        &project=PROJECT_ID
+        &pli=1
+        &show=terminal
+    
+    ❌ No walkthrough_id  → prevents Tutorial panel
+    ❌ No show=ide        → prevents Editor panel
+    ✅ show=terminal      → Terminal only
+    ✅ enableapi=true     → enables Cloud Shell API
+    """
     pid = session.get('project_id')
     if not pid:
         return False
 
     try:
-        # 💡 تم استبدال session.get('url') بالرابط المباشر للـ Terminal 
-        # لأن رابط الـ SSO يخدم مرة وحدة برك ويطلب تسجيل الدخول
+        # ═══ بناء الرابط النظيف: Terminal فقط ═══
         shell_url = (
             f"https://shell.cloud.google.com/"
             f"?enableapi=true"
@@ -995,24 +878,16 @@ def open_cloud_shell(driver, session, chat_id):
 
         log.info(f"🚀 Shell URL: {shell_url}")
 
-        try:
-            driver.execute_script("window.open('about:blank', '_blank');")
-            time.sleep(1)
-            handles = driver.window_handles
-            if len(handles) > 1:
-                driver.switch_to.window(handles[0])
-                driver.close()
-                driver.switch_to.window(handles[-1])
-        except Exception as e:
-            log.warning(f"Tab switch failed: {e}")
-
         success = safe_navigate(driver, shell_url)
 
         if success:
             session['shell_opened'] = True
             session['shell_loading_until'] = time.time() + 60
+            log.info("✅ Cloud Shell navigation started (terminal only)")
             return True
-        return False
+        else:
+            log.error("❌ Cloud Shell navigation failed")
+            return False
 
     except Exception as e:
         log.error(f"Shell Open Error: {e}")
@@ -1084,6 +959,7 @@ def stream_loop(chat_id, gen):
 
     while session['running'] and session.get('gen') == gen:
 
+        # Command mode: just monitor
         if session.get('cmd_mode'):
             time.sleep(3)
             try:
@@ -1099,13 +975,21 @@ def stream_loop(chat_id, gen):
         cycle += 1
 
         try:
-            switch_to_latest_window(driver)
+            # ═══ Step 1: Switch to latest window ═══
+            try:
+                handles = driver.window_handles
+                if handles:
+                    driver.switch_to.window(handles[-1])
+            except Exception:
+                pass
 
-            # Handle popups
+            # ═══ Step 2: Handle popups ═══
             status = handle_google_pages(driver, session)
+
+            # ═══ Step 3: Get current URL ═══
             current_url = get_current_url_safe(driver)
 
-            # Screenshot FIRST
+            # ═══ Step 4: UPDATE SCREENSHOT FIRST ═══
             try:
                 flash = update_stream_image(
                     driver, chat_id, session, status, flash)
@@ -1116,14 +1000,13 @@ def stream_loop(chat_id, gen):
                 if "message is not modified" not in em:
                     raise
 
-            is_accounts_page = "accounts.google.com" in current_url
-            on_console = (("console.cloud.google.com" in current_url
-                          or "myaccount.google.com" in current_url) 
-                          and not is_accounts_page)
-            
+            # ═══ Step 5: Background tasks ═══
+
+            on_console = ("console.cloud.google.com" in current_url
+                          or "myaccount.google.com" in current_url)
             on_shell = is_on_shell_page(driver)
 
-            # Cloud Run extraction
+            # 5A: Cloud Run region extraction
             if (session.get('project_id')
                     and not session.get('run_api_checked')
                     and on_console):
@@ -1132,13 +1015,13 @@ def stream_loop(chat_id, gen):
                 if done:
                     session['run_api_checked'] = True
 
-            # Open Cloud Shell
+            # 5B: Open Cloud Shell (Terminal ONLY)
             elif (not session.get('shell_opened')
                   and session.get('run_api_checked')
                   and on_console):
                 open_cloud_shell(driver, session, chat_id)
 
-            # Terminal ready notification
+            # 5C: Terminal ready notification
             elif on_shell:
                 if (session.get('terminal_ready')
                         and not session.get('terminal_notified')):
@@ -1152,6 +1035,7 @@ def stream_loop(chat_id, gen):
                     except Exception:
                         pass
 
+            # Memory cleanup
             if cycle % 15 == 0:
                 gc.collect()
 
@@ -1165,7 +1049,7 @@ def stream_loop(chat_id, gen):
                 time.sleep(2)
                 continue
 
-            # Grace period during Shell loading
+            # Grace period during Cloud Shell loading
             loading_until = session.get('shell_loading_until', 0)
             if time.time() < loading_until:
                 log.info(f"⏳ Shell loading, ignoring: {str(e)[:80]}")
@@ -1240,7 +1124,8 @@ def start_stream(chat_id, url):
 
     if not project_id:
         bot.send_message(chat_id,
-            "⚠️ تحذير: لم أتمكن من استخراج Project ID.")
+            "⚠️ تحذير: لم أتمكن من استخراج Project ID، "
+            "بعض الميزات قد لا تعمل.")
 
     try:
         driver = get_driver()
@@ -1279,7 +1164,9 @@ def start_stream(chat_id, url):
     time.sleep(5)
 
     try:
-        switch_to_latest_window(driver)
+        handles = driver.window_handles
+        if handles:
+            driver.switch_to.window(handles[-1])
         png = driver.get_screenshot_as_png()
         bio = io.BytesIO(png)
         bio.name = f's_{int(time.time())}.png'
@@ -1322,12 +1209,8 @@ def execute_command(chat_id, command):
         return
 
     if not is_on_shell_page(driver):
-        time.sleep(3)
-        if not is_on_shell_page(driver):
-            bot.send_message(chat_id,
-                "⚠️ لست في Cloud Shell بعد.\n"
-                "انتظر حتى يظهر Terminal في البث ثم أعد المحاولة.")
-            return
+        bot.send_message(chat_id, "⚠️ لست في Cloud Shell بعد.")
+        return
 
     session['terminal_ready'] = True
     status_msg = bot.send_message(chat_id, f"⏳ `{command}`",
