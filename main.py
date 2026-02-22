@@ -29,9 +29,6 @@ user_sessions = {}
 sessions_lock = threading.Lock()
 
 
-# ─────────────────────────────────────────────
-# 🌐 Health Check
-# ─────────────────────────────────────────────
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -49,9 +46,6 @@ def start_health_server():
     HTTPServer(('0.0.0.0', port), HealthHandler).serve_forever()
 
 
-# ─────────────────────────────────────────────
-# 🖥️ Xvfb
-# ─────────────────────────────────────────────
 display = None
 try:
     display = Display(visible=0, size=(1024, 768), color_depth=16)
@@ -65,9 +59,6 @@ except:
         print(f"❌ Xvfb: {e}")
 
 
-# ─────────────────────────────────────────────
-# 🔍 أدوات
-# ─────────────────────────────────────────────
 def find_path(names, extras=None):
     for n in names:
         p = shutil.which(n)
@@ -85,7 +76,6 @@ def get_browser_version(path):
         return m.group(1) if m else "120"
     except:
         return "120"
-
 
 def patch_chromedriver(original_path):
     patched = '/tmp/chromedriver_patched'
@@ -133,9 +123,6 @@ for(var p in window){if(/^cdc_/.test(p)){try{delete window[p]}catch(e){}}}
 '''
 
 
-# ─────────────────────────────────────────────
-# 🌐 إنشاء المتصفح
-# ─────────────────────────────────────────────
 def get_driver():
     browser = find_path(['chromium', 'chromium-browser'],
                        ['/usr/bin/chromium', '/usr/bin/chromium-browser'])
@@ -188,13 +175,10 @@ def get_driver():
     except: pass
 
     driver.set_page_load_timeout(30)
-    print("✅ المتصفح جاهز (incognito 🕶️)")
+    print("✅ المتصفح جاهز")
     return driver
 
 
-# ─────────────────────────────────────────────
-# 🧹 تنظيف
-# ─────────────────────────────────────────────
 def safe_quit(driver):
     if driver:
         try: driver.quit()
@@ -212,7 +196,7 @@ def cleanup_session(chat_id):
 
 
 # ─────────────────────────────────────────────
-# 🎛️ لوحة التحكم (محدّثة مع أزرار جديدة)
+# 🎛️ لوحة التحكم
 # ─────────────────────────────────────────────
 def panel(cmd_mode=False):
     mk = InlineKeyboardMarkup()
@@ -238,147 +222,162 @@ def panel(cmd_mode=False):
 
 
 # ─────────────────────────────────────────────
-# ⌨️ إرسال أمر إلى Terminal
+# 🔍 فحص هل نحن في صفحة Shell
+# ─────────────────────────────────────────────
+def is_on_shell_page(driver):
+    """فحص سريع: هل الصفحة الحالية هي Cloud Shell؟"""
+    try:
+        url = driver.current_url
+        if "shell.cloud.google.com" in url:
+            return True
+        if "ide.cloud.google.com" in url:
+            return True
+    except:
+        pass
+    return False
+
+
+# ─────────────────────────────────────────────
+# ⌨️ إرسال أمر إلى Terminal (3 طرق)
 # ─────────────────────────────────────────────
 def send_command_to_terminal(driver, command):
-    """
-    يكتب الأمر في Terminal ويضغط Enter
-    يبحث عن عنصر xterm أو أي terminal element
-    """
-    success = False
+    """إرسال أمر للترمينال بعدة طرق"""
 
-    # ─── طريقة 1: النقر على Terminal ثم الكتابة ───
+    # التأكد من التركيز على آخر نافذة
     try:
-        # البحث عن عنصر الترمينال
-        terminal_selectors = [
-            ".xterm-helper-textarea",          # xterm textarea (الأفضل)
-            "textarea.xterm-helper-textarea",
-            ".terminal textarea",
-            ".xterm textarea",
-            "canvas.xterm-cursor-layer",       # xterm canvas
-            ".xterm-screen",
-            ".terminal",
-            "[class*='terminal']",
-            "[class*='xterm']",
-        ]
+        handles = driver.window_handles
+        if handles:
+            driver.switch_to.window(handles[-1])
+    except: pass
 
-        for selector in terminal_selectors:
+    # ─── طريقة 1: xterm textarea (الأفضل) ───
+    try:
+        textareas = driver.find_elements(By.CSS_SELECTOR, ".xterm-helper-textarea")
+        if not textareas:
+            textareas = driver.find_elements(By.CSS_SELECTOR, "textarea.xterm-helper-textarea")
+        if not textareas:
+            # بحث أوسع
+            textareas = driver.find_elements(By.CSS_SELECTOR, "textarea")
+
+        for ta in textareas:
             try:
-                elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                for el in elements:
-                    if el.is_displayed() or 'textarea' in selector.lower():
-                        # النقر على العنصر لتفعيله
-                        try:
-                            el.click()
-                        except:
-                            driver.execute_script("arguments[0].focus();", el)
+                driver.execute_script("arguments[0].focus();", ta)
+                time.sleep(0.2)
 
-                        time.sleep(0.3)
+                for char in command:
+                    ta.send_keys(char)
+                    time.sleep(random.uniform(0.01, 0.05))
 
-                        # كتابة الأمر حرف حرف (أكثر واقعية)
-                        for char in command:
-                            el.send_keys(char)
-                            time.sleep(random.uniform(0.02, 0.08))
-
-                        time.sleep(0.2)
-                        el.send_keys(Keys.RETURN)
-                        success = True
-                        print(f"⌨️ أمر مُرسل (طريقة 1 - {selector}): {command}")
-                        return True
+                time.sleep(0.1)
+                ta.send_keys(Keys.RETURN)
+                print(f"⌨️ [طريقة 1] أمر: {command}")
+                return True
             except:
                 continue
     except:
         pass
 
-    # ─── طريقة 2: ActionChains ───
-    if not success:
-        try:
-            # النقر في منتصف الشاشة (حيث الترمينال عادة)
-            body = driver.find_element(By.TAG_NAME, "body")
-            actions = ActionChains(driver)
+    # ─── طريقة 2: النقر على Terminal ثم ActionChains ───
+    try:
+        # البحث عن أي عنصر terminal
+        terminal_els = driver.find_elements(By.CSS_SELECTOR,
+            ".xterm-screen, .xterm, .terminal, "
+            "[class*='terminal'], [class*='xterm'], "
+            "canvas[class*='xterm']"
+        )
 
-            # النقر على منطقة الترمينال
-            terminal_area = driver.find_elements(By.CSS_SELECTOR,
-                ".xterm-screen, .terminal, [class*='terminal']")
-            if terminal_area:
-                actions.click(terminal_area[0])
-            else:
-                actions.click(body)
+        click_target = None
+        for el in terminal_els:
+            try:
+                if el.is_displayed():
+                    click_target = el
+                    break
+            except:
+                continue
 
-            actions.perform()
-            time.sleep(0.3)
+        if not click_target:
+            # إذا لم نجد terminal، ننقر في وسط الشاشة
+            click_target = driver.find_element(By.TAG_NAME, "body")
 
-            # كتابة الأمر
-            actions = ActionChains(driver)
-            for char in command:
-                actions.send_keys(char)
-                actions.pause(random.uniform(0.02, 0.08))
-            actions.send_keys(Keys.RETURN)
-            actions.perform()
+        # النقر لتفعيل Terminal
+        actions = ActionChains(driver)
+        actions.click(click_target)
+        actions.perform()
+        time.sleep(0.3)
 
-            success = True
-            print(f"⌨️ أمر مُرسل (طريقة 2 - ActionChains): {command}")
-            return True
-        except Exception as e:
-            print(f"⚠️ ActionChains فشل: {e}")
+        # كتابة الأمر
+        actions = ActionChains(driver)
+        for char in command:
+            actions.send_keys(char)
+            actions.pause(random.uniform(0.01, 0.05))
+        actions.send_keys(Keys.RETURN)
+        actions.perform()
 
-    # ─── طريقة 3: JavaScript مباشر ───
-    if not success:
-        try:
-            js_code = f"""
+        print(f"⌨️ [طريقة 2] أمر: {command}")
+        return True
+    except Exception as e:
+        print(f"⚠️ طريقة 2 فشلت: {e}")
+
+    # ─── طريقة 3: JavaScript ───
+    try:
+        result = driver.execute_script(f"""
             // البحث عن xterm textarea
-            var textarea = document.querySelector('.xterm-helper-textarea') ||
-                          document.querySelector('textarea[class*="xterm"]');
-            if (textarea) {{
-                textarea.focus();
+            var ta = document.querySelector('.xterm-helper-textarea') ||
+                     document.querySelector('textarea');
+            if (ta) {{
+                ta.focus();
+                // إدخال النص عبر clipboard
+                var text = {repr(command)} + '\\n';
+                var dt = new DataTransfer();
+                dt.setData('text/plain', text);
+                var pasteEvent = new ClipboardEvent('paste', {{
+                    clipboardData: dt, bubbles: true, cancelable: true
+                }});
+                ta.dispatchEvent(pasteEvent);
+                return 'PASTE_OK';
+            }}
+
+            // محاولة بديلة: إرسال أحداث لوحة المفاتيح
+            var active = document.activeElement;
+            if (active) {{
                 var text = {repr(command)};
                 for (var i = 0; i < text.length; i++) {{
-                    var event = new KeyboardEvent('keydown', {{
-                        key: text[i], code: 'Key' + text[i].toUpperCase(),
-                        charCode: text.charCodeAt(i), keyCode: text.charCodeAt(i),
-                        bubbles: true
+                    ['keydown','keypress','keyup'].forEach(function(type) {{
+                        active.dispatchEvent(new KeyboardEvent(type, {{
+                            key: text[i], code: 'Key' + text[i].toUpperCase(),
+                            keyCode: text.charCodeAt(i), charCode: text.charCodeAt(i),
+                            bubbles: true
+                        }}));
                     }});
-                    textarea.dispatchEvent(event);
-                    var press = new KeyboardEvent('keypress', {{
-                        key: text[i], charCode: text.charCodeAt(i),
-                        keyCode: text.charCodeAt(i), bubbles: true
-                    }});
-                    textarea.dispatchEvent(press);
-                    var inputEvent = new InputEvent('input', {{
-                        data: text[i], inputType: 'insertText', bubbles: true
-                    }});
-                    textarea.dispatchEvent(inputEvent);
                 }}
                 // Enter
-                var enterEvent = new KeyboardEvent('keydown', {{
-                    key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true
+                ['keydown','keypress','keyup'].forEach(function(type) {{
+                    active.dispatchEvent(new KeyboardEvent(type, {{
+                        key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true
+                    }}));
                 }});
-                textarea.dispatchEvent(enterEvent);
-                return 'OK';
+                return 'KEYS_OK';
             }}
-            return 'NO_TERMINAL';
-            """
-            result = driver.execute_script(js_code)
-            if result == 'OK':
-                print(f"⌨️ أمر مُرسل (طريقة 3 - JS): {command}")
-                return True
-        except Exception as e:
-            print(f"⚠️ JS فشل: {e}")
+            return 'FAIL';
+        """)
+        if result and result != 'FAIL':
+            print(f"⌨️ [طريقة 3 - {result}] أمر: {command}")
+            return True
+    except Exception as e:
+        print(f"⚠️ طريقة 3 فشلت: {e}")
 
-    print(f"❌ فشل إرسال الأمر: {command}")
+    print(f"❌ كل الطرق فشلت: {command}")
     return False
 
 
 def take_screenshot(driver):
-    """التقاط لقطة شاشة وإرجاعها كـ BytesIO"""
     try:
         handles = driver.window_handles
         if handles:
             driver.switch_to.window(handles[-1])
-
         png = driver.get_screenshot_as_png()
         bio = io.BytesIO(png)
-        bio.name = f'cmd_{int(time.time())}.png'
+        bio.name = f'ss_{int(time.time())}.png'
         return bio
     except:
         return None
@@ -403,15 +402,13 @@ def handle_google_pages(driver, session):
                 "//button[contains(text(), 'Continue')] | "
                 "//button[.//span[contains(text(), 'Continue')]] | "
                 "//*[@role='button'][contains(., 'Continue')] | "
-                "//*[contains(text(), 'Continue')]"
-            )
+                "//*[contains(text(), 'Continue')]")
             for btn in btns:
                 try:
                     if btn.is_displayed() and btn.is_enabled():
                         time.sleep(random.uniform(0.5, 1.5))
                         try: btn.click()
                         except: driver.execute_script("arguments[0].click();", btn)
-                        print("🤖 Cloud Shell Continue")
                         time.sleep(3)
                         return "✅ Cloud Shell Continue ✔️"
                 except: continue
@@ -428,7 +425,6 @@ def handle_google_pages(driver, session):
         except: pass
         return "☁️ Cloud Shell popup..."
 
-    # Verify → Continue
     if "verify it" in body.lower():
         try:
             btns = driver.find_elements(By.XPATH,
@@ -441,7 +437,7 @@ def handle_google_pages(driver, session):
                     time.sleep(random.uniform(0.5, 1.5))
                     btn.click()
                     time.sleep(3)
-                    return "✅ Verify Continue ✔️"
+                    return "✅ Verify ✔️"
         except: pass
         return "🔐 Verify..."
 
@@ -462,20 +458,9 @@ def handle_google_pages(driver, session):
             driver.get(session.get('url', 'about:blank'))
             time.sleep(5)
         except: pass
-        return "⚠️ رفض - إعادة..."
+        return "⚠️ رفض..."
 
-    if "before you continue" in body.lower() or ("I agree" in body and "google" in body.lower()):
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[contains(., 'I agree')] | //button[contains(., 'Accept')]")
-            for btn in btns:
-                if btn.is_displayed():
-                    btn.click()
-                    time.sleep(2)
-                    return "✅ Accept ✔️"
-        except: pass
-
-    if "authorize" in body.lower() and ("cloud shell" in body.lower() or "google" in body.lower()):
+    if "authorize" in body.lower() and ("cloud" in body.lower() or "google" in body.lower()):
         try:
             btns = driver.find_elements(By.XPATH,
                 "//button[contains(., 'Authorize')] | //button[contains(., 'AUTHORIZE')]")
@@ -487,18 +472,7 @@ def handle_google_pages(driver, session):
                     return "✅ Authorize ✔️"
         except: pass
 
-    if "trust this" in body.lower() or "stay signed in" in body.lower():
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[contains(., 'Yes')] | //button[contains(., 'Trust')] | //button[contains(., 'Continue')]")
-            for btn in btns:
-                if btn.is_displayed():
-                    btn.click()
-                    time.sleep(2)
-                    return "✅ Trust ✔️"
-        except: pass
-
-    # Dismiss إشعارات Gemini
+    # Dismiss Gemini
     if "gemini" in body.lower() and "dismiss" in body.lower():
         try:
             btns = driver.find_elements(By.XPATH,
@@ -511,15 +485,10 @@ def handle_google_pages(driver, session):
 
     # حالة الصفحة
     url = driver.current_url
-    if "shell.cloud.google.com" in url:
-        try:
-            terminal = driver.find_elements(By.CSS_SELECTOR,
-                ".xterm-screen, .xterm, .terminal, [class*='terminal']")
-            if terminal:
-                session['terminal_ready'] = True
-                return "✅ Terminal جاهز! ⌨️ أرسل أمر"
-        except: pass
-        return "✅ Cloud Shell"
+    if "shell.cloud.google.com" in url or "ide.cloud.google.com" in url:
+        # ✅ نحن في Shell - تفعيل Terminal تلقائياً
+        session['terminal_ready'] = True
+        return "✅ Terminal جاهز ⌨️"
     elif "console.cloud.google.com" in url:
         return "📊 Console"
     elif "accounts.google.com" in url:
@@ -544,9 +513,15 @@ def stream_loop(chat_id, gen):
     cycle = 0
 
     while session['running'] and session.get('gen') == gen:
-        # إذا في وضع الأوامر، لا نحدث الصورة تلقائياً
+
+        # ✅ في وضع الأوامر: فحص خفيف فقط (بدون تحديث الصورة)
         if session.get('cmd_mode'):
-            time.sleep(2)
+            time.sleep(3)
+            # لكن نستمر في فحص terminal_ready
+            try:
+                if is_on_shell_page(driver):
+                    session['terminal_ready'] = True
+            except: pass
             continue
 
         time.sleep(random.uniform(4, 6))
@@ -576,17 +551,15 @@ def stream_loop(chat_id, gen):
                             status = "🚀 Cloud Shell..."
                         except: pass
 
-            # إذا الترمينال جاهز، نبلّغ المستخدم
+            # إشعار Terminal جاهز
             if session.get('terminal_ready') and not session.get('terminal_notified'):
                 session['terminal_notified'] = True
                 try:
                     bot.send_message(chat_id,
                         "🖥️ **Terminal جاهز!**\n\n"
-                        "يمكنك الآن:\n"
-                        "1️⃣ اضغط **⌨️ وضع الأوامر**\n"
-                        "2️⃣ اكتب أي أمر وأرسله\n\n"
-                        "مثال: `ls -la`\n"
-                        "مثال: `gcloud config list`",
+                        "اضغط **⌨️ وضع الأوامر**\n"
+                        "ثم اكتب أي أمر مباشرة\n\n"
+                        "أو استخدم: `/cmd ls -la`",
                         parse_mode="Markdown"
                     )
                 except: pass
@@ -599,8 +572,8 @@ def stream_loop(chat_id, gen):
             icon = "🔴" if flash else "⭕"
             now = datetime.now().strftime("%H:%M:%S")
             proj = f"📁 {session.get('project_id')}" if session.get('project_id') else ""
-            terminal_status = " | ⌨️ Terminal جاهز" if session.get('terminal_ready') else ""
-            cap = f"{icon} بث مباشر 🕶️\n{proj}\n📌 {status}{terminal_status}\n⏱ {now}"
+            t_status = " | ⌨️ جاهز" if session.get('terminal_ready') else ""
+            cap = f"{icon} بث مباشر 🕶️\n{proj}\n📌 {status}{t_status}\n⏱ {now}"
 
             bot.edit_message_media(
                 media=InputMediaPhoto(bio, caption=cap),
@@ -727,14 +700,7 @@ def start_stream(chat_id, url):
         t = threading.Thread(target=stream_loop, args=(chat_id, gen), daemon=True)
         t.start()
 
-        bot.send_message(chat_id,
-            "✅ البث يعمل! 🕶️\n"
-            "🤖 طيار آلي نشط\n\n"
-            "عندما يجهز Terminal:\n"
-            "اضغط ⌨️ **وضع الأوامر**\n"
-            "ثم اكتب أي أمر مباشرة",
-            parse_mode="Markdown"
-        )
+        bot.send_message(chat_id, "✅ البث يعمل!")
 
     except Exception as e:
         bot.send_message(chat_id, f"❌ فشل:\n`{str(e)[:200]}`", parse_mode="Markdown")
@@ -742,59 +708,60 @@ def start_stream(chat_id, url):
 
 
 # ─────────────────────────────────────────────
-# ⌨️ معالجة الأوامر النصية (الجديد!)
+# ⌨️ تنفيذ أمر
 # ─────────────────────────────────────────────
 def execute_command(chat_id, command):
-    """تنفيذ أمر في Terminal وإرسال النتيجة"""
     with sessions_lock:
         if chat_id not in user_sessions:
-            bot.send_message(chat_id, "❌ لا توجد جلسة نشطة.")
+            bot.send_message(chat_id, "❌ لا توجد جلسة.")
             return
         session = user_sessions[chat_id]
 
-    if not session.get('terminal_ready'):
-        bot.send_message(chat_id, "⚠️ Terminal ليس جاهزاً بعد. انتظر حتى يظهر.")
-        return
-
     driver = session['driver']
 
-    # إرسال رسالة "جاري التنفيذ"
+    # ✅ فحص فوري: هل نحن في Shell؟
+    if not is_on_shell_page(driver):
+        bot.send_message(chat_id,
+            "⚠️ لست في صفحة Cloud Shell بعد.\n"
+            "انتظر حتى يفتح Terminal أولاً."
+        )
+        return
+
+    # ✅ تفعيل terminal_ready تلقائياً
+    session['terminal_ready'] = True
+
     status_msg = bot.send_message(chat_id,
-        f"⏳ جاري تنفيذ:\n`{command}`",
+        f"⏳ تنفيذ: `{command}`",
         parse_mode="Markdown"
     )
 
-    # إرسال الأمر
     success = send_command_to_terminal(driver, command)
 
     if success:
-        # انتظار ظهور النتيجة
         time.sleep(3)
-
-        # التقاط لقطة شاشة
         bio = take_screenshot(driver)
         if bio:
             try:
                 bot.send_photo(
                     chat_id, bio,
-                    caption=f"✅ تم تنفيذ:\n`{command}`\n\n⌨️ أرسل أمر آخر أو اضغط 🔙",
+                    caption=f"✅ تم: `{command}`\n\n⌨️ أرسل أمر آخر",
                     parse_mode="Markdown",
                     reply_markup=panel(cmd_mode=True)
                 )
-            except Exception as e:
-                bot.send_message(chat_id, f"✅ تم تنفيذ الأمر لكن فشل إرسال الصورة:\n{e}")
+            except:
+                bot.send_message(chat_id, "✅ تم تنفيذ الأمر")
         else:
-            bot.send_message(chat_id, "✅ تم إرسال الأمر لكن فشل التقاط الشاشة.")
+            bot.send_message(chat_id, "✅ تم تنفيذ الأمر (فشل التقاط الشاشة)")
     else:
         bot.send_message(chat_id,
-            f"❌ فشل إرسال الأمر.\n"
-            f"تأكد أن Terminal مفتوح ومُركَّز.\n"
-            f"جرب الضغط على 🔄 تحديث ثم أعد المحاولة."
+            "⚠️ فشل إرسال الأمر.\n"
+            "جرّب:\n"
+            "1️⃣ اضغط 🔄 تحديث\n"
+            "2️⃣ انتظر 5 ثوانٍ\n"
+            "3️⃣ أعد إرسال الأمر"
         )
 
-    # حذف رسالة "جاري التنفيذ"
-    try:
-        bot.delete_message(chat_id, status_msg.message_id)
+    try: bot.delete_message(chat_id, status_msg.message_id)
     except: pass
 
 
@@ -805,69 +772,67 @@ def execute_command(chat_id, command):
 def cmd_start(message):
     bot.reply_to(message,
         "🚀 مرحباً!\n\n"
-        "🕶️ وضع متخفي + تحكم بالأوامر\n\n"
         "أرسل رابط يبدأ بـ:\n"
         "`https://www.skills.google/google_sso`\n\n"
-        "بعد فتح Terminal، اضغط ⌨️ وضع الأوامر\n"
-        "ثم اكتب أي أمر مثل: `ls -la`",
+        "بعد فتح Terminal:\n"
+        "• اضغط ⌨️ وضع الأوامر\n"
+        "• أو استخدم `/cmd الأمر`\n"
+        "• أو `/ss` للقطة شاشة",
         parse_mode="Markdown"
     )
 
 @bot.message_handler(commands=['cmd'])
 def cmd_command(message):
-    """أمر مباشر: /cmd ls -la"""
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.reply_to(message, "استخدم: `/cmd الأمر`\nمثال: `/cmd ls -la`", parse_mode="Markdown")
+        bot.reply_to(message, "استخدم: `/cmd الأمر`", parse_mode="Markdown")
         return
-    command = parts[1]
-    threading.Thread(target=execute_command, args=(message.chat.id, command), daemon=True).start()
+    threading.Thread(target=execute_command, args=(message.chat.id, parts[1]), daemon=True).start()
 
 @bot.message_handler(commands=['screenshot', 'ss'])
-def cmd_screenshot(message):
-    """لقطة شاشة فورية"""
-    chat_id = message.chat.id
+def cmd_ss(message):
+    cid = message.chat.id
     with sessions_lock:
-        if chat_id not in user_sessions:
+        if cid not in user_sessions:
             bot.reply_to(message, "❌ لا توجد جلسة.")
             return
-        session = user_sessions[chat_id]
-
-    bio = take_screenshot(session['driver'])
+        s = user_sessions[cid]
+    bio = take_screenshot(s['driver'])
     if bio:
-        bot.send_photo(chat_id, bio, caption="📸 لقطة شاشة")
+        bot.send_photo(cid, bio, caption="📸 لقطة شاشة")
     else:
-        bot.reply_to(message, "❌ فشل التقاط الشاشة.")
-
+        bot.reply_to(message, "❌ فشل.")
 
 @bot.message_handler(func=lambda m: m.text and m.text.startswith('https://www.skills.google/google_sso'))
 def handle_url(message):
     threading.Thread(target=start_stream, args=(message.chat.id, message.text), daemon=True).start()
-
 
 @bot.message_handler(func=lambda m: m.text and m.text.startswith('http'))
 def handle_bad(message):
     bot.reply_to(message, "❌ يجب أن يبدأ بـ:\n`https://www.skills.google/google_sso`", parse_mode="Markdown")
 
 
-# ✅ معالجة الرسائل النصية كأوامر (إذا في وضع الأوامر)
+# ✅ الرسائل النصية العادية = أوامر (إذا في وضع الأوامر أو Shell مفتوح)
 @bot.message_handler(func=lambda m: m.text and not m.text.startswith('/') and not m.text.startswith('http'))
 def handle_text(message):
-    chat_id = message.chat.id
+    cid = message.chat.id
 
     with sessions_lock:
-        if chat_id not in user_sessions:
+        if cid not in user_sessions:
             return
-        session = user_sessions[chat_id]
+        session = user_sessions[cid]
 
-    # إذا في وضع الأوامر → نفذ الأمر
-    if session.get('cmd_mode') and session.get('terminal_ready'):
-        threading.Thread(target=execute_command, args=(chat_id, message.text), daemon=True).start()
-    elif session.get('terminal_ready'):
+    # ✅ إذا في وضع الأوامر → نفّذ مباشرة
+    if session.get('cmd_mode'):
+        threading.Thread(target=execute_command, args=(cid, message.text), daemon=True).start()
+        return
+
+    # ✅ إذا في Shell حتى بدون cmd_mode → اقترح
+    if is_on_shell_page(session.get('driver')):
         bot.reply_to(message,
             "💡 لتنفيذ أوامر:\n"
-            "1️⃣ اضغط **⌨️ وضع الأوامر** أولاً\n"
-            "2️⃣ أو استخدم: `/cmd الأمر`",
+            "• اضغط **⌨️ وضع الأوامر** أولاً\n"
+            "• أو استخدم: `/cmd " + message.text + "`",
             parse_mode="Markdown"
         )
 
@@ -902,31 +867,35 @@ def on_cb(call):
             except: pass
 
         elif call.data == "screenshot":
-            bot.answer_callback_query(call.id, "📸 جاري التقاط...")
+            bot.answer_callback_query(call.id, "📸")
             bio = take_screenshot(s['driver'])
             if bio:
-                bot.send_photo(cid, bio, caption="📸 لقطة شاشة",
+                bot.send_photo(cid, bio, caption="📸",
                              reply_markup=panel(s.get('cmd_mode', False)))
 
         elif call.data == "cmd_mode":
             s['cmd_mode'] = True
-            bot.answer_callback_query(call.id, "⌨️ وضع الأوامر مفعّل!")
+
+            # ✅ فحص فوري عند تفعيل وضع الأوامر
+            if is_on_shell_page(s.get('driver')):
+                s['terminal_ready'] = True
+
+            bot.answer_callback_query(call.id, "⌨️ وضع الأوامر!")
             bot.send_message(cid,
                 "⌨️ **وضع الأوامر مفعّل!**\n\n"
-                "اكتب أي أمر وأرسله مباشرة:\n"
-                "مثال: `ls -la`\n"
-                "مثال: `cat /etc/os-release`\n"
-                "مثال: `gcloud config list`\n"
-                "مثال: `python3 --version`\n\n"
-                "أو استخدم: `/cmd الأمر`\n\n"
-                "للرجوع للبث: اضغط 🔙",
+                "اكتب أي أمر وأرسله:\n"
+                "`ls -la`\n"
+                "`gcloud config list`\n"
+                "`cat /etc/os-release`\n"
+                "`python3 --version`\n\n"
+                "للرجوع: اضغط 🔙",
                 parse_mode="Markdown"
             )
 
         elif call.data == "watch_mode":
             s['cmd_mode'] = False
-            bot.answer_callback_query(call.id, "🔙 رجعت لوضع المراقبة")
-            bot.send_message(cid, "👁️ وضع المراقبة - البث المباشر يعمل")
+            bot.answer_callback_query(call.id, "🔙 وضع المراقبة")
+            bot.send_message(cid, "👁️ رجعت لوضع البث المباشر")
 
     except: pass
 
