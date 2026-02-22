@@ -330,6 +330,7 @@ def is_on_shell_page(driver):
     except Exception:
         return False
 
+
 def is_terminal_fully_ready(driver):
     if not is_on_shell_page(driver):
         return False
@@ -849,12 +850,14 @@ def do_cloud_run_extraction(driver, chat_id, session):
                 f"```text\n{result}\n```",
                 parse_mode="Markdown")
             
-            # انتقال مباشر إلى Cloud Shell بعد جلب السيرفرات
+            # انتقال مباشر إلى Cloud Shell بعد جلب السيرفرات (Terminal فقط)
             try:
-                bot.send_message(chat_id, "🚀 جاري الانتقال مباشرة إلى Terminal...")
+                bot.send_message(chat_id, "🚀 جاري الانتقال مباشرة إلى Terminal (واجهة سطر الأوامر فقط)...")
                 pid = session.get('project_id')
-                # استخدام رابط التوجيه المباشر المطلوب
-                shell_url = f"https://shell.cloud.google.com/?enableapi=true&walkthrough_id=https%3A%2F%2Fwww.skills.google%2Fdisplay_in_context%3Fdisplay_token%3D-A4oK7NhZPZytZd90l3_WpyCncyYV_-zPVtpIZFuuPE&project={pid}&pli=1&show=ide%2Cterminal"
+                
+                # الرابط المعدل: تفعيل API + تحديد المشروع + عرض Terminal فقط بدون محرر أو شرح
+                shell_url = f"https://shell.cloud.google.com/?enableapi=true&project={pid}&pli=1&show=terminal"
+                
                 safe_navigate(driver, shell_url)
             except Exception as e:
                 log.warning(f"Auto-nav to shell failed: {e}")
@@ -999,8 +1002,11 @@ def stream_loop(chat_id, gen):
                             bot.send_message(chat_id,
                                 "🖥️ **Terminal جاهز تماماً للاستخدام!** ✅\n\n"
                                 "تم تفعيل **⌨️ وضع الأوامر** تلقائياً.\n"
-                                "يمكنك الآن إرسال أوامرك مباشرة كرسالة عادية.",
+                                "يمكنك الآن إرسال أوامرك مباشرة كرسالة عادية (مثل `ls -la`).",
                                 parse_mode="Markdown")
+                            
+                            # تحديث اللوحة فوراً لتوضيح أننا في وضع الأوامر
+                            update_stream_image(driver, chat_id, session, "✅ Terminal Ready", flash)
                         except Exception:
                             pass
 
