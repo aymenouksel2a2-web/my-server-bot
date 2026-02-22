@@ -8,7 +8,6 @@ import random
 import shutil
 import gc
 import subprocess
-import json
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telebot.types import InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton
@@ -458,7 +457,7 @@ def stream_loop(chat_id, gen):
 
             url = driver.current_url
             
-            # --- استخراج مناطق Cloud Run قبل التوجه للـ Shell ---
+            # --- استخراج مناطق Cloud Run من واجهة الصفحة ---
             if not session.get('run_api_checked'):
                 if "console.cloud.google.com" in url or "myaccount.google.com" in url:
                     pid = session.get('project_id')
@@ -466,91 +465,89 @@ def stream_loop(chat_id, gen):
                         if "run/create" not in url:
                             try:
                                 driver.get(f"https://console.cloud.google.com/run/create?enableapi=false&project={pid}")
-                                time.sleep(4)
+                                time.sleep(5) # ننتظر قليلاً حتى تكتمل تحميل واجهة Angular
                             except: pass
                             continue
                         
                         try:
-                            bot.send_message(chat_id, "🔍 جاري فحص السيرفرات المتاحة للاستخدام عبر API...")
-                            # سكريبت يستخرج التوكن وينفذ الـ fetch مع إرسال الكوكيز (credentials: 'include')
+                            bot.send_message(chat_id, "🔍 جاري قراءة السيرفرات المتوفرة من الشاشة...")
+                            
+                            # سكريبت جافاسكريبت للنقر على قائمة السيرفرات واستخراج الأسماء منها
                             js_code = """
-                            var callback = arguments[1];
-                            var projectId = arguments[0];
-                            async function fetchRegions() {
+                            var callback = arguments[arguments.length - 1];
+                            setTimeout(() => {
                                 try {
-                                    let match = document.cookie.match(/SAPISID=([^;]+)/);
-                                    if (!match) { callback("❌ لم يتم العثور على SAPISID"); return; }
-                                    let sapisid = match[1];
-                                    let time = Math.floor(Date.now() / 1000);
-                                    let origin = "https://console.cloud.google.com";
-                                    let str = time + " " + sapisid + " " + origin;
+                                    let regionClicked = false;
+                                    
+                                    // محاولة إيجاد القائمة المنسدلة للـ Region والنقر عليها
+                                    let dropdowns = document.querySelectorAll('mat-select, [role="combobox"]');
+                                    for (let el of dropdowns) {
+                                        let aria = el.getAttribute('aria-label') || "";
+                                        let id = el.getAttribute('id') || "";
+                                        if (aria.toLowerCase().includes('region') || id.toLowerCase().includes('region')) {
+                                            el.click();
+                                            regionClicked = true;
+                                            break;
+                                        }
+                                    }
+                                    
+                                    // طريقة بديلة: البحث عن الكلمة "Region" والنقر عليها
+                                    if(!regionClicked) {
+                                        let labels = document.querySelectorAll('label, .mat-form-field-label');
+                                        for (let l of labels) {
+                                            if (l.innerText && l.innerText.includes('Region')) {
+                                                l.click();
+                                                regionClicked = true;
+                                                break;
+                                            }
+                                        }
+                                    }
 
-                                    const buffer = new TextEncoder("utf-8").encode(str);
-                                    const hashBuffer = await crypto.subtle.digest("SHA-1", buffer);
-                                    const hashArray = Array.from(new Uint8Array(hashBuffer));
-                                    const hashHex = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
-                                    let authHeader = "SAPISIDHASH " + time + "_" + hashHex;
-                                    let auth1Header = "SAPISID1PHASH " + time + "_" + hashHex;
-                                    let auth3Header = "SAPISID3PHASH " + time + "_" + hashHex;
+                                    if(!regionClicked) {
+                                        callback("❌ لم يتم العثور على القائمة المنسدلة للسيرفرات (Region) في الصفحة.");
+                                        return;
+                                    }
 
-                                    let payload = {
-                                      "requestContext": {
-                                        "platformMetadata": {"platformType": "RIF"},
-                                        "projectId": projectId
-                                      },
-                                      "operationName": "CreateService",
-                                      "variables": {
-                                        "serviceSpec": {
-                                          "serviceLocator": {
-                                            "projectId": projectId,
-                                            "region": "us-west1",
-                                            "name": "dry-run-region-validation-test"
-                                          },
-                                          "revision": {
-                                            "containers": [{"image": "us-docker.pkg.dev/cloudrun/container/hello"}]
-                                          }
-                                        },
-                                        "dryRun": true
-                                      }
-                                    };
+                                    // ننتظر 1.5 ثانية حتى تفتح القائمة بالكامل وتظهر السيرفرات
+                                    setTimeout(() => {
+                                        let options = document.querySelectorAll('mat-option, [role="option"]');
+                                        let regions = [];
+                                        
+                                        options.forEach(opt => {
+                                            let txt = opt.innerText || "";
+                                            // أخذ السطر الأول فقط (مثل "us-central1 (Iowa)")
+                                            let serverName = txt.trim().split('\\n')[0]; 
+                                            // التأكد من أنه اسم سيرفر وتجاهل النصوص الأخرى
+                                            if(serverName && serverName.includes('-') && !serverName.toLowerCase().includes('learn')) {
+                                                regions.push(serverName);
+                                            }
+                                        });
+                                        
+                                        // النقر في مكان فارغ أو إرسال زر Escape لإغلاق القائمة لتفادي تعليق الصفحة
+                                        document.dispatchEvent(new KeyboardEvent('keydown', {'key': 'Escape'}));
+                                        let backdrop = document.querySelector('.cdk-overlay-backdrop');
+                                        if(backdrop) backdrop.click();
 
-                                    let res = await fetch("https://cloudconsole-pa.clients6.google.com/v3/entityServices/ServerlessEntityService/schemas/SERVERLESS_ENTITY_SERVICE_GQL_TRANSPORT:batchGraphql?key=AIzaSyCI-zsRP85UVOi0DjtiCwWBwQ1djDy741g&prettyPrint=false", {
-                                        method: "POST",
-                                        credentials: "include",
-                                        headers: {
-                                            "authorization": authHeader + " " + auth1Header + " " + auth3Header,
-                                            "content-type": "application/json",
-                                            "x-goog-authuser": "0"
-                                        },
-                                        body: JSON.stringify(payload)
-                                    });
-                                    let text = await res.text();
-                                    callback(text);
+                                        if(regions.length > 0) {
+                                            callback(regions.join('\\n'));
+                                        } else {
+                                            callback("⚠️ تم فتح القائمة لكن لم أجد أي سيرفرات بداخلها.");
+                                        }
+                                    }, 1500);
+
                                 } catch(e) {
                                     callback("Error: " + e.toString());
                                 }
-                            }
-                            fetchRegions();
+                            }, 3000); // ننتظر 3 ثواني بعد فتح الرابط لضمان بناء عناصر الصفحة
                             """
-                            driver.set_script_timeout(20)
-                            result = driver.execute_async_script(js_code, pid)
                             
-                            # البحث عن مصفوفة المناطق في الرد
-                            matches = re.findall(r'\[([a-z0-9-,\s"]+)\]', str(result))
-                            regions = []
-                            for m in matches:
-                                if 'us-' in m or 'europe-' in m or 'asia-' in m:
-                                    clean_m = m.replace('"', '').replace('\n', '').strip()
-                                    regions.append(clean_m)
-                                    
-                            if regions:
-                                text_res = f"🌍 **السيرفرات المسموحة:**\n`{regions[-1]}`"
-                            elif "error" not in str(result).lower() and "us-west1" in str(result):
-                                text_res = "✅ جميع المناطق متاحة (لا توجد قيود على هذا الحساب)."
+                            driver.set_script_timeout(15)
+                            result = driver.execute_async_script(js_code)
+                            
+                            if "❌" in result or "Error" in result or "⚠️" in result:
+                                bot.send_message(chat_id, f"{result}")
                             else:
-                                text_res = f"الرد الخام من الخادم:\n`{str(result)[:3000]}`"
-                                
-                            bot.send_message(chat_id, f"✅ **تم فحص القيود بنجاح:**\n\n{text_res}", parse_mode="Markdown")
+                                bot.send_message(chat_id, f"🌍 **السيرفرات المتوفرة للإنشاء هي:**\n```text\n{result}\n```", parse_mode="Markdown")
                         except Exception as e:
                             bot.send_message(chat_id, f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:200]}`", parse_mode="Markdown")
                         
