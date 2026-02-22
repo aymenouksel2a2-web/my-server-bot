@@ -3,187 +3,628 @@ import os
 import time
 import threading
 import io
+import re
+import random
 import shutil
+import gc
+import subprocess
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telebot.types import InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 
-# --- المكتبات الجديدة الخاصة بالخادم الوهمي لمنصة Render ---
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from pyvirtualdisplay import Display
 
 TOKEN = os.getenv('BOT_TOKEN')
 if not TOKEN:
-    raise ValueError("لم يتم العثور على التوكن! تأكد من إضافة المتغير BOT_TOKEN في إعدادات Render.")
+    raise ValueError("لم يتم العثور على التوكن!")
 
 bot = telebot.TeleBot(TOKEN)
 user_sessions = {}
+sessions_lock = threading.Lock()
 
+
+# ─────────────────────────────────────────────
+# 🌐 Health Check (مهم جداً لاستضافة Render)
+# ─────────────────────────────────────────────
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, *args):
+        pass
+
+def start_health_server():
+    # Render يعطي البورت تلقائياً عبر متغير البيئة PORT
+    port = int(os.getenv('PORT', 8000))
+    HTTPServer(('0.0.0.0', port), HealthHandler).serve_forever()
+
+
+# ─────────────────────────────────────────────
+# 🖥️ Xvfb
+# ─────────────────────────────────────────────
+display = None
+try:
+    display = Display(visible=0, size=(800, 600), color_depth=8)
+    display.start()
+    print("✅ Xvfb يعمل")
+except:
+    try:
+        display = Display(visible=0, size=(800, 600))
+        display.start()
+        print("✅ Xvfb يعمل")
+    except Exception as e:
+        print(f"❌ Xvfb فشل: {e}")
+
+
+# ─────────────────────────────────────────────
+# 🔍 أدوات مساعدة
+# ─────────────────────────────────────────────
+def find_path(names, extras=None):
+    for n in names:
+        p = shutil.which(n)
+        if p:
+            return p
+    for p in (extras or []):
+        if os.path.isfile(p):
+            return p
+    return None
+
+def get_browser_version(path):
+    try:
+        r = subprocess.run([path, '--version'], capture_output=True, text=True, timeout=5)
+        m = re.search(r'(\d+)', r.stdout)
+        return m.group(1) if m else "120"
+    except:
+        return "120"
+
+
+# ─────────────────────────────────────────────
+# 🔧 تصحيح chromedriver (إزالة cdc_)
+# ─────────────────────────────────────────────
+def patch_chromedriver(original_path):
+    patched = '/tmp/chromedriver_patched'
+    shutil.copy2(original_path, patched)
+    os.chmod(patched, 0o755)
+    with open(patched, 'r+b') as f:
+        content = f.read()
+        count = content.count(b'cdc_')
+        if count > 0:
+            f.seek(0)
+            f.write(content.replace(b'cdc_', b'aaa_'))
+            print(f"✅ chromedriver: {count} cdc_ تم إزالتها")
+    return patched
+
+
+# ─────────────────────────────────────────────
+# 🛡️ سكربت التخفي
+# ─────────────────────────────────────────────
+STEALTH_JS = '''
+Object.defineProperty(navigator,'webdriver',{get:()=>undefined});
+Object.defineProperty(navigator,'plugins',{
+    get:function(){return[
+        {name:'Chrome PDF Plugin',filename:'internal-pdf-viewer',length:1},
+        {name:'Chrome PDF Viewer',filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai',length:1},
+        {name:'Native Client',filename:'internal-nacl-plugin',length:2}
+    ];}
+});
+Object.defineProperty(navigator,'languages',{get:()=>['en-US','en']});
+Object.defineProperty(navigator,'platform',{get:()=>'Win32'});
+Object.defineProperty(navigator,'vendor',{get:()=>'Google Inc.'});
+Object.defineProperty(navigator,'hardwareConcurrency',{get:()=>4});
+Object.defineProperty(navigator,'deviceMemory',{get:()=>8});
+Object.defineProperty(navigator,'maxTouchPoints',{get:()=>0});
+window.chrome=window.chrome||{};
+window.chrome.runtime={onMessage:{addListener:function(){}},sendMessage:function(){},
+connect:function(){return{onMessage:{addListener:function(){}},postMessage:function(){}};}};
+window.chrome.loadTimes=function(){return{commitLoadTime:Date.now()/1000,
+connectionInfo:'http/1.1',finishLoadTime:Date.now()/1000,navigationType:'Other',
+requestTime:Date.now()/1000-0.16,startLoadTime:Date.now()/1000}};
+window.chrome.csi=function(){return{onloadT:Date.now(),pageT:Date.now()/1000,
+startE:Date.now(),tran:15}};
+if(navigator.permissions){var o=navigator.permissions.query;
+navigator.permissions.query=function(p){if(p.name==='notifications')
+return Promise.resolve({state:'prompt'});return o.call(navigator.permissions,p);};}
+try{var g=WebGLRenderingContext.prototype.getParameter;
+WebGLRenderingContext.prototype.getParameter=function(p){
+if(p===37445)return'Intel Inc.';if(p===37446)return'Intel Iris OpenGL Engine';
+return g.call(this,p);};}catch(e){}
+Object.defineProperty(screen,'width',{get:()=>1920});
+Object.defineProperty(screen,'height',{get:()=>1080});
+Object.defineProperty(screen,'colorDepth',{get:()=>24});
+for(var p in window){if(/^cdc_/.test(p)){try{delete window[p]}catch(e){}}}
+'''
+
+
+# ─────────────────────────────────────────────
+# 🌐 إنشاء المتصفح (وضع متخفي incognito)
+# ─────────────────────────────────────────────
 def get_driver():
+    browser = find_path(['chromium', 'chromium-browser'],
+                        ['/usr/bin/chromium', '/usr/bin/chromium-browser'])
+    drv = find_path(['chromedriver'],
+                    ['/usr/bin/chromedriver', '/usr/lib/chromium/chromedriver'])
+
+    if not browser:
+        raise Exception("❌ المتصفح غير موجود!")
+    if not drv:
+        raise Exception("❌ ChromeDriver غير موجود!")
+
+    patched_drv = patch_chromedriver(drv)
+    version = get_browser_version(browser)
+    ua = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version}.0.0.0 Safari/537.36"
+
     options = Options()
-    options.add_argument('--headless=new') 
-    options.add_argument('--incognito') # الحفاظ على وضع التخفي كما طلبت
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--window-size=1280,720')
-    
-    # 🎭 1. خطوات التمويه (Stealth Options) لإخفاء علامات الأتمتة
+    options.binary_location = browser
+
+    # ═══════════════════════════════════════
+    # 🕶️ الوضع المتخفي
+    # ═══════════════════════════════════════
+    options.add_argument('--incognito')
+
+    # 🛡️ تخفي ضد الكشف
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
-    options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-    
-    browser_path = shutil.which('google-chrome') or shutil.which('chromium') or shutil.which('chromium-browser')
-    options.binary_location = browser_path
-    
-    driver = webdriver.Chrome(options=options)
-    
-    # 🎭 2. حقن أكواد JavaScript متقدمة لجعل الموقع يظن أنك إنسان حقيقي
-    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-        "source": """
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            window.navigator.chrome = {runtime: {}};
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-        """
-    })
-    
-    driver.set_page_load_timeout(15)
+    options.add_argument(f'--user-agent={ua}')
+    options.add_argument('--lang=en-US')
+
+    # Docker
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
+
+    # ⚡ توفير موارد (مهم جداً للرامات المحدودة في Render)
+    options.add_argument('--window-size=800,600')
+    options.add_argument('--renderer-process-limit=1')
+    options.add_argument('--disable-background-timer-throttling')
+    options.add_argument('--disable-backgrounding-occluded-windows')
+    options.add_argument('--disable-renderer-backgrounding')
+    options.add_argument('--no-first-run')
+    options.add_argument('--no-default-browser-check')
+    options.add_argument('--mute-audio')
+    options.add_argument('--disable-features=TranslateUI')
+    options.add_argument('--js-flags=--max-old-space-size=128')
+    options.add_argument('--disable-extensions')
+    options.add_argument('--disable-component-update')
+    options.add_argument('--disable-domain-reliability')
+    options.add_argument('--disable-sync')
+
+    options.page_load_strategy = 'eager'
+
+    print("🚀 إنشاء المتصفح (incognito + chromedriver مُصحَّح)...")
+
+    service = Service(executable_path=patched_drv)
+    driver = webdriver.Chrome(service=service, options=options)
+
+    # حقن التخفي
+    try:
+        driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': STEALTH_JS})
+        print("🛡️ Stealth JS ✓")
+    except: pass
+
+    try:
+        driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+            "userAgent": ua, "platform": "Win32", "acceptLanguage": "en-US,en;q=0.9"
+        })
+        print("🛡️ UA ✓")
+    except: pass
+
+    driver.set_page_load_timeout(25)
+
+    # فحص
+    try:
+        driver.get("about:blank")
+        wd = driver.execute_script("return navigator.webdriver")
+        print(f"🔍 webdriver={wd} {'✅' if not wd else '❌'}")
+    except: pass
+
+    print("✅ المتصفح جاهز (وضع متخفي incognito)")
     return driver
 
-def create_control_panel():
-    markup = InlineKeyboardMarkup()
-    btn_stop = InlineKeyboardButton("⏹ إيقاف البث", callback_data="stop_stream")
-    btn_refresh = InlineKeyboardButton("🔄 تحديث الصفحة", callback_data="refresh_page")
-    markup.row(btn_stop, btn_refresh)
-    return markup
 
-def stream_loop(chat_id):
-    session = user_sessions[chat_id]
-    driver = session['driver']
-    
-    flash_state = True 
-    
-    while session['running']:
-        time.sleep(4) 
-        
-        if not session['running']:
-            break
-            
+# ─────────────────────────────────────────────
+# 🧹 تنظيف
+# ─────────────────────────────────────────────
+def safe_quit(driver):
+    if driver:
+        try: driver.quit()
+        except: pass
+        gc.collect()
+
+def cleanup_session(chat_id):
+    with sessions_lock:
+        if chat_id in user_sessions:
+            s = user_sessions[chat_id]
+            s['running'] = False
+            safe_quit(s.get('driver'))
+            del user_sessions[chat_id]
+            gc.collect()
+
+def driver_alive(driver):
+    try:
+        _ = driver.title
+        return True
+    except:
+        return False
+
+
+# ─────────────────────────────────────────────
+# 🎛️ لوحة التحكم
+# ─────────────────────────────────────────────
+def panel():
+    mk = InlineKeyboardMarkup()
+    mk.row(
+        InlineKeyboardButton("⏹ إيقاف", callback_data="stop"),
+        InlineKeyboardButton("🔄 تحديث", callback_data="refresh")
+    )
+    return mk
+
+
+# ─────────────────────────────────────────────
+# 🤖 التعامل مع جميع صفحات Google
+# ─────────────────────────────────────────────
+def handle_google_pages(driver, session):
+    status = "مراقبة..."
+
+    try:
+        body_text = driver.find_element(By.TAG_NAME, "body").text
+    except:
+        return status
+
+    # ─── Verify it's you → Continue ───
+    if "verify it" in body_text.lower():
         try:
-            png_data = driver.get_screenshot_as_png()
-            bio = io.BytesIO(png_data)
-            bio.name = 'image.png'
-            
-            flash_state = not flash_state
-            live_icon = "🔴" if flash_state else "⭕"
-            now = datetime.now().strftime("%H:%M:%S")
-            caption_text = f"{live_icon} بث حي ومستمر...\n🔗 {session['url']}\n⏱ {now}"
-            
-            bot.edit_message_media(
-                media=InputMediaPhoto(bio, caption=caption_text),
-                chat_id=chat_id,
-                message_id=session['message_id'],
-                reply_markup=create_control_panel()
+            btns = driver.find_elements(By.XPATH,
+                "//button[contains(., 'Continue')] | "
+                "//span[contains(., 'Continue')]/ancestor::button | "
+                "//div[contains(., 'Continue')]/ancestor::button | "
+                "//input[@value='Continue'] | "
+                "//div[@role='button'][contains(., 'Continue')]"
             )
+            for btn in btns:
+                if btn.is_displayed():
+                    time.sleep(random.uniform(0.5, 1.5))
+                    btn.click()
+                    status = "✅ ضغط Continue (Verify)"
+                    print("🤖 ضغط Continue")
+                    time.sleep(3)
+                    return status
         except Exception as e:
-            if "Too Many Requests" in str(e) or "retry after" in str(e).lower():
-                time.sleep(2)
-            pass 
+            print(f"⚠️ Continue: {e}")
+        status = "🔐 Verify - جاري الضغط..."
+        return status
 
-def start_stream(chat_id, url):
-    bot.send_message(chat_id, "⚡ جاري إعداد المتصفح المموه لتخطي حماية جوجل...")
-    
-    if chat_id not in user_sessions:
-        user_sessions[chat_id] = {'driver': get_driver(), 'running': False, 'message_id': None, 'url': url}
-    else:
-        user_sessions[chat_id]['url'] = url
-    
-    session = user_sessions[chat_id]
+    # ─── I understand ───
+    if "I understand" in body_text:
+        try:
+            btns = driver.find_elements(By.XPATH, "//*[contains(text(), 'I understand')]")
+            for btn in btns:
+                if btn.is_displayed():
+                    time.sleep(random.uniform(0.5, 1.0))
+                    btn.click()
+                    status = "✅ I understand"
+                    time.sleep(2)
+                    return status
+        except: pass
+
+    # ─── Couldn't sign you in ───
+    if "couldn't sign you in" in body_text.lower():
+        status = "⚠️ رفض - إعادة محاولة..."
+        try:
+            driver.delete_all_cookies()
+            time.sleep(1)
+            driver.get(session.get('url', 'about:blank'))
+            time.sleep(5)
+        except: pass
+        return status
+
+    # ─── Accept / I agree ───
+    if "before you continue" in body_text.lower() or "I agree" in body_text:
+        try:
+            btns = driver.find_elements(By.XPATH,
+                "//button[contains(., 'I agree')] | "
+                "//button[contains(., 'Accept all')] | "
+                "//button[contains(., 'Accept')]"
+            )
+            for btn in btns:
+                if btn.is_displayed():
+                    btn.click()
+                    status = "✅ قبول الشروط"
+                    time.sleep(2)
+                    return status
+        except: pass
+
+    # ─── Authorize ───
+    if "authorize" in body_text.lower():
+        try:
+            btns = driver.find_elements(By.XPATH,
+                "//button[contains(., 'Authorize')] | "
+                "//button[contains(., 'AUTHORIZE')]"
+            )
+            for btn in btns:
+                if btn.is_displayed():
+                    btn.click()
+                    session['auth'] = True
+                    status = "✅ Authorize"
+                    time.sleep(2)
+                    return status
+        except: pass
+
+    # ─── التعرف على الصفحة ───
+    url = driver.current_url
+    if "shell.cloud.google.com" in url:
+        status = "✅ Cloud Shell جاهز!" if session.get('auth') else "✅ Cloud Shell يعمل"
+    elif "console.cloud.google.com" in url:
+        status = "📊 Cloud Console"
+    elif "myaccount.google.com" in url:
+        status = "👤 صفحة الحساب"
+    elif "accounts.google.com" in url:
+        status = "🔐 تسجيل الدخول..."
+
+    return status
+
+
+# ─────────────────────────────────────────────
+# 🎬 حلقة البث
+# ─────────────────────────────────────────────
+def stream_loop(chat_id, gen):
+    with sessions_lock:
+        if chat_id not in user_sessions:
+            return
+        session = user_sessions[chat_id]
+
     driver = session['driver']
-    
-    session['running'] = False 
-    time.sleep(1) 
-    
+    flash = True
+    err_count = 0
+    drv_err = 0
+    cycle = 0
+
+    while session['running'] and session.get('gen') == gen:
+        time.sleep(random.uniform(8, 12))
+
+        if not session['running'] or session.get('gen') != gen:
+            break
+
+        cycle += 1
+
+        try:
+            handles = driver.window_handles
+            if handles:
+                driver.switch_to.window(handles[-1])
+
+            # معالجة صفحات Google
+            status = handle_google_pages(driver, session)
+
+            # القفز للشل
+            url = driver.current_url
+            if not session.get('shell_opened'):
+                if "console.cloud.google.com" in url or "myaccount.google.com" in url:
+                    pid = session.get('project_id')
+                    if pid:
+                        status = "🚀 Cloud Shell..."
+                        try:
+                            driver.get(f"https://shell.cloud.google.com/?project={pid}&pli=1&show=terminal")
+                            session['shell_opened'] = True
+                            time.sleep(5)
+                        except: pass
+
+            # 📸 لقطة
+            png = driver.get_screenshot_as_png()
+            bio = io.BytesIO(png)
+            bio.name = f'l_{int(time.time())}.png'
+
+            flash = not flash
+            icon = "🔴" if flash else "⭕"
+            now = datetime.now().strftime("%H:%M:%S")
+            proj = f"📁 {session.get('project_id')}" if session.get('project_id') else ""
+            cap = f"{icon} بث مباشر\n{proj}\n📌 {status}\n⏱ {now}"
+
+            bot.edit_message_media(
+                media=InputMediaPhoto(bio, caption=cap),
+                chat_id=chat_id,
+                message_id=session['msg_id'],
+                reply_markup=panel()
+            )
+
+            err_count = 0
+            drv_err = 0
+
+            if cycle % 10 == 0:
+                gc.collect()
+
+        except Exception as e:
+            em = str(e).lower()
+            if "message is not modified" in em:
+                continue
+            err_count += 1
+            if "too many requests" in em or "retry after" in em:
+                w = re.search(r'retry after (\d+)', em)
+                time.sleep(int(w.group(1)) if w else 5)
+            elif any(k in em for k in ['session','disconnected','crashed','not reachable']):
+                drv_err += 1
+                if drv_err >= 3:
+                    try: bot.send_message(chat_id, "⚠️ إعادة تشغيل...")
+                    except: pass
+                    try:
+                        safe_quit(driver)
+                        new_drv = get_driver()
+                        session['driver'] = new_drv
+                        driver = new_drv
+                        driver.get(session.get('url', 'about:blank'))
+                        session['shell_opened'] = False
+                        session['auth'] = False
+                        drv_err = 0
+                        err_count = 0
+                        time.sleep(5)
+                    except:
+                        session['running'] = False
+                        break
+            elif err_count >= 5:
+                try:
+                    driver.refresh()
+                    err_count = 0
+                except:
+                    drv_err += 1
+
+    print(f"🛑 انتهى: {chat_id}")
+    gc.collect()
+
+
+# ─────────────────────────────────────────────
+# ▶️ بدء البث
+# ─────────────────────────────────────────────
+def start_stream(chat_id, url):
+    old_drv = None
+    with sessions_lock:
+        if chat_id in user_sessions:
+            old = user_sessions[chat_id]
+            old['running'] = False
+            old['gen'] = old.get('gen', 0) + 1
+            old_drv = old.get('driver')
+
+    bot.send_message(chat_id, "⚡ جاري التجهيز (وضع متخفي incognito)...")
+
+    if old_drv:
+        safe_quit(old_drv)
+        time.sleep(2)
+
+    project_match = re.search(r'(qwiklabs-gcp-[\w-]+)', url)
+    project_id = project_match.group(1) if project_match else None
+
+    try:
+        driver = get_driver()
+        bot.send_message(chat_id, "✅ المتصفح جاهز (incognito 🕶️)")
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ فشل:\n`{str(e)[:300]}`", parse_mode="Markdown")
+        return
+
+    gen = int(time.time())
+
+    with sessions_lock:
+        user_sessions[chat_id] = {
+            'driver': driver, 'running': False,
+            'msg_id': None, 'url': url,
+            'project_id': project_id,
+            'shell_opened': False, 'auth': False,
+            'gen': gen
+        }
+
+    session = user_sessions[chat_id]
+
+    bot.send_message(chat_id, "🌐 فتح الرابط...")
+
     try:
         driver.get(url)
-    except:
-        pass 
-        
-    time.sleep(3) 
-    
-    png_data = driver.get_screenshot_as_png()
-    bio = io.BytesIO(png_data)
-    bio.name = 'image.png'
-    
-    msg = bot.send_photo(
-        chat_id, 
-        bio, 
-        caption=f"🔴 بث حي ومستمر...\n🔗 {url}\n⏱ جاري الاتصال...",
-        reply_markup=create_control_panel()
-    )
-    
-    session['message_id'] = msg.message_id
-    session['running'] = True
-    
-    threading.Thread(target=stream_loop, args=(chat_id,)).start()
+    except Exception as e:
+        if "timeout" not in str(e).lower():
+            print(f"⚠️ {e}")
 
+    time.sleep(5)
+
+    try:
+        handles = driver.window_handles
+        if handles:
+            driver.switch_to.window(handles[-1])
+
+        png = driver.get_screenshot_as_png()
+        bio = io.BytesIO(png)
+        bio.name = f's_{int(time.time())}.png'
+
+        msg = bot.send_photo(
+            chat_id, bio,
+            caption="🔴 بث مباشر (incognito 🕶️)\n📌 بدء...",
+            reply_markup=panel()
+        )
+
+        session['msg_id'] = msg.message_id
+        session['running'] = True
+
+        t = threading.Thread(target=stream_loop, args=(chat_id, gen), daemon=True)
+        t.start()
+
+        bot.send_message(chat_id,
+            "✅ البث يعمل! (incognito 🕶️)\n"
+            "🤖 الطيار الآلي:\n"
+            "  • Verify → Continue\n"
+            "  • I understand → ضغط\n"
+            "  • Authorize → ضغط\n"
+            "  • رفض → إعادة محاولة"
+        )
+
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ فشل:\n`{str(e)[:200]}`", parse_mode="Markdown")
+        cleanup_session(chat_id)
+
+
+# ─────────────────────────────────────────────
+# 📨 أوامر
+# ─────────────────────────────────────────────
 @bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.reply_to(message, "مرحباً! أرسل لي أي رابط وسأقوم بفتحه متخفياً كإنسان حقيقي. 🚀")
+def cmd_start(message):
+    bot.reply_to(message,
+        "🚀 مرحباً!\n"
+        "🕶️ الوضع المتخفي (incognito)\n\n"
+        "أرسل رابط يبدأ بـ:\n"
+        "`https://www.skills.google/google_sso`",
+        parse_mode="Markdown"
+    )
 
-@bot.message_handler(func=lambda message: message.text.startswith('http'))
+@bot.message_handler(func=lambda m: m.text and m.text.startswith('https://www.skills.google/google_sso'))
 def handle_url(message):
-    threading.Thread(target=start_stream, args=(message.chat.id, message.text)).start()
+    threading.Thread(target=start_stream, args=(message.chat.id, message.text), daemon=True).start()
+
+@bot.message_handler(func=lambda m: m.text and m.text.startswith('http'))
+def handle_bad(message):
+    bot.reply_to(message, "❌ يجب أن يبدأ بـ:\n`https://www.skills.google/google_sso`", parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: True)
-def callback_query(call):
-    chat_id = call.message.chat.id
-    
+def on_cb(call):
+    cid = call.message.chat.id
     try:
-        if chat_id not in user_sessions:
-            bot.answer_callback_query(call.id, "لا توجد جلسة نشطة.")
-            return
-            
-        session = user_sessions[chat_id]
-        
-        if call.data == "stop_stream":
-            session['running'] = False
-            bot.answer_callback_query(call.id, "تم إيقاف البث.")
-            bot.edit_message_caption("🛑 تم إيقاف البث.", chat_id=chat_id, message_id=session['message_id'])
-            
-        elif call.data == "refresh_page":
-            bot.answer_callback_query(call.id, "جاري تحديث الصفحة...")
-            try:
-                session['driver'].refresh()
-            except:
-                pass
-    except Exception as e:
-        if "query is too old" not in str(e).lower():
-            pass
+        with sessions_lock:
+            if cid not in user_sessions:
+                bot.answer_callback_query(call.id, "لا توجد جلسة.")
+                return
+            s = user_sessions[cid]
 
-# --- 🎭 3. إعداد خادم ويب وهمي لإرضاء منصة Render ---
-class DummyHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b"Bot is running successfully on Render!")
-        # تم إخفاء سجلات الطلبات (Logs) لكي لا تزعجك في لوحة تحكم Render
-    def log_message(self, format, *args):
-        pass
+        if call.data == "stop":
+            s['running'] = False
+            s['gen'] = s.get('gen', 0) + 1
+            bot.answer_callback_query(call.id, "تم الإيقاف.")
+            try: bot.edit_message_caption("🛑 توقف.", chat_id=cid, message_id=s['msg_id'])
+            except: pass
+            safe_quit(s.get('driver'))
+            with sessions_lock:
+                if cid in user_sessions:
+                    del user_sessions[cid]
 
-def run_dummy_server():
-    # Render يحدد المنفذ تلقائياً عبر المتغير PORT، وإلا نستخدم 10000
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), DummyHandler)
-    print(f"الخادم الوهمي يعمل الآن على المنفذ {port}...")
-    server.serve_forever()
+        elif call.data == "refresh":
+            bot.answer_callback_query(call.id, "تحديث...")
+            try: s['driver'].refresh()
+            except: pass
+    except: pass
 
-# تشغيل الخادم الوهمي في مسار خلفي (Thread) منفصل حتى لا يوقف البوت
-threading.Thread(target=run_dummy_server, daemon=True).start()
-# --------------------------------------------------------
 
-print("البوت يعمل الآن (نظام التمويه المتقدم مفعل)...")
-bot.polling(non_stop=True)
+# ─────────────────────────────────────────────
+# 🏁 التشغيل
+# ─────────────────────────────────────────────
+if __name__ == '__main__':
+    print("=" * 45)
+    print("🕶️ وضع متخفي incognito + تخفي كامل")
+    print("=" * 45)
+    
+    # خادم الويب يعمل في الخلفية لضمان عدم توقف خدمة Render
+    threading.Thread(target=start_health_server, daemon=True).start()
+
+    while True:
+        try:
+            bot.polling(non_stop=True, timeout=60, long_polling_timeout=60)
+        except Exception as e:
+            print(f"⚠️ {e}")
+            time.sleep(5)
