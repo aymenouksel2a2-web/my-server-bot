@@ -157,7 +157,7 @@ def get_driver():
     except: pass
     try: driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": ua, "platform": "Win32", "acceptLanguage": "en-US,en;q=0.9"})
     except: pass
-    driver.set_page_load_timeout(30)
+    driver.set_page_load_timeout(45) # تم زيادة وقت الانتظار قليلاً للـ Cloud Shell
     print("✅ المتصفح جاهز")
     return driver
 
@@ -463,15 +463,14 @@ def stream_loop(chat_id, gen):
                     pid = session.get('project_id')
                     if "run/create" not in url:
                         try:
-                            # استخدام enableapi=true كما طلبت لضمان تحميل الصفحة بشكل صحيح
                             bot.send_message(chat_id, "⚙️ جاري فتح صفحة Cloud Run (مع تفعيل الـ API إن لزم الأمر)...")
                             driver.get(f"https://console.cloud.google.com/run/create?enableapi=true&project={pid}")
-                            time.sleep(8) # انتظار أطول قليلاً لمنح الصفحة وقتاً لتفعيل الـ API وبناء القائمة
+                            time.sleep(8) 
                         except: pass
                         continue
                     
                     try:
-                        bot.send_message(chat_id, "🔍 جاري قراءة السيرفرات المتوفرة من الشاشة...")
+                        bot.send_message(chat_id, "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة من الشاشة...")
                         
                         js_code = """
                         var callback = arguments[arguments.length - 1];
@@ -479,7 +478,6 @@ def stream_loop(chat_id, gen):
                             try {
                                 let regionClicked = false;
                                 
-                                // محاولة إيجاد القائمة المنسدلة للـ Region والنقر عليها
                                 let dropdowns = document.querySelectorAll('mat-select, [role="combobox"]');
                                 for (let el of dropdowns) {
                                     let aria = el.getAttribute('aria-label') || "";
@@ -491,7 +489,6 @@ def stream_loop(chat_id, gen):
                                     }
                                 }
                                 
-                                // طريقة بديلة إذا لم تنجح الأولى
                                 if(!regionClicked) {
                                     let labels = document.querySelectorAll('label, .mat-form-field-label');
                                     for (let l of labels) {
@@ -504,24 +501,28 @@ def stream_loop(chat_id, gen):
                                 }
 
                                 if(!regionClicked) {
-                                    callback("❌ لم أتمكن من إيجاد قائمة السيرفرات (Region). قد يكون الحساب لا يملك صلاحيات أو الـ API لم يتفعل بعد.");
+                                    callback("❌ لم أتمكن من إيجاد قائمة السيرفرات (Region).");
                                     return;
                                 }
 
-                                // انتظار ظهور الخيارات المنسدلة
                                 setTimeout(() => {
                                     let options = document.querySelectorAll('mat-option, [role="option"]');
                                     let regions = [];
                                     
                                     options.forEach(opt => {
-                                        let txt = opt.innerText || "";
-                                        let serverName = txt.trim().split('\\n')[0]; 
-                                        if(serverName && serverName.includes('-') && !serverName.toLowerCase().includes('learn')) {
-                                            regions.push(serverName);
+                                        // التعديل السحري: استثناء الخيارات المعطلة أو المخفية
+                                        let isDisabled = opt.classList.contains('mat-option-disabled') || opt.getAttribute('aria-disabled') === 'true';
+                                        let isHidden = opt.offsetParent === null || window.getComputedStyle(opt).display === 'none';
+                                        
+                                        if(!isDisabled && !isHidden) {
+                                            let txt = opt.innerText || "";
+                                            let serverName = txt.trim().split('\\n')[0]; 
+                                            if(serverName && serverName.includes('-') && !serverName.toLowerCase().includes('learn')) {
+                                                regions.push(serverName);
+                                            }
                                         }
                                     });
                                     
-                                    // إغلاق القائمة لتفادي التعليق
                                     document.dispatchEvent(new KeyboardEvent('keydown', {'key': 'Escape'}));
                                     let backdrop = document.querySelector('.cdk-overlay-backdrop');
                                     if(backdrop) backdrop.click();
@@ -529,14 +530,14 @@ def stream_loop(chat_id, gen):
                                     if(regions.length > 0) {
                                         callback(regions.join('\\n'));
                                     } else {
-                                        callback("⚠️ فتحت القائمة لكن لم أجد أي سيرفرات بداخلها.");
+                                        callback("⚠️ فتحت القائمة لكن يبدو أن جميع السيرفرات مقيدة وغير مسموحة.");
                                     }
                                 }, 1500);
 
                             } catch(e) {
                                 callback("Error: " + e.toString());
                             }
-                        }, 4000); // 4 ثواني للتأكد من زوال شاشة الـ Loading الخاصة بجوجل
+                        }, 4000);
                         """
                         
                         driver.set_script_timeout(20)
@@ -545,7 +546,7 @@ def stream_loop(chat_id, gen):
                         if "❌" in result or "Error" in result or "⚠️" in result:
                             bot.send_message(chat_id, f"{result}")
                         else:
-                            bot.send_message(chat_id, f"🌍 **السيرفرات المتوفرة للإنشاء هي:**\n```text\n{result}\n```", parse_mode="Markdown")
+                            bot.send_message(chat_id, f"🌍 **السيرفرات المسموحة فقط للإنشاء هي:**\n```text\n{result}\n```", parse_mode="Markdown")
                     except Exception as e:
                         bot.send_message(chat_id, f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:200]}`", parse_mode="Markdown")
                     
@@ -557,9 +558,12 @@ def stream_loop(chat_id, gen):
                     pid = session.get('project_id')
                     if pid:
                         try:
+                            bot.send_message(chat_id, "🚀 جاري الانتقال لفتح Cloud Shell...")
                             driver.get(f"https://shell.cloud.google.com/?project={pid}&pli=1&show=terminal")
                             session['shell_opened'] = True; time.sleep(5); status = "🚀 Shell..."
-                        except: pass
+                        except Exception as e:
+                            print(f"Shell Open Error: {e}")
+                            pass
 
             if session.get('terminal_ready') and not session.get('terminal_notified'):
                 session['terminal_notified'] = True
@@ -586,13 +590,19 @@ def stream_loop(chat_id, gen):
         except Exception as e:
             em = str(e).lower()
             if "message is not modified" in em: continue
+            
+            # فلتر يمنع الأخطاء البسيطة كتقطيع النت في تيليجرام من عمل إعادة تشغيل
+            if any(k in em for k in ["urllib3", "requests", "readtimeout", "connection aborted", "api"]):
+                time.sleep(2)
+                continue
+                
             err_count += 1
             if "too many requests" in em or "retry after" in em:
                 w = re.search(r'retry after (\d+)',em); time.sleep(int(w.group(1)) if w else 5)
-            elif any(k in em for k in ['session','disconnected','crashed','not reachable']):
+            elif any(k in em for k in ['invalid session id','chrome not reachable','disconnected:','crashed']):
                 drv_err += 1
                 if drv_err >= 3:
-                    try: bot.send_message(chat_id,"⚠️ إعادة تشغيل...")
+                    try: bot.send_message(chat_id,"⚠️ إعادة تشغيل المتصفح لضمان استقرار الجلسة...")
                     except: pass
                     try:
                         safe_quit(driver); new_drv = get_driver()
@@ -618,12 +628,11 @@ def start_stream(chat_id, url):
     bot.send_message(chat_id, "⚡ جاري التجهيز...")
     if old_drv: safe_quit(old_drv); time.sleep(2)
 
-    # استخراج الـ Project ID من الرابط المرسل
     project_match = re.search(r'(qwiklabs-gcp-[\w-]+)', url)
     project_id = project_match.group(1) if project_match else None
 
     if not project_id:
-        bot.send_message(chat_id, "⚠️ تحذير: لم أتمكن من استخراج Project ID من الرابط، ميزة قراءة السيرفرات قد لا تعمل.")
+        bot.send_message(chat_id, "⚠️ تحذير: لم أتمكن من استخراج Project ID من الرابط، ميزة قراءة السيرفرات قد لا تعمل بشكل صحيح.")
 
     try:
         driver = get_driver()
