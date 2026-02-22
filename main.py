@@ -507,16 +507,14 @@ def stream_loop(chat_id, gen):
                                 }
 
                                 setTimeout(() => {
-                                    let options = document.querySelectorAll('mat-option, [role="option"]');
+                                    // التركيز على قراءة الخيارات من الحاوية المنبثقة النشطة فقط لتفادي جلب السيرفرات المخفية
+                                    let panel = document.querySelector('.cdk-overlay-pane');
+                                    let options = panel ? panel.querySelectorAll('mat-option, [role="option"]') : [];
                                     let regions = [];
                                     
                                     options.forEach(opt => {
-                                        // فلترة ذكية لضمان جلب العناصر الظاهرة والمسموحة فقط
-                                        let rect = opt.getBoundingClientRect();
-                                        let isHidden = rect.width === 0 || rect.height === 0 || window.getComputedStyle(opt).display === 'none' || window.getComputedStyle(opt).visibility === 'hidden';
                                         let isDisabled = opt.classList.contains('mat-option-disabled') || opt.getAttribute('aria-disabled') === 'true';
-                                        
-                                        if(!isHidden && !isDisabled) {
+                                        if(!isDisabled) {
                                             let txt = opt.innerText || "";
                                             let serverName = txt.trim().split('\\n')[0]; 
                                             if(serverName && serverName.includes('-') && !serverName.toLowerCase().includes('learn')) {
@@ -554,7 +552,7 @@ def stream_loop(chat_id, gen):
                     
                     session['run_api_checked'] = True
 
-            # --- التوجه إلى Cloud Shell بسلاسة وبدون إعادة تشغيل ---
+            # --- التوجه إلى Cloud Shell بدون إعادة تشغيل ---
             if not session.get('shell_opened') and session.get('run_api_checked'):
                 if "console.cloud.google.com" in url or "myaccount.google.com" in url:
                     pid = session.get('project_id')
@@ -562,18 +560,32 @@ def stream_loop(chat_id, gen):
                         try:
                             bot.send_message(chat_id, "🚀 جاري الانتقال لفتح Cloud Shell...")
                             
-                            # استخراج الـ walkthrough_id بذكاء من الرابط الأصلي إن وجد
+                            # استخراج الـ walkthrough_id بذكاء من الرابط الأصلي
                             walk_str = ""
-                            original_url = urllib.parse.unquote(urllib.parse.unquote(session.get('url', '')))
-                            w_match = re.search(r'walkthrough_id.*?([^=&]+display_token[^&]+)', original_url)
-                            if w_match:
-                                walk_val = urllib.parse.quote(w_match.group(1), safe='')
-                                walk_str = f"&walkthrough_id={walk_val}"
-                                
-                            shell_url = f"https://shell.cloud.google.com/?enableapi=true{walk_str}&project={pid}&pli=1&show=ide,terminal"
+                            original_url = session.get('url', '')
                             
-                            # نستخدم جافاسكريبت للانتقال لتفادي مشكلة Timeout الخاص بـ Selenium الذي يسبب إعادة التشغيل
-                            driver.execute_script(f"window.location.href = '{shell_url}';")
+                            # فك تشفير الرابط الأصلي للحصول على الـ display_token
+                            decoded_url = urllib.parse.unquote(urllib.parse.unquote(original_url))
+                            w_match = re.search(r'walkthrough_id=([^&]+)', decoded_url)
+                            
+                            if w_match:
+                                walk_val = w_match.group(1)
+                                # إعادة تشفيره بالشكل الذي يطلبه Cloud Shell
+                                walk_val_encoded = urllib.parse.quote(walk_val, safe='')
+                                walk_str = f"&walkthrough_id={walk_val_encoded}"
+                            
+                            # الرابط النهائي كما طلبته بالضبط
+                            shell_url = f"https://shell.cloud.google.com/?enableapi=true{walk_str}&project={pid}&pli=1&show=ide%2Cterminal"
+                            
+                            # وضع مهلة قصيرة والانتقال عبر get بشكل آمن لمنع أخطاء الـ DevTools
+                            driver.set_page_load_timeout(10)
+                            try:
+                                driver.get(shell_url)
+                            except Exception as e:
+                                # نتجاهل خطأ التايم آوت هنا لأن Cloud Shell يستغرق وقتاً طويلاً بطبيعته
+                                pass
+                            finally:
+                                driver.set_page_load_timeout(45) # إعادة المهلة للوضع الطبيعي
                             
                             session['shell_opened'] = True
                             time.sleep(5)
@@ -608,7 +620,7 @@ def stream_loop(chat_id, gen):
             em = str(e).lower()
             if "message is not modified" in em: continue
             
-            # تجاهل أخطاء التايم آوت لكي لا يتم إعادة تشغيل البوت عبثاً
+            # فلتر يمنع الأخطاء البسيطة أو التايم آوت من عمل إعادة تشغيل للجلسة
             if any(k in em for k in ["urllib3", "requests", "readtimeout", "connection aborted", "api", "timeout"]):
                 time.sleep(2)
                 continue
@@ -618,7 +630,7 @@ def stream_loop(chat_id, gen):
                 w = re.search(r'retry after (\d+)',em); time.sleep(int(w.group(1)) if w else 5)
             elif any(k in em for k in ['invalid session id','chrome not reachable','disconnected:','crashed']):
                 drv_err += 1
-                if drv_err >= 3:
+                if drv_err >= 4: # رفعنا العدد لكي نتأكد أن المتصفح قد تعطل فعلاً
                     try: bot.send_message(chat_id,"⚠️ إعادة تشغيل المتصفح لضمان استقرار الجلسة...")
                     except: pass
                     try:
