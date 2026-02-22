@@ -618,7 +618,7 @@ def take_screenshot(driver):
 
 
 # ══════════════════════════════════════════════════════════
-#  Google Pages Handler (تمت إضافة نافذة Terms of Service)
+#  Google Pages Handler
 # ══════════════════════════════════════════════════════════
 
 def handle_google_pages(driver, session):
@@ -636,13 +636,11 @@ def handle_google_pages(driver, session):
         
     body_lower = body.lower()
 
-    # 💡 1. النافذة الجديدة: Terms of Service "Agree and continue"
     if "agree and continue" in body_lower or "terms of service" in body_lower:
         try:
             clicked = driver.execute_script("""
                 var actionTaken = false;
                 
-                // أولاً: البحث عن الـ Checkbox الخاص بالموافقة والضغط عليه
                 var cbs = document.querySelectorAll('mat-checkbox, input[type="checkbox"], div[role="checkbox"]');
                 for(var i=0; i<cbs.length; i++){
                     var cb = cbs[i];
@@ -656,7 +654,6 @@ def handle_google_pages(driver, session):
                     }
                 }
                 
-                // ثانياً: البحث عن زر المتابعة والضغط عليه
                 var btns = document.querySelectorAll('button, div[role="button"], span, a');
                 for(var j=0; j<btns.length; j++){
                     var txt = (btns[j].innerText || '').toLowerCase().trim();
@@ -676,7 +673,6 @@ def handle_google_pages(driver, session):
         except Exception as e:
             log.debug(f"JS Terms Accept failed: {e}")
 
-    # 2. نافذة I understand الأولية
     if "i understand" in html_source or "confirm" in html_source or "welcome to your new account" in html_source:
         try:
             clicked = driver.execute_script("""
@@ -975,7 +971,7 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
 
 # ══════════════════════════════════════════════════════════
-#  Cloud Shell Navigation
+#  Cloud Shell Navigation (تم إصلاح الرابط المباشر للـ Terminal)
 # ══════════════════════════════════════════════════════════
 
 def open_cloud_shell(driver, session, chat_id):
@@ -984,10 +980,18 @@ def open_cloud_shell(driver, session, chat_id):
         return False
 
     try:
-        shell_url = session.get('url')
+        # 💡 تم استبدال session.get('url') بالرابط المباشر للـ Terminal 
+        # لأن رابط الـ SSO يخدم مرة وحدة برك ويطلب تسجيل الدخول
+        shell_url = (
+            f"https://shell.cloud.google.com/"
+            f"?enableapi=true"
+            f"&project={pid}"
+            f"&pli=1"
+            f"&show=terminal"
+        )
 
         bot.send_message(chat_id,
-            "🚀 جاري إعادة فتح Cloud Shell...")
+            "🚀 جاري فتح Cloud Shell (Terminal فقط)...")
 
         log.info(f"🚀 Shell URL: {shell_url}")
 
