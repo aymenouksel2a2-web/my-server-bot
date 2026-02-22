@@ -223,7 +223,7 @@ def get_driver():
     options = Options()
     options.binary_location = browser
     
-    # 💡 تأكيد الوضع الخفي (Incognito) + جلسة نظيفة تماماً
+    # تأكيد الوضع الخفي (Incognito) + جلسة نظيفة تماماً
     options.add_argument('--incognito')
     options.add_argument('--disable-application-cache')
     
@@ -620,7 +620,7 @@ def take_screenshot(driver):
 
 
 # ══════════════════════════════════════════════════════════
-#  Google Pages Handler
+#  Google Pages Handler (تم إعادة كتابته ليكون أقوى بالـ JS)
 # ══════════════════════════════════════════════════════════
 
 def handle_google_pages(driver, session):
@@ -632,27 +632,56 @@ def handle_google_pages(driver, session):
 
     body_lower = body.lower()
 
+    # 💡 الكود الجديد الأقوى بالـ JS لتخطي "I understand"
+    if "i understand" in body_lower or "أوافق" in body_lower or "موافق" in body_lower:
+        try:
+            clicked = driver.execute_script("""
+                var elements = document.querySelectorAll('button, div[role="button"], span, a');
+                for (var i = 0; i < elements.length; i++) {
+                    var el = elements[i];
+                    var text = (el.innerText || el.textContent || '').toLowerCase().trim();
+                    if (text === 'i understand' || text.indexOf('i understand') !== -1 || text === 'i agree') {
+                        var rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) { // تأكد أن الزر مرئي
+                            el.click();
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            """)
+            if clicked:
+                time.sleep(3)
+                return "✅ I understand ✔️"
+        except Exception as e:
+            log.debug(f"JS Click I understand failed: {e}")
+            
+        # Fallback XPath in case JS fails
+        try:
+            btns = driver.find_elements(By.XPATH, 
+                "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'i understand')]")
+            for btn in btns:
+                if btn.is_displayed():
+                    btn.click()
+                    time.sleep(3)
+                    return "✅ I understand ✔️"
+        except Exception:
+            pass
+
     if "authorize cloud shell" in body_lower:
         try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[normalize-space(.)='Authorize']|"
-                "//button[contains(.,'Authorize')]")
-            for btn in btns:
-                try:
-                    btn_text = (btn.text or "").strip().lower()
-                    if btn.is_displayed() and "authorize" in btn_text:
-                        time.sleep(random.uniform(0.5, 1.0))
-                        try:
-                            btn.click()
-                        except Exception:
-                            driver.execute_script(
-                                "arguments[0].click();", btn)
-                        session['auth'] = True
-                        time.sleep(2)
-                        log.info("✅ Authorize Cloud Shell clicked")
-                        return "✅ Authorize ✔️"
-                except Exception:
-                    continue
+            clicked = driver.execute_script("""
+                var btns = document.querySelectorAll('button');
+                for (var i=0; i<btns.length; i++){
+                    if ((btns[i].innerText||'').toLowerCase().includes('authorize')){
+                        btns[i].click(); return true;
+                    }
+                } return false;
+            """)
+            if clicked:
+                session['auth'] = True
+                time.sleep(2)
+                return "✅ Authorize ✔️"
         except Exception:
             pass
         return "🔐 Authorize..."
@@ -661,24 +690,17 @@ def handle_google_pages(driver, session):
             and "continue" in body_lower
             and "free" in body_lower):
         try:
-            btns = driver.find_elements(By.XPATH,
-                "//a[contains(text(),'Continue')]|"
-                "//button[contains(text(),'Continue')]|"
-                "//button[.//span[contains(text(),'Continue')]]|"
-                "//*[@role='button'][contains(.,'Continue')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed() and btn.is_enabled():
-                        time.sleep(random.uniform(0.5, 1.5))
-                        try:
-                            btn.click()
-                        except Exception:
-                            driver.execute_script(
-                                "arguments[0].click();", btn)
-                        time.sleep(3)
-                        return "✅ Continue ✔️"
-                except Exception:
-                    continue
+            clicked = driver.execute_script("""
+                var btns = document.querySelectorAll('button, a, div[role="button"]');
+                for (var i=0; i<btns.length; i++){
+                    if ((btns[i].innerText||'').toLowerCase().includes('continue')){
+                        btns[i].click(); return true;
+                    }
+                } return false;
+            """)
+            if clicked:
+                time.sleep(3)
+                return "✅ Continue ✔️"
         except Exception:
             pass
         return "☁️ popup..."
@@ -701,24 +723,6 @@ def handle_google_pages(driver, session):
         except Exception:
             pass
         return "🔐 Verify..."
-
-    # 💡 تم تحسين ضغطة "I understand" بناءً على الصورة التي أرسلتها
-    if "i understand" in body_lower:
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'i understand')]|"
-                "//span[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'i understand')]|"
-                "//div[@role='button'][contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'i understand')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed():
-                        btn.click()
-                        time.sleep(2)
-                        return "✅ I understand ✔️"
-                except Exception:
-                    continue
-        except Exception:
-            pass
 
     if "couldn't sign you in" in body_lower:
         try:
@@ -750,32 +754,29 @@ def handle_google_pages(driver, session):
 
     if "gemini" in body_lower and "dismiss" in body_lower:
         try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[contains(.,'Dismiss')]|"
-                "//a[contains(.,'Dismiss')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed():
-                        btn.click()
-                        time.sleep(1)
-                except Exception:
-                    continue
+            driver.execute_script("""
+                var btns = document.querySelectorAll('button, a');
+                for(var i=0; i<btns.length; i++) {
+                    if((btns[i].innerText||'').toLowerCase().includes('dismiss')){
+                        btns[i].click();
+                    }
+                }
+            """)
+            time.sleep(1)
         except Exception:
             pass
 
     if "recovered" in body_lower and "dismiss" in body_lower:
         try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[contains(.,'Dismiss')]|"
-                "//a[contains(.,'Dismiss')]|"
-                "//*[normalize-space(.)='Dismiss']")
-            for btn in btns:
-                try:
-                    if btn.is_displayed():
-                        btn.click()
-                        time.sleep(1)
-                except Exception:
-                    continue
+            driver.execute_script("""
+                var btns = document.querySelectorAll('button, a');
+                for(var i=0; i<btns.length; i++) {
+                    if((btns[i].innerText||'').toLowerCase().includes('dismiss')){
+                        btns[i].click();
+                    }
+                }
+            """)
+            time.sleep(1)
         except Exception:
             pass
 
@@ -800,7 +801,6 @@ def handle_google_pages(driver, session):
     except Exception:
         return status
 
-    # 💡 تمييز صفحة تسجيل الدخول حتى لا تحاول فتح Cloud Run وهي ليست مسجلة
     if "accounts.google.com" in url:
         return "🔐 تسجيل الدخول (الرابط منتهي؟)..."
     elif "shell.cloud.google.com" in url or "ide.cloud.google.com" in url:
@@ -1075,7 +1075,6 @@ def stream_loop(chat_id, gen):
                 if "message is not modified" not in em:
                     raise
 
-            # 💡 التعديل الأهم لمنع الـ Loop عندما يطلب منك تسجيل الدخول
             is_accounts_page = "accounts.google.com" in current_url
             on_console = (("console.cloud.google.com" in current_url
                           or "myaccount.google.com" in current_url) 
@@ -1083,7 +1082,7 @@ def stream_loop(chat_id, gen):
             
             on_shell = is_on_shell_page(driver)
 
-            # Cloud Run extraction (لن يشتغل إذا كنت في صفحة تسجيل الدخول)
+            # Cloud Run extraction
             if (session.get('project_id')
                     and not session.get('run_api_checked')
                     and on_console):
