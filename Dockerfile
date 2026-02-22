@@ -1,21 +1,22 @@
-# استخدام نسخة بايثون خفيفة
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-# تحديث النظام وتثبيت متصفح Chromium و WebDriver
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     chromium-driver \
-    && rm -rf /var/lib/apt/lists/*
+    xvfb \
+    fonts-liberation \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# تحديد مجلد العمل داخل الخادم
 WORKDIR /app
 
-# نسخ ملف المتطلبات وتثبيت مكاتب بايثون
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# نسخ باقي ملفات المشروع (بما فيها main.py)
 COPY . .
 
-# أمر تشغيل البوت
-CMD ["python", "main.py"]
+# Render سيقوم بتمرير البورت ديناميكياً، ولكن نضع 8000 كقيمة افتراضية
+EXPOSE 8000
+
+# استخدمنا -u لضمان ظهور السجلات (Logs) فوراً في لوحة تحكم Render
+CMD ["python", "-u", "main.py"]
