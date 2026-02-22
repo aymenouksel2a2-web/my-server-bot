@@ -837,64 +837,6 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
 
 # ══════════════════════════════════════════════════════════
-#  Cloud Shell Navigation
-#  ═══ Terminal فقط ═══
-#  بدون walkthrough_id → لا tutorial
-#  show=terminal → لا editor
-# ══════════════════════════════════════════════════════════
-
-def open_cloud_shell(driver, session, chat_id):
-    """
-    Open Cloud Shell with TERMINAL ONLY.
-    
-    URL format:
-      https://shell.cloud.google.com/
-        ?enableapi=true
-        &project=PROJECT_ID
-        &pli=1
-        &show=terminal
-    
-    ❌ No walkthrough_id  → prevents Tutorial panel
-    ❌ No show=ide        → prevents Editor panel
-    ✅ show=terminal      → Terminal only
-    ✅ enableapi=true     → enables Cloud Shell API
-    """
-    pid = session.get('project_id')
-    if not pid:
-        return False
-
-    try:
-        # ═══ بناء الرابط النظيف: Terminal فقط ═══
-        shell_url = (
-            f"https://shell.cloud.google.com/"
-            f"?enableapi=true"
-            f"&project={pid}"
-            f"&pli=1"
-            f"&show=terminal"
-        )
-
-        bot.send_message(chat_id,
-            "🚀 جاري فتح Cloud Shell (Terminal فقط)...")
-
-        log.info(f"🚀 Shell URL: {shell_url}")
-
-        success = safe_navigate(driver, shell_url)
-
-        if success:
-            session['shell_opened'] = True
-            session['shell_loading_until'] = time.time() + 60
-            log.info("✅ Cloud Shell navigation started (terminal only)")
-            return True
-        else:
-            log.error("❌ Cloud Shell navigation failed")
-            return False
-
-    except Exception as e:
-        log.error(f"Shell Open Error: {e}")
-        return False
-
-
-# ══════════════════════════════════════════════════════════
 #  Stream Update Helper
 # ══════════════════════════════════════════════════════════
 
@@ -1015,13 +957,7 @@ def stream_loop(chat_id, gen):
                 if done:
                     session['run_api_checked'] = True
 
-            # 5B: Open Cloud Shell (Terminal ONLY)
-            elif (not session.get('shell_opened')
-                  and session.get('run_api_checked')
-                  and on_console):
-                open_cloud_shell(driver, session, chat_id)
-
-            # 5C: Terminal ready notification
+            # 5B: Terminal ready notification
             elif on_shell:
                 if (session.get('terminal_ready')
                         and not session.get('terminal_notified')):
