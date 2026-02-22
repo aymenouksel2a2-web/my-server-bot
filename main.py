@@ -27,9 +27,6 @@ user_sessions = {}
 sessions_lock = threading.Lock()
 
 
-# ─────────────────────────────────────────────
-# 🌐 Health Check
-# ─────────────────────────────────────────────
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -47,9 +44,6 @@ def start_health_server():
     HTTPServer(('0.0.0.0', port), HealthHandler).serve_forever()
 
 
-# ─────────────────────────────────────────────
-# 🖥️ Xvfb
-# ─────────────────────────────────────────────
 display = None
 try:
     display = Display(visible=0, size=(1024, 768), color_depth=16)
@@ -64,9 +58,6 @@ except:
         print(f"❌ Xvfb: {e}")
 
 
-# ─────────────────────────────────────────────
-# 🔍 أدوات
-# ─────────────────────────────────────────────
 def find_path(names, extras=None):
     for n in names:
         p = shutil.which(n)
@@ -86,9 +77,6 @@ def get_browser_version(path):
         return "120"
 
 
-# ─────────────────────────────────────────────
-# 🔧 تصحيح chromedriver
-# ─────────────────────────────────────────────
 def patch_chromedriver(original_path):
     patched = '/tmp/chromedriver_patched'
     shutil.copy2(original_path, patched)
@@ -103,9 +91,6 @@ def patch_chromedriver(original_path):
     return patched
 
 
-# ─────────────────────────────────────────────
-# 🛡️ سكربت التخفي
-# ─────────────────────────────────────────────
 STEALTH_JS = '''
 Object.defineProperty(navigator,'webdriver',{get:()=>undefined});
 Object.defineProperty(navigator,'plugins',{
@@ -143,9 +128,6 @@ for(var p in window){if(/^cdc_/.test(p)){try{delete window[p]}catch(e){}}}
 '''
 
 
-# ─────────────────────────────────────────────
-# 🌐 إنشاء المتصفح (incognito)
-# ─────────────────────────────────────────────
 def get_driver():
     browser = find_path(['chromium', 'chromium-browser'],
                        ['/usr/bin/chromium', '/usr/bin/chromium-browser'])
@@ -164,22 +146,15 @@ def get_driver():
     options = Options()
     options.binary_location = browser
 
-    # 🕶️ وضع متخفي
     options.add_argument('--incognito')
-
-    # 🛡️ تخفي
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     options.add_argument(f'--user-agent={ua}')
     options.add_argument('--lang=en-US')
-
-    # Docker
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
-
-    # ⚡ أداء
     options.add_argument('--window-size=1024,768')
     options.add_argument('--no-first-run')
     options.add_argument('--no-default-browser-check')
@@ -199,7 +174,6 @@ def get_driver():
 
     try:
         driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': STEALTH_JS})
-        print("🛡️ Stealth ✓")
     except: pass
 
     try:
@@ -220,9 +194,6 @@ def get_driver():
     return driver
 
 
-# ─────────────────────────────────────────────
-# 🧹 تنظيف
-# ─────────────────────────────────────────────
 def safe_quit(driver):
     if driver:
         try: driver.quit()
@@ -239,9 +210,6 @@ def cleanup_session(chat_id):
             gc.collect()
 
 
-# ─────────────────────────────────────────────
-# 🎛️ لوحة التحكم
-# ─────────────────────────────────────────────
 def panel():
     mk = InlineKeyboardMarkup()
     mk.row(
@@ -252,7 +220,7 @@ def panel():
 
 
 # ─────────────────────────────────────────────
-# 🤖 معالجة صفحات Google
+# 🤖 معالجة جميع صفحات Google + Cloud Shell
 # ─────────────────────────────────────────────
 def handle_google_pages(driver, session):
     status = "مراقبة..."
@@ -262,7 +230,82 @@ def handle_google_pages(driver, session):
     except:
         return status
 
-    # Verify → Continue
+    # ═══════════════════════════════════════════════
+    # 1️⃣ نافذة Cloud Shell المنبثقة → Continue
+    # "Cloud Shell" + "Continue" في نفس الصفحة
+    # ═══════════════════════════════════════════════
+    if "cloud shell" in body.lower() and "continue" in body.lower():
+        # محاولة إغلاق أي نافذة منبثقة أولاً
+        try:
+            # البحث عن زر Continue في النافذة المنبثقة
+            continue_btns = driver.find_elements(By.XPATH,
+                # زر Continue نصي (رابط أزرق)
+                "//a[contains(text(), 'Continue')] | "
+                # زر Continue عادي
+                "//button[contains(text(), 'Continue')] | "
+                # span داخل button
+                "//button[.//span[contains(text(), 'Continue')]] | "
+                # material button
+                "//button[contains(@class, 'continue')] | "
+                "//button[contains(@class, 'cfc-dialog')] | "
+                # أي عنصر قابل للنقر يحتوي Continue
+                "//*[@role='button'][contains(., 'Continue')] | "
+                "//a[contains(@class, 'button')][contains(., 'Continue')] | "
+                # البحث في dialog/modal
+                "//div[contains(@class, 'modal')]//button[contains(., 'Continue')] | "
+                "//div[contains(@class, 'dialog')]//button[contains(., 'Continue')] | "
+                "//div[contains(@class, 'popup')]//button[contains(., 'Continue')] | "
+                "//mat-dialog-container//button[contains(., 'Continue')] | "
+                # أي عنصر أخير
+                "//*[contains(text(), 'Continue')]"
+            )
+            
+            for btn in continue_btns:
+                try:
+                    if btn.is_displayed() and btn.is_enabled():
+                        time.sleep(random.uniform(0.5, 1.5))
+                        
+                        # محاولة الضغط العادي
+                        try:
+                            btn.click()
+                        except:
+                            # إذا فشل الضغط العادي، نستخدم JavaScript
+                            driver.execute_script("arguments[0].click();", btn)
+                        
+                        print("🤖 Cloud Shell Continue clicked!")
+                        time.sleep(3)
+                        return "✅ Cloud Shell Continue ✔️"
+                except:
+                    continue
+            
+            # إذا لم نجد بالـ XPath، نبحث بـ CSS
+            css_btns = driver.find_elements(By.CSS_SELECTOR,
+                "button.cfc-dialog-action, "
+                "a.cfc-dialog-action, "
+                "button[data-prober='cloud-shell-welcome-dialog-continue'], "
+                ".cfc-dialog-actions button, "
+                ".modal-footer button, "
+                "button.mdc-button"
+            )
+            for btn in css_btns:
+                try:
+                    if btn.is_displayed() and "continue" in btn.text.lower():
+                        time.sleep(random.uniform(0.5, 1.0))
+                        driver.execute_script("arguments[0].click();", btn)
+                        print("🤖 Cloud Shell Continue (CSS) clicked!")
+                        time.sleep(3)
+                        return "✅ Cloud Shell Continue ✔️"
+                except:
+                    continue
+                    
+        except Exception as e:
+            print(f"⚠️ Cloud Shell Continue: {e}")
+        
+        return "☁️ Cloud Shell - جاري الضغط على Continue..."
+
+    # ═══════════════════════════════════════════════
+    # 2️⃣ Verify it's you → Continue
+    # ═══════════════════════════════════════════════
     if "verify it" in body.lower():
         try:
             btns = driver.find_elements(By.XPATH,
@@ -276,14 +319,16 @@ def handle_google_pages(driver, session):
                 if btn.is_displayed():
                     time.sleep(random.uniform(0.5, 1.5))
                     btn.click()
-                    print("🤖 Continue clicked")
+                    print("🤖 Verify Continue clicked")
                     time.sleep(3)
-                    return "✅ Continue ✔️"
+                    return "✅ Verify Continue ✔️"
         except Exception as e:
-            print(f"⚠️ Continue: {e}")
+            print(f"⚠️ Verify: {e}")
         return "🔐 Verify..."
 
-    # I understand
+    # ═══════════════════════════════════════════════
+    # 3️⃣ I understand
+    # ═══════════════════════════════════════════════
     if "I understand" in body:
         try:
             btns = driver.find_elements(By.XPATH, "//*[contains(text(), 'I understand')]")
@@ -295,7 +340,9 @@ def handle_google_pages(driver, session):
                     return "✅ I understand ✔️"
         except: pass
 
-    # Couldn't sign
+    # ═══════════════════════════════════════════════
+    # 4️⃣ Couldn't sign you in
+    # ═══════════════════════════════════════════════
     if "couldn't sign you in" in body.lower():
         try:
             driver.delete_all_cookies()
@@ -305,7 +352,9 @@ def handle_google_pages(driver, session):
         except: pass
         return "⚠️ رفض - إعادة..."
 
-    # Accept/Agree
+    # ═══════════════════════════════════════════════
+    # 5️⃣ Accept / I agree
+    # ═══════════════════════════════════════════════
     if "before you continue" in body.lower() or "I agree" in body:
         try:
             btns = driver.find_elements(By.XPATH,
@@ -317,26 +366,61 @@ def handle_google_pages(driver, session):
                     return "✅ Accept ✔️"
         except: pass
 
-    # Authorize
+    # ═══════════════════════════════════════════════
+    # 6️⃣ Authorize (Cloud Shell permission)
+    # ═══════════════════════════════════════════════
     if "authorize" in body.lower():
         try:
             btns = driver.find_elements(By.XPATH,
-                "//button[contains(., 'Authorize')] | //button[contains(., 'AUTHORIZE')]")
+                "//button[contains(., 'Authorize')] | "
+                "//button[contains(., 'AUTHORIZE')]")
             for btn in btns:
                 if btn.is_displayed():
+                    time.sleep(random.uniform(0.5, 1.0))
                     btn.click()
                     session['auth'] = True
                     time.sleep(2)
                     return "✅ Authorize ✔️"
         except: pass
 
+    # ═══════════════════════════════════════════════
+    # 7️⃣ Trust this device / Stay signed in
+    # ═══════════════════════════════════════════════
+    if "trust this" in body.lower() or "stay signed in" in body.lower():
+        try:
+            btns = driver.find_elements(By.XPATH,
+                "//button[contains(., 'Yes')] | "
+                "//button[contains(., 'Trust')] | "
+                "//button[contains(., 'Next')] | "
+                "//button[contains(., 'Continue')]"
+            )
+            for btn in btns:
+                if btn.is_displayed():
+                    btn.click()
+                    time.sleep(2)
+                    return "✅ Trust/Continue ✔️"
+        except: pass
+
+    # ═══════════════════════════════════════════════
+    # 8️⃣ حالة الصفحة الحالية
+    # ═══════════════════════════════════════════════
     url = driver.current_url
     if "shell.cloud.google.com" in url:
-        return "✅ Cloud Shell!" if session.get('auth') else "✅ Cloud Shell"
+        # فحص إذا الترمينال ظاهر
+        try:
+            terminal = driver.find_elements(By.CSS_SELECTOR,
+                "xterm-screen, .xterm, .terminal, [class*='terminal']")
+            if terminal:
+                session['auth'] = True
+                return "✅ Terminal جاهز! 🖥️"
+        except: pass
+        return "✅ Cloud Shell" if not session.get('auth') else "✅ Shell جاهز! 🖥️"
     elif "console.cloud.google.com" in url:
         return "📊 Console"
     elif "accounts.google.com" in url:
         return "🔐 تسجيل دخول..."
+    elif "myaccount.google.com" in url:
+        return "👤 الحساب"
 
     return status
 
@@ -369,8 +453,10 @@ def stream_loop(chat_id, gen):
             if handles:
                 driver.switch_to.window(handles[-1])
 
+            # ✅ معالجة كل الصفحات تلقائياً
             status = handle_google_pages(driver, session)
 
+            # القفز للشل
             url = driver.current_url
             if not session.get('shell_opened'):
                 if "console.cloud.google.com" in url or "myaccount.google.com" in url:
@@ -383,6 +469,7 @@ def stream_loop(chat_id, gen):
                             status = "🚀 Cloud Shell..."
                         except: pass
 
+            # 📸 لقطة
             png = driver.get_screenshot_as_png()
             bio = io.BytesIO(png)
             bio.name = f'l_{int(time.time())}.png'
@@ -444,9 +531,6 @@ def stream_loop(chat_id, gen):
     gc.collect()
 
 
-# ─────────────────────────────────────────────
-# ▶️ بدء البث
-# ─────────────────────────────────────────────
 def start_stream(chat_id, url):
     old_drv = None
     with sessions_lock:
@@ -517,10 +601,12 @@ def start_stream(chat_id, url):
 
         bot.send_message(chat_id,
             "✅ البث يعمل! 🕶️\n"
-            "🤖 طيار آلي:\n"
+            "🤖 طيار آلي يتعامل مع:\n"
+            "• Cloud Shell popup → Continue\n"
             "• Verify → Continue\n"
             "• I understand → ✔️\n"
-            "• Authorize → ✔️"
+            "• Authorize → ✔️\n"
+            "• Trust/Stay signed → ✔️"
         )
 
     except Exception as e:
@@ -528,9 +614,6 @@ def start_stream(chat_id, url):
         cleanup_session(chat_id)
 
 
-# ─────────────────────────────────────────────
-# 📨 أوامر
-# ─────────────────────────────────────────────
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     bot.reply_to(message,
@@ -577,14 +660,11 @@ def on_cb(call):
     except: pass
 
 
-# ─────────────────────────────────────────────
-# 🏁 التشغيل
-# ─────────────────────────────────────────────
 if __name__ == '__main__':
-    print("=" * 45)
-    print("🚂 Railway + incognito 🕶️")
+    print("=" * 50)
+    print("🚂 Railway + incognito 🕶️ + Cloud Shell handler")
     print(f"🌐 Port: {os.environ.get('PORT', 8080)}")
-    print("=" * 45)
+    print("=" * 50)
 
     threading.Thread(target=start_health_server, daemon=True).start()
 
