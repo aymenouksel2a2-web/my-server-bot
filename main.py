@@ -16,13 +16,11 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
 from pyvirtualdisplay import Display
 
-TOKEN = os.getenv('BOT_TOKEN')
+TOKEN = os.environ.get('BOT_TOKEN')
 if not TOKEN:
-    raise ValueError("لم يتم العثور على التوكن!")
+    raise ValueError("BOT_TOKEN غير موجود!")
 
 bot = telebot.TeleBot(TOKEN)
 user_sessions = {}
@@ -35,14 +33,17 @@ sessions_lock = threading.Lock()
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header('Content-Type', 'text/plain')
+        self.send_header('Content-Type', 'text/html')
         self.end_headers()
-        self.wfile.write(b"OK")
+        with sessions_lock:
+            active = len(user_sessions)
+        self.wfile.write(f"<h1>Bot Running</h1><p>Sessions: {active}</p>".encode())
     def log_message(self, *args):
         pass
 
 def start_health_server():
-    port = int(os.getenv('PORT', 8000))
+    port = int(os.environ.get('PORT', 8080))
+    print(f"🌐 Health Check: port {port}")
     HTTPServer(('0.0.0.0', port), HealthHandler).serve_forever()
 
 
@@ -51,20 +52,20 @@ def start_health_server():
 # ─────────────────────────────────────────────
 display = None
 try:
-    display = Display(visible=0, size=(800, 600), color_depth=8)
+    display = Display(visible=0, size=(1024, 768), color_depth=16)
     display.start()
-    print("✅ Xvfb يعمل")
+    print("✅ Xvfb يعمل (1024x768)")
 except:
     try:
         display = Display(visible=0, size=(800, 600))
         display.start()
-        print("✅ Xvfb يعمل")
+        print("✅ Xvfb يعمل (800x600)")
     except Exception as e:
-        print(f"❌ Xvfb فشل: {e}")
+        print(f"❌ Xvfb: {e}")
 
 
 # ─────────────────────────────────────────────
-# 🔍 أدوات مساعدة
+# 🔍 أدوات
 # ─────────────────────────────────────────────
 def find_path(names, extras=None):
     for n in names:
@@ -86,7 +87,7 @@ def get_browser_version(path):
 
 
 # ─────────────────────────────────────────────
-# 🔧 تصحيح chromedriver (إزالة cdc_)
+# 🔧 تصحيح chromedriver
 # ─────────────────────────────────────────────
 def patch_chromedriver(original_path):
     patched = '/tmp/chromedriver_patched'
@@ -98,7 +99,7 @@ def patch_chromedriver(original_path):
         if count > 0:
             f.seek(0)
             f.write(content.replace(b'cdc_', b'aaa_'))
-            print(f"✅ chromedriver: {count} cdc_ تم إزالتها")
+            print(f"✅ chromedriver: {count} cdc_ removed")
     return patched
 
 
@@ -143,18 +144,18 @@ for(var p in window){if(/^cdc_/.test(p)){try{delete window[p]}catch(e){}}}
 
 
 # ─────────────────────────────────────────────
-# 🌐 إنشاء المتصفح (وضع متخفي incognito)
+# 🌐 إنشاء المتصفح (incognito)
 # ─────────────────────────────────────────────
 def get_driver():
     browser = find_path(['chromium', 'chromium-browser'],
-                        ['/usr/bin/chromium', '/usr/bin/chromium-browser'])
+                       ['/usr/bin/chromium', '/usr/bin/chromium-browser'])
     drv = find_path(['chromedriver'],
-                    ['/usr/bin/chromedriver', '/usr/lib/chromium/chromedriver'])
+                   ['/usr/bin/chromedriver', '/usr/lib/chromium/chromedriver'])
 
     if not browser:
-        raise Exception("❌ المتصفح غير موجود!")
+        raise Exception("المتصفح غير موجود!")
     if not drv:
-        raise Exception("❌ ChromeDriver غير موجود!")
+        raise Exception("ChromeDriver غير موجود!")
 
     patched_drv = patch_chromedriver(drv)
     version = get_browser_version(browser)
@@ -163,17 +164,10 @@ def get_driver():
     options = Options()
     options.binary_location = browser
 
-    # ═══════════════════════════════════════
-    # 🕶️ الوضع المتخفي + الكوكيز للشل
-    # ═══════════════════════════════════════
+    # 🕶️ وضع متخفي
     options.add_argument('--incognito')
-    prefs = {
-        "profile.block_third_party_cookies": False,
-        "profile.default_content_setting_values.cookies": 1
-    }
-    options.add_experimental_option("prefs", prefs)
 
-    # 🛡️ تخفي ضد الكشف
+    # 🛡️ تخفي
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
@@ -185,30 +179,27 @@ def get_driver():
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
 
-    # ⚡ توفير موارد
-    options.add_argument('--window-size=800,600')
-    options.add_argument('--renderer-process-limit=1')
-    options.add_argument('--disable-background-timer-throttling')
-    options.add_argument('--disable-backgrounding-occluded-windows')
-    options.add_argument('--disable-renderer-backgrounding')
+    # ⚡ أداء
+    options.add_argument('--window-size=1024,768')
     options.add_argument('--no-first-run')
     options.add_argument('--no-default-browser-check')
     options.add_argument('--mute-audio')
     options.add_argument('--disable-features=TranslateUI')
-    options.add_argument('--js-flags=--max-old-space-size=128')
     options.add_argument('--disable-extensions')
     options.add_argument('--disable-component-update')
-    options.add_argument('--disable-domain-reliability')
     options.add_argument('--disable-sync')
+    options.add_argument('--disable-background-timer-throttling')
+    options.add_argument('--disable-backgrounding-occluded-windows')
+    options.add_argument('--disable-renderer-backgrounding')
 
     options.page_load_strategy = 'eager'
 
     service = Service(executable_path=patched_drv)
     driver = webdriver.Chrome(service=service, options=options)
 
-    # حقن التخفي
     try:
         driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': STEALTH_JS})
+        print("🛡️ Stealth ✓")
     except: pass
 
     try:
@@ -217,12 +208,15 @@ def get_driver():
         })
     except: pass
 
-    driver.set_page_load_timeout(25)
+    driver.set_page_load_timeout(30)
 
     try:
         driver.get("about:blank")
+        wd = driver.execute_script("return navigator.webdriver")
+        print(f"🔍 webdriver={wd} {'✅' if not wd else '❌'}")
     except: pass
 
+    print("✅ المتصفح جاهز (incognito 🕶️)")
     return driver
 
 
@@ -258,18 +252,18 @@ def panel():
 
 
 # ─────────────────────────────────────────────
-# 🤖 التعامل مع جميع صفحات Google
+# 🤖 معالجة صفحات Google
 # ─────────────────────────────────────────────
 def handle_google_pages(driver, session):
     status = "مراقبة..."
 
     try:
-        body_text = driver.find_element(By.TAG_NAME, "body").text
+        body = driver.find_element(By.TAG_NAME, "body").text
     except:
         return status
 
-    # ─── Verify it's you → Continue ───
-    if "verify it" in body_text.lower():
+    # Verify → Continue
+    if "verify it" in body.lower():
         try:
             btns = driver.find_elements(By.XPATH,
                 "//button[contains(., 'Continue')] | "
@@ -282,80 +276,67 @@ def handle_google_pages(driver, session):
                 if btn.is_displayed():
                     time.sleep(random.uniform(0.5, 1.5))
                     btn.click()
-                    status = "✅ ضغط Continue (Verify)"
+                    print("🤖 Continue clicked")
                     time.sleep(3)
-                    return status
+                    return "✅ Continue ✔️"
         except Exception as e:
-            pass
-        status = "🔐 Verify - جاري الضغط..."
-        return status
+            print(f"⚠️ Continue: {e}")
+        return "🔐 Verify..."
 
-    # ─── I understand ───
-    if "I understand" in body_text:
+    # I understand
+    if "I understand" in body:
         try:
             btns = driver.find_elements(By.XPATH, "//*[contains(text(), 'I understand')]")
             for btn in btns:
                 if btn.is_displayed():
-                    time.sleep(random.uniform(0.5, 1.0))
+                    time.sleep(0.5)
                     btn.click()
-                    status = "✅ I understand"
                     time.sleep(2)
-                    return status
+                    return "✅ I understand ✔️"
         except: pass
 
-    # ─── Couldn't sign you in ───
-    if "couldn't sign you in" in body_text.lower():
-        status = "⚠️ رفض - إعادة محاولة..."
+    # Couldn't sign
+    if "couldn't sign you in" in body.lower():
         try:
             driver.delete_all_cookies()
             time.sleep(1)
             driver.get(session.get('url', 'about:blank'))
             time.sleep(5)
         except: pass
-        return status
+        return "⚠️ رفض - إعادة..."
 
-    # ─── Accept / I agree ───
-    if "before you continue" in body_text.lower() or "I agree" in body_text:
+    # Accept/Agree
+    if "before you continue" in body.lower() or "I agree" in body:
         try:
             btns = driver.find_elements(By.XPATH,
-                "//button[contains(., 'I agree')] | "
-                "//button[contains(., 'Accept all')] | "
-                "//button[contains(., 'Accept')]"
-            )
+                "//button[contains(., 'I agree')] | //button[contains(., 'Accept')]")
             for btn in btns:
                 if btn.is_displayed():
                     btn.click()
-                    status = "✅ قبول الشروط"
                     time.sleep(2)
-                    return status
+                    return "✅ Accept ✔️"
         except: pass
 
-    # ─── Authorize ───
-    if "authorize" in body_text.lower():
+    # Authorize
+    if "authorize" in body.lower():
         try:
             btns = driver.find_elements(By.XPATH,
-                "//button[contains(., 'Authorize')] | "
-                "//button[contains(., 'AUTHORIZE')]"
-            )
+                "//button[contains(., 'Authorize')] | //button[contains(., 'AUTHORIZE')]")
             for btn in btns:
                 if btn.is_displayed():
                     btn.click()
                     session['auth'] = True
-                    status = "✅ Authorize"
                     time.sleep(2)
-                    return status
+                    return "✅ Authorize ✔️"
         except: pass
 
-    # ─── التعرف على الصفحة ───
     url = driver.current_url
     if "shell.cloud.google.com" in url:
-        status = "✅ Cloud Shell جاهز! (أرسل أوامرك الآن ⌨️)" if session.get('auth') else "✅ Cloud Shell يعمل"
+        return "✅ Cloud Shell!" if session.get('auth') else "✅ Cloud Shell"
     elif "console.cloud.google.com" in url:
-        status = "📊 Cloud Console"
-    elif "myaccount.google.com" in url:
-        status = "👤 صفحة الحساب"
+        return "📊 Console"
     elif "accounts.google.com" in url:
-        status = "🔐 تسجيل الدخول..."
+        return "🔐 تسجيل دخول..."
 
     return status
 
@@ -376,7 +357,7 @@ def stream_loop(chat_id, gen):
     cycle = 0
 
     while session['running'] and session.get('gen') == gen:
-        time.sleep(random.uniform(8, 12))
+        time.sleep(random.uniform(4, 6))
 
         if not session['running'] or session.get('gen') != gen:
             break
@@ -388,24 +369,20 @@ def stream_loop(chat_id, gen):
             if handles:
                 driver.switch_to.window(handles[-1])
 
-            # معالجة صفحات Google
             status = handle_google_pages(driver, session)
 
-            # القفز للشل
             url = driver.current_url
             if not session.get('shell_opened'):
                 if "console.cloud.google.com" in url or "myaccount.google.com" in url:
                     pid = session.get('project_id')
                     if pid:
-                        status = "🚀 Cloud Shell..."
                         try:
-                            # نستخدم رابط يفتح المحرر والـ Terminal بشكل أسرع
                             driver.get(f"https://shell.cloud.google.com/?project={pid}&pli=1&show=terminal")
                             session['shell_opened'] = True
                             time.sleep(5)
+                            status = "🚀 Cloud Shell..."
                         except: pass
 
-            # 📸 لقطة
             png = driver.get_screenshot_as_png()
             bio = io.BytesIO(png)
             bio.name = f'l_{int(time.time())}.png'
@@ -414,7 +391,7 @@ def stream_loop(chat_id, gen):
             icon = "🔴" if flash else "⭕"
             now = datetime.now().strftime("%H:%M:%S")
             proj = f"📁 {session.get('project_id')}" if session.get('project_id') else ""
-            cap = f"{icon} بث مباشر\n{proj}\n📌 {status}\n⏱ {now}"
+            cap = f"{icon} بث مباشر 🕶️\n{proj}\n📌 {status}\n⏱ {now}"
 
             bot.edit_message_media(
                 media=InputMediaPhoto(bio, caption=cap),
@@ -426,7 +403,7 @@ def stream_loop(chat_id, gen):
             err_count = 0
             drv_err = 0
 
-            if cycle % 10 == 0:
+            if cycle % 15 == 0:
                 gc.collect()
 
         except Exception as e:
@@ -479,7 +456,7 @@ def start_stream(chat_id, url):
             old['gen'] = old.get('gen', 0) + 1
             old_drv = old.get('driver')
 
-    bot.send_message(chat_id, "⚡ جاري التجهيز (وضع متخفي incognito)...")
+    bot.send_message(chat_id, "⚡ جاري التجهيز (incognito 🕶️)...")
 
     if old_drv:
         safe_quit(old_drv)
@@ -490,6 +467,7 @@ def start_stream(chat_id, url):
 
     try:
         driver = get_driver()
+        bot.send_message(chat_id, "✅ المتصفح جاهز")
     except Exception as e:
         bot.send_message(chat_id, f"❌ فشل:\n`{str(e)[:300]}`", parse_mode="Markdown")
         return
@@ -506,14 +484,13 @@ def start_stream(chat_id, url):
         }
 
     session = user_sessions[chat_id]
-
     bot.send_message(chat_id, "🌐 فتح الرابط...")
 
     try:
         driver.get(url)
     except Exception as e:
         if "timeout" not in str(e).lower():
-            pass
+            print(f"⚠️ {e}")
 
     time.sleep(5)
 
@@ -528,7 +505,7 @@ def start_stream(chat_id, url):
 
         msg = bot.send_photo(
             chat_id, bio,
-            caption="🔴 بث مباشر\n📌 بدء...",
+            caption="🔴 بث مباشر 🕶️\n📌 بدء...",
             reply_markup=panel()
         )
 
@@ -537,6 +514,14 @@ def start_stream(chat_id, url):
 
         t = threading.Thread(target=stream_loop, args=(chat_id, gen), daemon=True)
         t.start()
+
+        bot.send_message(chat_id,
+            "✅ البث يعمل! 🕶️\n"
+            "🤖 طيار آلي:\n"
+            "• Verify → Continue\n"
+            "• I understand → ✔️\n"
+            "• Authorize → ✔️"
+        )
 
     except Exception as e:
         bot.send_message(chat_id, f"❌ فشل:\n`{str(e)[:200]}`", parse_mode="Markdown")
@@ -550,9 +535,9 @@ def start_stream(chat_id, url):
 def cmd_start(message):
     bot.reply_to(message,
         "🚀 مرحباً!\n"
+        "🕶️ وضع متخفي incognito\n\n"
         "أرسل رابط يبدأ بـ:\n"
-        "`https://www.skills.google/google_sso`\n\n"
-        "💡 **تلميح:** عندما يفتح Cloud Shell، يمكنك كتابة أي أمر وسأقوم بتنفيذه مباشرة!",
+        "`https://www.skills.google/google_sso`",
         parse_mode="Markdown"
     )
 
@@ -560,40 +545,9 @@ def cmd_start(message):
 def handle_url(message):
     threading.Thread(target=start_stream, args=(message.chat.id, message.text), daemon=True).start()
 
-# ─────────────────────────────────────────────
-# ⌨️ استقبال الأوامر وتنفيذها في Terminal
-# ─────────────────────────────────────────────
-@bot.message_handler(func=lambda m: m.text and not m.text.startswith('http') and not m.text.startswith('/'))
-def handle_terminal_command(message):
-    chat_id = message.chat.id
-    cmd_text = message.text
-
-    with sessions_lock:
-        if chat_id not in user_sessions:
-            return
-        session = user_sessions[chat_id]
-
-    if not session.get('running'):
-        return
-
-    if not session.get('shell_opened'):
-        bot.reply_to(message, "⚠️ انتظر قليلاً، لم يفتح Cloud Shell بالكامل بعد.")
-        return
-
-    driver = session.get('driver')
-    if not driver:
-        return
-
-    try:
-        # إرسال النص إلى المتصفح ثم الضغط على Enter
-        actions = ActionChains(driver)
-        actions.send_keys(cmd_text)
-        actions.send_keys(Keys.RETURN)
-        actions.perform()
-
-        bot.reply_to(message, f"⌨️ تم إرسال الأمر:\n`{cmd_text}`\n\n📸 ستظهر النتيجة في البث القادم.", parse_mode="Markdown")
-    except Exception as e:
-        bot.reply_to(message, f"❌ فشل إرسال الأمر:\n`{str(e)[:100]}`", parse_mode="Markdown")
+@bot.message_handler(func=lambda m: m.text and m.text.startswith('http'))
+def handle_bad(message):
+    bot.reply_to(message, "❌ يجب أن يبدأ بـ:\n`https://www.skills.google/google_sso`", parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: True)
 def on_cb(call):
@@ -628,8 +582,10 @@ def on_cb(call):
 # ─────────────────────────────────────────────
 if __name__ == '__main__':
     print("=" * 45)
-    print("🚀 البوت يعمل - مع دعم إرسال الأوامر")
+    print("🚂 Railway + incognito 🕶️")
+    print(f"🌐 Port: {os.environ.get('PORT', 8080)}")
     print("=" * 45)
+
     threading.Thread(target=start_health_server, daemon=True).start()
 
     while True:
