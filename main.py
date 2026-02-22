@@ -201,7 +201,7 @@ for(var p in window){if(/^cdc_/.test(p)){try{delete window[p]}catch(e){}}}
 
 
 # ══════════════════════════════════════════════════════════
-#  Browser Driver
+#  Browser Driver (تم تأكيد الوضع الخفي والجلسة النظيفة)
 # ══════════════════════════════════════════════════════════
 
 def get_driver():
@@ -222,7 +222,11 @@ def get_driver():
 
     options = Options()
     options.binary_location = browser
+    
+    # 💡 تأكيد الوضع الخفي (Incognito) + جلسة نظيفة تماماً
     options.add_argument('--incognito')
+    options.add_argument('--disable-application-cache')
+    
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
@@ -247,6 +251,10 @@ def get_driver():
     service = Service(executable_path=patched_drv)
     driver = webdriver.Chrome(service=service, options=options)
 
+    # مسح أي ملفات تعريف ارتباط متبقية للاحتياط
+    driver.execute_cdp_cmd('Network.clearBrowserCache', {})
+    driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
+
     try:
         driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument',
                                {'source': STEALTH_JS})
@@ -262,7 +270,7 @@ def get_driver():
         pass
 
     driver.set_page_load_timeout(45)
-    log.info("✅ المتصفح جاهز")
+    log.info("✅ المتصفح جاهز (في الوضع الخفي)")
     return driver
 
 
@@ -694,10 +702,13 @@ def handle_google_pages(driver, session):
             pass
         return "🔐 Verify..."
 
-    if "I understand" in body:
+    # 💡 تم تحسين ضغطة "I understand" بناءً على الصورة التي أرسلتها
+    if "i understand" in body_lower:
         try:
             btns = driver.find_elements(By.XPATH,
-                "//*[contains(text(),'I understand')]")
+                "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'i understand')]|"
+                "//span[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'i understand')]|"
+                "//div[@role='button'][contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'i understand')]")
             for btn in btns:
                 try:
                     if btn.is_displayed():
@@ -789,13 +800,15 @@ def handle_google_pages(driver, session):
     except Exception:
         return status
 
-    if "shell.cloud.google.com" in url or "ide.cloud.google.com" in url:
+    # 💡 تمييز صفحة تسجيل الدخول حتى لا تحاول فتح Cloud Run وهي ليست مسجلة
+    if "accounts.google.com" in url:
+        return "🔐 تسجيل الدخول (الرابط منتهي؟)..."
+    elif "shell.cloud.google.com" in url or "ide.cloud.google.com" in url:
         session['terminal_ready'] = True
         return "✅ Terminal ⌨️"
     elif "console.cloud.google.com" in url:
         return "📊 Console"
-    elif "accounts.google.com" in url:
-        return "🔐 تسجيل..."
+    
     return status
 
 
@@ -925,7 +938,7 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
 
 # ══════════════════════════════════════════════════════════
-#  Cloud Shell Navigation (تم التعديل لتجنب Crash المتصفح)
+#  Cloud Shell Navigation
 # ══════════════════════════════════════════════════════════
 
 def open_cloud_shell(driver, session, chat_id):
@@ -934,7 +947,6 @@ def open_cloud_shell(driver, session, chat_id):
         return False
 
     try:
-        # استخدام الرابط الأصلي للعودة للبيئة كما كانت (IDE + Terminal)
         shell_url = session.get('url')
 
         bot.send_message(chat_id,
@@ -942,9 +954,6 @@ def open_cloud_shell(driver, session, chat_id):
 
         log.info(f"🚀 Shell URL: {shell_url}")
 
-        # 💡 تفريغ الذاكرة لتجنب انهيار المتصفح (OOM Crash):
-        # نقوم بفتح تبويبة فارغة جديدة، ونغلق تبويبة Cloud Run الثقيلة 
-        # لتفريغ الرام، ثم ننتقل للرابط المطلوب.
         try:
             driver.execute_script("window.open('about:blank', '_blank');")
             time.sleep(1)
@@ -1066,12 +1075,15 @@ def stream_loop(chat_id, gen):
                 if "message is not modified" not in em:
                     raise
 
-            # Background tasks
-            on_console = ("console.cloud.google.com" in current_url
-                          or "myaccount.google.com" in current_url)
+            # 💡 التعديل الأهم لمنع الـ Loop عندما يطلب منك تسجيل الدخول
+            is_accounts_page = "accounts.google.com" in current_url
+            on_console = (("console.cloud.google.com" in current_url
+                          or "myaccount.google.com" in current_url) 
+                          and not is_accounts_page)
+            
             on_shell = is_on_shell_page(driver)
 
-            # Cloud Run extraction
+            # Cloud Run extraction (لن يشتغل إذا كنت في صفحة تسجيل الدخول)
             if (session.get('project_id')
                     and not session.get('run_api_checked')
                     and on_console):
