@@ -202,203 +202,127 @@ def is_on_shell_page(driver):
 
 
 # ─────────────────────────────────────────────
-# ⌨️ إرسال أمر للترمينال (محسّن بالكامل)
+# 📖 قراءة نص Terminal
 # ─────────────────────────────────────────────
-def send_command_to_terminal(driver, command):
-    """إرسال أمر للترمينال - 4 طرق مع تحسينات"""
+def get_terminal_output(driver):
+    """
+    قراءة النص المعروض في Terminal عبر عدة طرق
+    يُرجع النص كاملاً أو آخر جزء منه
+    """
 
+    # ─── طريقة 1: قراءة من xterm rows (الأفضل) ───
     try:
-        handles = driver.window_handles
-        if handles:
-            driver.switch_to.window(handles[-1])
-    except: pass
+        text = driver.execute_script("""
+            // البحث عن xterm rows
+            var rows = document.querySelectorAll('.xterm-rows > div');
+            if (rows.length === 0) {
+                // بحث أعمق
+                rows = document.querySelectorAll('.xterm-rows div[style]');
+            }
+            if (rows.length === 0) {
+                // بحث في كل xterm
+                var xterm = document.querySelector('.xterm');
+                if (xterm) {
+                    rows = xterm.querySelectorAll('.xterm-rows > div');
+                }
+            }
 
-    # إلغاء أي iframe
-    try:
-        driver.switch_to.default_content()
-    except: pass
-
-    # ═══════════════════════════════════════════
-    # طريقة 1: البحث عن xterm textarea وتركيزه
-    # ═══════════════════════════════════════════
-    try:
-        # البحث الشامل عن textarea (قد يكون مخفي)
-        result = driver.execute_script("""
-            // البحث في كل iframes أيضاً
-            function findTerminalTextarea(doc) {
-                var ta = doc.querySelector('.xterm-helper-textarea');
-                if (ta) return ta;
-                ta = doc.querySelector('textarea.xterm-helper-textarea');
-                if (ta) return ta;
-                // بحث في جميع textareas
-                var all = doc.querySelectorAll('textarea');
-                for (var i = 0; i < all.length; i++) {
-                    if (all[i].className.indexOf('xterm') !== -1 ||
-                        all[i].closest('.xterm') ||
-                        all[i].closest('.terminal')) {
-                        return all[i];
+            if (rows.length > 0) {
+                var lines = [];
+                rows.forEach(function(row) {
+                    var text = row.textContent || row.innerText || '';
+                    if (text.trim().length > 0) {
+                        lines.push(text);
                     }
-                }
-                return null;
+                });
+                return lines.join('\\n');
             }
-
-            var ta = findTerminalTextarea(document);
-
-            // بحث في iframes
-            if (!ta) {
-                var frames = document.querySelectorAll('iframe');
-                for (var i = 0; i < frames.length; i++) {
-                    try {
-                        var fdoc = frames[i].contentDocument || frames[i].contentWindow.document;
-                        ta = findTerminalTextarea(fdoc);
-                        if (ta) break;
-                    } catch(e) {}
-                }
-            }
-
-            if (ta) {
-                ta.focus();
-                return 'FOUND';
-            }
-            return 'NOT_FOUND';
+            return null;
         """)
-
-        if result == 'FOUND':
-            time.sleep(0.2)
-            # الآن نستخدم ActionChains للكتابة
-            actions = ActionChains(driver)
-            for char in command:
-                actions.send_keys(char)
-                actions.pause(random.uniform(0.02, 0.06))
-            actions.send_keys(Keys.RETURN)
-            actions.perform()
-            print(f"⌨️ [JS+Actions] أمر: {command}")
-            return True
+        if text and text.strip():
+            return text.strip()
     except Exception as e:
-        print(f"⚠️ طريقة 1: {e}")
+        print(f"⚠️ قراءة xterm-rows: {e}")
 
-    # ═══════════════════════════════════════════
-    # طريقة 2: النقر على xterm-screen ثم الكتابة
-    # ═══════════════════════════════════════════
+    # ─── طريقة 2: قراءة من xterm-screen textContent ───
     try:
-        # البحث عن عنصر xterm المرئي
-        xterm_els = driver.find_elements(By.CSS_SELECTOR,
-            ".xterm-screen, .xterm-rows, canvas.xterm-link-layer, "
-            "canvas.xterm-text-layer, canvas.xterm-cursor-layer, "
-            ".xterm, [class*='xterm']"
-        )
+        text = driver.execute_script("""
+            var screen = document.querySelector('.xterm-screen');
+            if (screen) return screen.textContent || screen.innerText;
 
-        clicked = False
-        for el in xterm_els:
-            try:
-                if el.is_displayed() and el.size['width'] > 100:
-                    # النقر في منتصف العنصر
-                    ActionChains(driver).move_to_element(el).click().perform()
-                    clicked = True
-                    break
-            except: continue
+            var xterm = document.querySelector('.xterm');
+            if (xterm) return xterm.textContent || xterm.innerText;
 
-        if clicked:
-            time.sleep(0.3)
-            # كتابة الأمر
-            actions = ActionChains(driver)
-            for char in command:
-                actions.send_keys(char)
-                actions.pause(random.uniform(0.02, 0.06))
-            actions.send_keys(Keys.RETURN)
-            actions.perform()
-            print(f"⌨️ [Click+Actions] أمر: {command}")
-            return True
-    except Exception as e:
-        print(f"⚠️ طريقة 2: {e}")
+            var terminal = document.querySelector('[class*="terminal"]');
+            if (terminal) return terminal.textContent || terminal.innerText;
 
-    # ═══════════════════════════════════════════
-    # طريقة 3: Clipboard paste (لصق الأمر)
-    # ═══════════════════════════════════════════
-    try:
-        # تركيز على terminal أولاً
-        driver.execute_script("""
-            var el = document.querySelector('.xterm-helper-textarea') ||
-                     document.querySelector('.xterm-screen') ||
-                     document.querySelector('.xterm');
-            if (el) el.focus();
+            return null;
         """)
-        time.sleep(0.2)
-
-        # استخدام Ctrl+Shift+V أو إدخال مباشر
-        # لكن الأسهل: نستخدم send_keys على active element
-        active = driver.switch_to.active_element
-        for char in command:
-            active.send_keys(char)
-            time.sleep(random.uniform(0.01, 0.04))
-        active.send_keys(Keys.RETURN)
-        print(f"⌨️ [ActiveElement] أمر: {command}")
-        return True
+        if text and text.strip():
+            return text.strip()
     except Exception as e:
-        print(f"⚠️ طريقة 3: {e}")
+        print(f"⚠️ قراءة xterm-screen: {e}")
 
-    # ═══════════════════════════════════════════
-    # طريقة 4: إرسال KeyboardEvent مباشر عبر JS
-    # ═══════════════════════════════════════════
+    # ─── طريقة 3: قراءة من accessibility tree ───
     try:
-        cmd_escaped = command.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
-        result = driver.execute_script(f"""
-            var target = document.querySelector('.xterm-helper-textarea') ||
-                        document.activeElement;
-            if (!target) return 'NO_TARGET';
+        text = driver.execute_script("""
+            var live = document.querySelector('[aria-live]');
+            if (live) return live.textContent || live.innerText;
 
-            target.focus();
+            var role = document.querySelector('[role="log"]');
+            if (role) return role.textContent || role.innerText;
 
-            function sendKey(el, char) {{
-                var keyCode = char.charCodeAt(0);
-                var events = ['keydown', 'keypress', 'input', 'keyup'];
-                events.forEach(function(type) {{
-                    var opts = {{
-                        key: char,
-                        code: char === ' ' ? 'Space' : 'Key' + char.toUpperCase(),
-                        keyCode: keyCode,
-                        charCode: type === 'keypress' ? keyCode : 0,
-                        which: keyCode,
-                        bubbles: true,
-                        cancelable: true,
-                        composed: true
-                    }};
-                    if (type === 'input') {{
-                        el.dispatchEvent(new InputEvent('input', {{
-                            data: char,
-                            inputType: 'insertText',
-                            bubbles: true
-                        }}));
-                    }} else {{
-                        el.dispatchEvent(new KeyboardEvent(type, opts));
-                    }}
-                }});
-            }}
-
-            var text = '{cmd_escaped}';
-            for (var i = 0; i < text.length; i++) {{
-                sendKey(target, text[i]);
-            }}
-
-            // Enter
-            ['keydown','keypress','keyup'].forEach(function(type) {{
-                target.dispatchEvent(new KeyboardEvent(type, {{
-                    key: 'Enter', code: 'Enter',
-                    keyCode: 13, charCode: type==='keypress'?13:0,
-                    which: 13, bubbles: true, cancelable: true, composed: true
-                }}));
-            }});
-
-            return 'OK';
+            return null;
         """)
-        if result == 'OK':
-            print(f"⌨️ [JS Events] أمر: {command}")
-            return True
+        if text and text.strip():
+            return text.strip()
     except Exception as e:
-        print(f"⚠️ طريقة 4: {e}")
+        print(f"⚠️ قراءة aria: {e}")
 
-    print(f"❌ فشل كل الطرق: {command}")
-    return False
+    return None
+
+
+def extract_command_result(full_output, command):
+    """
+    استخراج نتيجة الأمر فقط من النص الكامل
+    يبحث عن الأمر ثم يأخذ ما بعده حتى prompt التالي
+    """
+    if not full_output:
+        return None
+
+    lines = full_output.split('\n')
+
+    # البحث عن السطر الذي يحتوي الأمر
+    cmd_line_idx = -1
+    for i, line in enumerate(lines):
+        # البحث عن $ command أو الأمر نفسه
+        if command in line and ('$' in line or '>' in line or '#' in line):
+            cmd_line_idx = i
+        elif line.strip() == command:
+            cmd_line_idx = i
+
+    if cmd_line_idx == -1:
+        # إذا لم نجد الأمر، نأخذ آخر 20 سطر
+        result_lines = lines[-20:]
+    else:
+        # نأخذ من بعد سطر الأمر حتى prompt التالي أو النهاية
+        result_lines = []
+        for i in range(cmd_line_idx + 1, len(lines)):
+            line = lines[i]
+            # توقف عند prompt التالي
+            if re.match(r'^[\w\-_]+@[\w\-_]+.*\$\s*$', line.strip()):
+                break
+            if line.strip().endswith('$ ') and len(line.strip()) > 2:
+                break
+            result_lines.append(line)
+
+    result = '\n'.join(result_lines).strip()
+
+    # إزالة أسطر فارغة زائدة
+    while '\n\n\n' in result:
+        result = result.replace('\n\n\n', '\n\n')
+
+    return result if result else None
 
 
 def take_screenshot(driver):
@@ -410,6 +334,98 @@ def take_screenshot(driver):
         bio.name = f'ss_{int(time.time())}.png'
         return bio
     except: return None
+
+
+# ─────────────────────────────────────────────
+# ⌨️ إرسال أمر للترمينال
+# ─────────────────────────────────────────────
+def send_command_to_terminal(driver, command):
+    try:
+        handles = driver.window_handles
+        if handles: driver.switch_to.window(handles[-1])
+    except: pass
+
+    try: driver.switch_to.default_content()
+    except: pass
+
+    # طريقة 1: JS focus + ActionChains
+    try:
+        result = driver.execute_script("""
+            function findTA(doc) {
+                var ta = doc.querySelector('.xterm-helper-textarea');
+                if (ta) return ta;
+                var all = doc.querySelectorAll('textarea');
+                for (var i = 0; i < all.length; i++) {
+                    if (all[i].className.indexOf('xterm') !== -1 ||
+                        all[i].closest('.xterm') || all[i].closest('.terminal'))
+                        return all[i];
+                }
+                return null;
+            }
+            var ta = findTA(document);
+            if (!ta) {
+                var frames = document.querySelectorAll('iframe');
+                for (var i = 0; i < frames.length; i++) {
+                    try { ta = findTA(frames[i].contentDocument); if (ta) break; } catch(e) {}
+                }
+            }
+            if (ta) { ta.focus(); return 'FOUND'; }
+            return 'NOT_FOUND';
+        """)
+        if result == 'FOUND':
+            time.sleep(0.2)
+            actions = ActionChains(driver)
+            for char in command:
+                actions.send_keys(char)
+                actions.pause(random.uniform(0.02, 0.06))
+            actions.send_keys(Keys.RETURN)
+            actions.perform()
+            print(f"⌨️ [1] أمر: {command}")
+            return True
+    except Exception as e:
+        print(f"⚠️ طريقة 1: {e}")
+
+    # طريقة 2: النقر على xterm ثم كتابة
+    try:
+        xterm_els = driver.find_elements(By.CSS_SELECTOR,
+            ".xterm-screen, .xterm-rows, canvas.xterm-link-layer, .xterm, [class*='xterm']")
+        for el in xterm_els:
+            try:
+                if el.is_displayed() and el.size['width'] > 100:
+                    ActionChains(driver).move_to_element(el).click().perform()
+                    time.sleep(0.3)
+                    actions = ActionChains(driver)
+                    for char in command:
+                        actions.send_keys(char)
+                        actions.pause(random.uniform(0.02, 0.06))
+                    actions.send_keys(Keys.RETURN)
+                    actions.perform()
+                    print(f"⌨️ [2] أمر: {command}")
+                    return True
+            except: continue
+    except Exception as e:
+        print(f"⚠️ طريقة 2: {e}")
+
+    # طريقة 3: Active element
+    try:
+        driver.execute_script("""
+            var el = document.querySelector('.xterm-helper-textarea') ||
+                     document.querySelector('.xterm-screen') || document.querySelector('.xterm');
+            if (el) el.focus();
+        """)
+        time.sleep(0.2)
+        active = driver.switch_to.active_element
+        for char in command:
+            active.send_keys(char)
+            time.sleep(random.uniform(0.01, 0.04))
+        active.send_keys(Keys.RETURN)
+        print(f"⌨️ [3] أمر: {command}")
+        return True
+    except Exception as e:
+        print(f"⚠️ طريقة 3: {e}")
+
+    print(f"❌ فشل: {command}")
+    return False
 
 
 # ─────────────────────────────────────────────
@@ -432,16 +448,7 @@ def handle_google_pages(driver, session):
                         time.sleep(random.uniform(0.5,1.5))
                         try: btn.click()
                         except: driver.execute_script("arguments[0].click();",btn)
-                        time.sleep(3)
-                        return "✅ Cloud Shell Continue ✔️"
-                except: continue
-            css_btns = driver.find_elements(By.CSS_SELECTOR,"button.cfc-dialog-action,a.cfc-dialog-action")
-            for btn in css_btns:
-                try:
-                    if btn.is_displayed() and "continue" in btn.text.lower():
-                        driver.execute_script("arguments[0].click();",btn)
-                        time.sleep(3)
-                        return "✅ Continue ✔️"
+                        time.sleep(3); return "✅ Continue ✔️"
                 except: continue
         except: pass
         return "☁️ popup..."
@@ -450,9 +457,7 @@ def handle_google_pages(driver, session):
         try:
             btns = driver.find_elements(By.XPATH,"//button[contains(.,'Continue')]|//input[@value='Continue']|//div[@role='button'][contains(.,'Continue')]")
             for btn in btns:
-                if btn.is_displayed():
-                    time.sleep(0.5); btn.click(); time.sleep(3)
-                    return "✅ Verify ✔️"
+                if btn.is_displayed(): time.sleep(0.5); btn.click(); time.sleep(3); return "✅ Verify ✔️"
         except: pass
         return "🔐 Verify..."
 
@@ -485,7 +490,7 @@ def handle_google_pages(driver, session):
     url = driver.current_url
     if "shell.cloud.google.com" in url or "ide.cloud.google.com" in url:
         session['terminal_ready'] = True
-        return "✅ Terminal جاهز ⌨️"
+        return "✅ Terminal ⌨️"
     elif "console.cloud.google.com" in url: return "📊 Console"
     elif "accounts.google.com" in url: return "🔐 تسجيل..."
     return status
@@ -537,7 +542,6 @@ def stream_loop(chat_id, gen):
 
             png = driver.get_screenshot_as_png()
             bio = io.BytesIO(png); bio.name = f'l_{int(time.time())}.png'
-
             flash = not flash
             icon = "🔴" if flash else "⭕"
             now = datetime.now().strftime("%H:%M:%S")
@@ -628,7 +632,7 @@ def start_stream(chat_id, url):
 
 
 # ─────────────────────────────────────────────
-# ⌨️ تنفيذ أمر
+# ⌨️ تنفيذ أمر + إرسال النتيجة نصياً
 # ─────────────────────────────────────────────
 def execute_command(chat_id, command):
     with sessions_lock:
@@ -645,30 +649,106 @@ def execute_command(chat_id, command):
 
     status_msg = bot.send_message(chat_id, f"⏳ `{command}`", parse_mode="Markdown")
 
+    # ✅ قراءة النص قبل الأمر (لمقارنته لاحقاً)
+    text_before = get_terminal_output(driver) or ""
+
     success = send_command_to_terminal(driver, command)
 
     if success:
-        # ✅ انتظار أطول لظهور النتيجة
+        # انتظار ظهور النتيجة
         wait_time = 3
-        # أوامر طويلة تحتاج وقت أكثر
-        if any(k in command.lower() for k in ['install','apt','pip','npm','build','deploy','gcloud']):
-            wait_time = 8
+        if any(k in command.lower() for k in ['install','apt','pip','npm','build','deploy','gcloud','docker','kubectl','terraform']):
+            wait_time = 10
+        elif any(k in command.lower() for k in ['cat','echo','ls','pwd','whoami','date','hostname','uname']):
+            wait_time = 2
+
         time.sleep(wait_time)
 
+        # ✅ قراءة النص بعد الأمر
+        text_after = get_terminal_output(driver) or ""
+
+        # ✅ استخراج النتيجة الجديدة فقط
+        output_text = ""
+
+        if text_after and text_after != text_before:
+            # إذا النص الجديد أطول، نأخذ الفرق
+            if len(text_after) > len(text_before):
+                # نحاول استخراج الجزء الجديد
+                new_part = text_after[len(text_before):].strip()
+                if new_part:
+                    output_text = new_part
+                else:
+                    # إذا الفرق فارغ، نستخرج بالطريقة الذكية
+                    output_text = extract_command_result(text_after, command) or ""
+            else:
+                output_text = extract_command_result(text_after, command) or ""
+        elif text_after:
+            output_text = extract_command_result(text_after, command) or ""
+
+        # تنظيف النتيجة
+        if output_text:
+            # إزالة سطر الأمر نفسه إذا موجود في البداية
+            lines = output_text.split('\n')
+            cleaned_lines = []
+            skip_first = False
+            for line in lines:
+                if not skip_first and command in line:
+                    skip_first = True
+                    continue
+                cleaned_lines.append(line)
+            output_text = '\n'.join(cleaned_lines).strip()
+
+        # 📸 لقطة شاشة
         bio = take_screenshot(driver)
+
+        # ✅ إرسال النتيجة النصية + الصورة
+        if output_text:
+            # تقسيم النص إذا كان طويلاً (حد تيليغرام 4096 حرف)
+            max_len = 3900
+            if len(output_text) > max_len:
+                output_text = output_text[:max_len] + "\n... (تم اقتطاع النص)"
+
+            result_message = (
+                f"✅ **الأمر:**\n"
+                f"`{command}`\n\n"
+                f"📋 **النتيجة:**\n"
+                f"```\n{output_text}\n```"
+            )
+
+            try:
+                bot.send_message(chat_id, result_message,
+                    parse_mode="Markdown",
+                    reply_markup=panel(cmd_mode=True))
+            except Exception as e:
+                # إذا فشل Markdown (أحرف خاصة)
+                try:
+                    bot.send_message(chat_id,
+                        f"✅ الأمر: {command}\n\n📋 النتيجة:\n{output_text}",
+                        reply_markup=panel(cmd_mode=True))
+                except:
+                    bot.send_message(chat_id, "✅ تم التنفيذ (فشل عرض النتيجة)")
+        else:
+            # إذا لم نتمكن من قراءة النص
+            try:
+                bot.send_message(chat_id,
+                    f"✅ تم تنفيذ: `{command}`\n"
+                    f"📋 لم يتم التقاط النص (شاهد الصورة)",
+                    parse_mode="Markdown")
+            except: pass
+
+        # إرسال الصورة دائماً
         if bio:
             try:
                 bot.send_photo(chat_id, bio,
-                    caption=f"✅ `{command}`\n⌨️ أرسل أمر آخر",
-                    parse_mode="Markdown", reply_markup=panel(cmd_mode=True))
+                    caption=f"📸 بعد: `{command}`",
+                    parse_mode="Markdown",
+                    reply_markup=panel(cmd_mode=True))
             except:
-                bot.send_message(chat_id, "✅ تم التنفيذ")
-        else:
-            bot.send_message(chat_id, "✅ تم (فشل الصورة)")
+                pass
+
     else:
         bot.send_message(chat_id,
-            "⚠️ فشل الإرسال.\n"
-            "جرّب: 🔄 تحديث ثم أعد")
+            "⚠️ فشل الإرسال.\n🔄 تحديث ثم أعد")
 
     try: bot.delete_message(chat_id, status_msg.message_id)
     except: pass
@@ -715,7 +795,6 @@ def handle_text(message):
     with sessions_lock:
         if cid not in user_sessions: return
         session = user_sessions[cid]
-
     if session.get('cmd_mode'):
         threading.Thread(target=execute_command, args=(cid, message.text), daemon=True).start()
     elif is_on_shell_page(session.get('driver')):
@@ -739,25 +818,19 @@ def on_cb(call):
             safe_quit(s.get('driver'))
             with sessions_lock:
                 if cid in user_sessions: del user_sessions[cid]
-
         elif call.data == "refresh":
             bot.answer_callback_query(call.id, "تحديث...")
             try: s['driver'].refresh()
             except: pass
-
         elif call.data == "screenshot":
             bot.answer_callback_query(call.id, "📸")
             bio = take_screenshot(s['driver'])
             if bio: bot.send_photo(cid, bio, caption="📸", reply_markup=panel(s.get('cmd_mode',False)))
-
         elif call.data == "cmd_mode":
             s['cmd_mode'] = True
             if is_on_shell_page(s.get('driver')): s['terminal_ready'] = True
             bot.answer_callback_query(call.id, "⌨️")
-            bot.send_message(cid,
-                "⌨️ **وضع الأوامر!**\n\nاكتب أي أمر:\n`ls -la`\n`gcloud config list`\n\n🔙 للرجوع",
-                parse_mode="Markdown")
-
+            bot.send_message(cid,"⌨️ **وضع الأوامر!**\n\nاكتب أي أمر:\n`ls -la`\n`gcloud config list`\n\n🔙 للرجوع",parse_mode="Markdown")
         elif call.data == "watch_mode":
             s['cmd_mode'] = False
             bot.answer_callback_query(call.id, "🔙")
@@ -767,7 +840,7 @@ def on_cb(call):
 
 if __name__ == '__main__':
     print("=" * 50)
-    print("🚂 Terminal Control v2")
+    print("🚂 Terminal Control + Output Reading")
     print(f"🌐 Port: {os.environ.get('PORT', 8080)}")
     print("=" * 50)
     threading.Thread(target=start_health_server, daemon=True).start()
