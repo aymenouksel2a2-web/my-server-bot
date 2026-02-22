@@ -130,29 +130,18 @@ def patch_chromedriver(original_path):
 
 
 def safe_navigate(driver, url):
-    """Navigate using JS first to avoid Selenium timeout crashes."""
+    """Navigate using JS to avoid Selenium timeout crashes."""
     try:
         js_url = json.dumps(url)
         driver.execute_script(f'window.location.href = {js_url};')
-        log.info(f"✅ Navigate [JS]: {url[:100]}...")
+        log.info(f"✅ Navigate [JS]: {url[:100]}")
         return True
-    except Exception as e:
-        log.debug(f"JS nav failed: {e}")
-
-    try:
-        js_url = json.dumps(url)
-        driver.execute_script(f'window.location.assign({js_url});')
-        log.info(f"✅ Navigate [JS assign]: {url[:100]}...")
-        return True
-    except Exception as e:
-        log.debug(f"JS assign failed: {e}")
-
+    except Exception:
+        pass
     try:
         driver.get(url)
-        log.info(f"✅ Navigate [get]: {url[:100]}...")
         return True
     except TimeoutException:
-        log.info(f"⏱️ Navigate timeout (page loading): {url[:80]}...")
         return True
     except Exception as e:
         log.error(f"❌ Navigation failed: {e}")
@@ -164,6 +153,18 @@ def get_current_url_safe(driver):
         return driver.current_url
     except Exception:
         return ""
+
+
+def switch_to_latest_window(driver):
+    """Switch to the latest browser window/tab."""
+    if not driver:
+        return
+    try:
+        handles = driver.window_handles
+        if handles:
+            driver.switch_to.window(handles[-1])
+    except Exception:
+        pass
 
 
 # ══════════════════════════════════════════════════════════
@@ -317,37 +318,119 @@ def panel(cmd_mode=False):
 
 
 # ══════════════════════════════════════════════════════════
-#  Shell Detection
+#  Shell Detection (FIXED: multi-method)
 # ══════════════════════════════════════════════════════════
 
 def is_on_shell_page(driver):
+    """
+    Detect Cloud Shell using 3 methods:
+    1. URL check (shell.cloud.google.com or ide.cloud.google.com)
+    2. DOM elements check (xterm terminal elements)
+    3. Page title check
+    
+    BUG FIX: switch_to_latest_window() BEFORE checking.
+    The old code checked the URL without switching windows first,
+    so if Cloud Shell opened in a new tab, the check would fail.
+    """
     if not driver:
         return False
+
+    # ═══ CRITICAL: Switch to latest window first ═══
+    switch_to_latest_window(driver)
+
+    # Method 1: URL
     try:
         url = driver.current_url
-        return ("shell.cloud.google.com" in url
-                or "ide.cloud.google.com" in url)
+        if ("shell.cloud.google.com" in url
+                or "ide.cloud.google.com" in url):
+            log.debug(f"Shell detected [URL]: {url[:60]}")
+            return True
     except Exception:
-        return False
+        pass
+
+    # Method 2: xterm DOM elements
+    try:
+        has_terminal = driver.execute_script("""
+            return !!(
+                document.querySelector('.xterm') ||
+                document.querySelector('.xterm-helper-textarea') ||
+                document.querySelector('.xterm-screen') ||
+                document.querySelector('.xterm-rows')
+            );
+        """)
+        if has_terminal:
+            log.debug("Shell detected [DOM]: xterm elements found")
+            return True
+    except Exception:
+        pass
+
+    # Method 3: Page title
+    try:
+        title = driver.title.lower()
+        if 'cloud shell' in title:
+            log.debug(f"Shell detected [Title]: {title}")
+            return True
+    except Exception:
+        pass
+
+    return False
 
 
 # ══════════════════════════════════════════════════════════
-#  Terminal Interaction
+#  Terminal Command Sending (IMPROVED: 4 methods)
 # ══════════════════════════════════════════════════════════
+
+# DevShell API endpoint template for command events
+DEVSHELL_CMD_JS = """
+try {
+    var cmd = arguments[0];
+    var params = JSON.stringify([
+        "Devshell","TerminalCommand",0,null,1,[
+        ["command", cmd],
+        ["isCloudShellFrontend","true"],
+        ["oicsSession","false"],
+        ["oicsTrusted","false"],
+        ["oicsImage",""],
+        ["qwiklabsUser","true"],
+        ["isGoogler","false"],
+        ["isCloudShellPwa","false"],
+        ["editorType","0"],
+        ["newUserSession","false"],
+        ["doesSession","false"],
+        ["vmSize","UNKNOWN"],
+        ["isEmbedded","false"]
+        ],0
+    ]);
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '/event/Devshell/TerminalCommand?request=' +
+             encodeURIComponent(params) + '&authuser=0', false);
+    xhr.send();
+    return xhr.status;
+} catch(e) {
+    return -1;
+}
+"""
+
 
 def send_command_to_terminal(driver, command):
+    """
+    Send command to Cloud Shell terminal using 4 methods:
+    M1: JS find xterm textarea + ActionChains typing
+    M2: Click xterm element + ActionChains typing
+    M3: Active element focus + send_keys
+    M4: DevShell API endpoint (supplementary)
+    """
     if not driver:
         return False
 
+    # ═══ Switch to latest window + reset context ═══
+    switch_to_latest_window(driver)
     try:
-        handles = driver.window_handles
-        if handles:
-            driver.switch_to.window(handles[-1])
         driver.switch_to.default_content()
     except Exception:
         pass
 
-    # Method 1: xterm textarea via JS
+    # ── Method 1: JS textarea focus + ActionChains ──
     try:
         result = driver.execute_script("""
             function findTA(doc) {
@@ -356,7 +439,8 @@ def send_command_to_terminal(driver, command):
                 var all = doc.querySelectorAll('textarea');
                 for (var i = 0; i < all.length; i++) {
                     if (all[i].className.indexOf('xterm') !== -1 ||
-                        all[i].closest('.xterm') || all[i].closest('.terminal'))
+                        all[i].closest('.xterm') ||
+                        all[i].closest('.terminal'))
                         return all[i];
                 }
                 return null;
@@ -381,16 +465,21 @@ def send_command_to_terminal(driver, command):
                 actions.pause(random.uniform(0.02, 0.06))
             actions.send_keys(Keys.RETURN)
             actions.perform()
-            log.info(f"⌨️ [M1] أمر: {command[:60]}")
+            log.info(f"⌨️ [M1] sent: {command[:60]}")
+            # Also fire DevShell API event
+            try:
+                driver.execute_script(DEVSHELL_CMD_JS, command)
+            except Exception:
+                pass
             return True
     except Exception as e:
-        log.debug(f"Method 1: {e}")
+        log.debug(f"M1 failed: {e}")
 
-    # Method 2: Click on xterm element
+    # ── Method 2: Click xterm element + ActionChains ──
     try:
         xterm_els = driver.find_elements(By.CSS_SELECTOR,
-            ".xterm-screen, .xterm-rows, canvas.xterm-link-layer, "
-            ".xterm, [class*='xterm']")
+            ".xterm-screen, .xterm-rows, "
+            "canvas.xterm-link-layer, .xterm, [class*='xterm']")
         for el in xterm_els:
             try:
                 if el.is_displayed() and el.size['width'] > 100:
@@ -402,14 +491,18 @@ def send_command_to_terminal(driver, command):
                         actions.pause(random.uniform(0.02, 0.06))
                     actions.send_keys(Keys.RETURN)
                     actions.perform()
-                    log.info(f"⌨️ [M2] أمر: {command[:60]}")
+                    log.info(f"⌨️ [M2] sent: {command[:60]}")
+                    try:
+                        driver.execute_script(DEVSHELL_CMD_JS, command)
+                    except Exception:
+                        pass
                     return True
             except Exception:
                 continue
     except Exception as e:
-        log.debug(f"Method 2: {e}")
+        log.debug(f"M2 failed: {e}")
 
-    # Method 3: Focus + active element
+    # ── Method 3: Active element + send_keys ──
     try:
         driver.execute_script("""
             var el = document.querySelector('.xterm-helper-textarea') ||
@@ -423,18 +516,37 @@ def send_command_to_terminal(driver, command):
             active.send_keys(char)
             time.sleep(random.uniform(0.01, 0.04))
         active.send_keys(Keys.RETURN)
-        log.info(f"⌨️ [M3] أمر: {command[:60]}")
+        log.info(f"⌨️ [M3] sent: {command[:60]}")
+        try:
+            driver.execute_script(DEVSHELL_CMD_JS, command)
+        except Exception:
+            pass
         return True
     except Exception as e:
-        log.debug(f"Method 3: {e}")
+        log.debug(f"M3 failed: {e}")
 
-    log.warning(f"❌ فشل إرسال: {command[:60]}")
+    # ── Method 4: DevShell API only ──
+    try:
+        status = driver.execute_script(DEVSHELL_CMD_JS, command)
+        if status == 200:
+            log.info(f"⌨️ [M4-API] sent: {command[:60]}")
+            return True
+    except Exception as e:
+        log.debug(f"M4 failed: {e}")
+
+    log.warning(f"❌ All methods failed: {command[:60]}")
     return False
 
+
+# ══════════════════════════════════════════════════════════
+#  Terminal Output Reading
+# ══════════════════════════════════════════════════════════
 
 def get_terminal_output(driver):
     if not driver:
         return None
+
+    switch_to_latest_window(driver)
 
     try:
         text = driver.execute_script("""
@@ -518,9 +630,7 @@ def take_screenshot(driver):
     if not driver:
         return None
     try:
-        handles = driver.window_handles
-        if handles:
-            driver.switch_to.window(handles[-1])
+        switch_to_latest_window(driver)
         png = driver.get_screenshot_as_png()
         bio = io.BytesIO(png)
         bio.name = f'ss_{int(time.time())}_{random.randint(100, 999)}.png'
@@ -662,12 +772,29 @@ def handle_google_pages(driver, session):
         except Exception:
             pass
 
-    # ── Dismiss Gemini ──
+    # ── Dismiss notifications ──
     if "gemini" in body_lower and "dismiss" in body_lower:
         try:
             btns = driver.find_elements(By.XPATH,
                 "//button[contains(.,'Dismiss')]|"
                 "//a[contains(.,'Dismiss')]")
+            for btn in btns:
+                try:
+                    if btn.is_displayed():
+                        btn.click()
+                        time.sleep(1)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    # ── Dismiss terminal recovery notification ──
+    if "recovered" in body_lower and "dismiss" in body_lower:
+        try:
+            btns = driver.find_elements(By.XPATH,
+                "//button[contains(.,'Dismiss')]|"
+                "//a[contains(.,'Dismiss')]|"
+                "//*[normalize-space(.)='Dismiss']")
             for btn in btns:
                 try:
                     if btn.is_displayed():
@@ -837,34 +964,20 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
 
 # ══════════════════════════════════════════════════════════
-#  Cloud Shell Navigation
-#  ═══ Terminal فقط ═══
-#  بدون walkthrough_id → لا tutorial
-#  show=terminal → لا editor
+#  Cloud Shell Navigation (Terminal ONLY)
 # ══════════════════════════════════════════════════════════
 
 def open_cloud_shell(driver, session, chat_id):
     """
-    Open Cloud Shell with TERMINAL ONLY.
-    
-    URL format:
-      https://shell.cloud.google.com/
-        ?enableapi=true
-        &project=PROJECT_ID
-        &pli=1
-        &show=terminal
-    
-    ❌ No walkthrough_id  → prevents Tutorial panel
-    ❌ No show=ide        → prevents Editor panel
-    ✅ show=terminal      → Terminal only
-    ✅ enableapi=true     → enables Cloud Shell API
+    Open Cloud Shell with Terminal ONLY:
+    - No walkthrough_id → No tutorial panel
+    - show=terminal → No editor panel
     """
     pid = session.get('project_id')
     if not pid:
         return False
 
     try:
-        # ═══ بناء الرابط النظيف: Terminal فقط ═══
         shell_url = (
             f"https://shell.cloud.google.com/"
             f"?enableapi=true"
@@ -883,11 +996,8 @@ def open_cloud_shell(driver, session, chat_id):
         if success:
             session['shell_opened'] = True
             session['shell_loading_until'] = time.time() + 60
-            log.info("✅ Cloud Shell navigation started (terminal only)")
             return True
-        else:
-            log.error("❌ Cloud Shell navigation failed")
-            return False
+        return False
 
     except Exception as e:
         log.error(f"Shell Open Error: {e}")
@@ -959,7 +1069,6 @@ def stream_loop(chat_id, gen):
 
     while session['running'] and session.get('gen') == gen:
 
-        # Command mode: just monitor
         if session.get('cmd_mode'):
             time.sleep(3)
             try:
@@ -975,21 +1084,13 @@ def stream_loop(chat_id, gen):
         cycle += 1
 
         try:
-            # ═══ Step 1: Switch to latest window ═══
-            try:
-                handles = driver.window_handles
-                if handles:
-                    driver.switch_to.window(handles[-1])
-            except Exception:
-                pass
+            switch_to_latest_window(driver)
 
-            # ═══ Step 2: Handle popups ═══
+            # Handle popups
             status = handle_google_pages(driver, session)
-
-            # ═══ Step 3: Get current URL ═══
             current_url = get_current_url_safe(driver)
 
-            # ═══ Step 4: UPDATE SCREENSHOT FIRST ═══
+            # Screenshot FIRST
             try:
                 flash = update_stream_image(
                     driver, chat_id, session, status, flash)
@@ -1000,13 +1101,12 @@ def stream_loop(chat_id, gen):
                 if "message is not modified" not in em:
                     raise
 
-            # ═══ Step 5: Background tasks ═══
-
+            # Background tasks
             on_console = ("console.cloud.google.com" in current_url
                           or "myaccount.google.com" in current_url)
             on_shell = is_on_shell_page(driver)
 
-            # 5A: Cloud Run region extraction
+            # Cloud Run extraction
             if (session.get('project_id')
                     and not session.get('run_api_checked')
                     and on_console):
@@ -1015,13 +1115,13 @@ def stream_loop(chat_id, gen):
                 if done:
                     session['run_api_checked'] = True
 
-            # 5B: Open Cloud Shell (Terminal ONLY)
+            # Open Cloud Shell
             elif (not session.get('shell_opened')
                   and session.get('run_api_checked')
                   and on_console):
                 open_cloud_shell(driver, session, chat_id)
 
-            # 5C: Terminal ready notification
+            # Terminal ready notification
             elif on_shell:
                 if (session.get('terminal_ready')
                         and not session.get('terminal_notified')):
@@ -1035,7 +1135,6 @@ def stream_loop(chat_id, gen):
                     except Exception:
                         pass
 
-            # Memory cleanup
             if cycle % 15 == 0:
                 gc.collect()
 
@@ -1049,7 +1148,7 @@ def stream_loop(chat_id, gen):
                 time.sleep(2)
                 continue
 
-            # Grace period during Cloud Shell loading
+            # Grace period during Shell loading
             loading_until = session.get('shell_loading_until', 0)
             if time.time() < loading_until:
                 log.info(f"⏳ Shell loading, ignoring: {str(e)[:80]}")
@@ -1124,8 +1223,7 @@ def start_stream(chat_id, url):
 
     if not project_id:
         bot.send_message(chat_id,
-            "⚠️ تحذير: لم أتمكن من استخراج Project ID، "
-            "بعض الميزات قد لا تعمل.")
+            "⚠️ تحذير: لم أتمكن من استخراج Project ID.")
 
     try:
         driver = get_driver()
@@ -1164,9 +1262,7 @@ def start_stream(chat_id, url):
     time.sleep(5)
 
     try:
-        handles = driver.window_handles
-        if handles:
-            driver.switch_to.window(handles[-1])
+        switch_to_latest_window(driver)
         png = driver.get_screenshot_as_png()
         bio = io.BytesIO(png)
         bio.name = f's_{int(time.time())}.png'
@@ -1188,7 +1284,7 @@ def start_stream(chat_id, url):
 
 
 # ══════════════════════════════════════════════════════════
-#  Execute Command
+#  Execute Command (FIXED: switch window before detection)
 # ══════════════════════════════════════════════════════════
 
 SLOW_COMMANDS = ('install', 'apt', 'pip', 'gcloud', 'docker',
@@ -1208,9 +1304,15 @@ def execute_command(chat_id, command):
         bot.send_message(chat_id, "❌ المتصفح غير متوفر.")
         return
 
+    # ═══ FIXED: is_on_shell_page() now switches window internally ═══
     if not is_on_shell_page(driver):
-        bot.send_message(chat_id, "⚠️ لست في Cloud Shell بعد.")
-        return
+        # Give extra chance: wait and retry
+        time.sleep(3)
+        if not is_on_shell_page(driver):
+            bot.send_message(chat_id,
+                "⚠️ لست في Cloud Shell بعد.\n"
+                "انتظر حتى يظهر Terminal في البث ثم أعد المحاولة.")
+            return
 
     session['terminal_ready'] = True
     status_msg = bot.send_message(chat_id, f"⏳ `{command}`",
