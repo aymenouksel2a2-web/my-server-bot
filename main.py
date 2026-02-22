@@ -472,7 +472,7 @@ def stream_loop(chat_id, gen):
                         
                         try:
                             bot.send_message(chat_id, "🔍 جاري فحص السيرفرات المتاحة للاستخدام عبر API...")
-                            # سكريبت يستخرج التوكن وينفذ الـ fetch
+                            # سكريبت يستخرج التوكن وينفذ الـ fetch مع إرسال الكوكيز (credentials: 'include')
                             js_code = """
                             var callback = arguments[1];
                             var projectId = arguments[0];
@@ -516,6 +516,7 @@ def stream_loop(chat_id, gen):
 
                                     let res = await fetch("https://cloudconsole-pa.clients6.google.com/v3/entityServices/ServerlessEntityService/schemas/SERVERLESS_ENTITY_SERVICE_GQL_TRANSPORT:batchGraphql?key=AIzaSyCI-zsRP85UVOi0DjtiCwWBwQ1djDy741g&prettyPrint=false", {
                                         method: "POST",
+                                        credentials: "include",
                                         headers: {
                                             "authorization": authHeader + " " + auth1Header + " " + auth3Header,
                                             "content-type": "application/json",
@@ -535,11 +536,12 @@ def stream_loop(chat_id, gen):
                             result = driver.execute_async_script(js_code, pid)
                             
                             # البحث عن مصفوفة المناطق في الرد
-                            matches = re.findall(r'\[([a-z0-9-,\s]+)\]', str(result))
+                            matches = re.findall(r'\[([a-z0-9-,\s"]+)\]', str(result))
                             regions = []
                             for m in matches:
                                 if 'us-' in m or 'europe-' in m or 'asia-' in m:
-                                    regions.append(m)
+                                    clean_m = m.replace('"', '').replace('\n', '').strip()
+                                    regions.append(clean_m)
                                     
                             if regions:
                                 text_res = f"🌍 **السيرفرات المسموحة:**\n`{regions[-1]}`"
