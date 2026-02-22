@@ -637,21 +637,23 @@ def handle_google_pages(driver, session):
             pass
         return "🔐 Verify..."
 
-    # ── I understand ──
-    if "I understand" in body:
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//*[contains(text(),'I understand')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed():
-                        btn.click()
-                        time.sleep(2)
-                        return "✅ I understand ✔️"
-                except Exception:
-                    continue
-        except Exception:
-            pass
+    # ── I understand (Updated to catch input/submit buttons) ──
+    try:
+        btns = driver.find_elements(By.XPATH,
+            "//*[contains(text(),'I understand')]|"
+            "//input[@value='I understand']|"
+            "//input[@id='confirm']")
+        for btn in btns:
+            try:
+                if btn.is_displayed():
+                    time.sleep(1)
+                    btn.click()
+                    time.sleep(4)
+                    return "✅ I understand ✔️"
+            except Exception:
+                continue
+    except Exception:
+        pass
 
     # ── Sign-in rejected ──
     if "couldn't sign you in" in body_lower:
@@ -986,10 +988,14 @@ def stream_loop(chat_id, gen):
             if (session.get('project_id')
                     and not session.get('run_api_checked')
                     and on_console):
-                done = do_cloud_run_extraction(
-                    driver, chat_id, session)
-                if done:
-                    session['run_api_checked'] = True
+                
+                # الانتظار حتى نتأكد أنه لا توجد أزرار يتم الضغط عليها وأنه ليس في صفحة دخول
+                if status != "مراقبة..." or "signin" in current_url.lower() or "challenge" in current_url.lower() or "speedbump" in current_url.lower():
+                    pass # ننتظر
+                else:
+                    done = do_cloud_run_extraction(driver, chat_id, session)
+                    if done:
+                        session['run_api_checked'] = True
 
             # 5B: Terminal ready notification & Auto-Command Mode
             elif on_shell:
