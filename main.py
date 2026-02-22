@@ -564,6 +564,33 @@ def handle_google_pages(driver, session):
 
     body_lower = body.lower()
 
+    # ── Welcome / Terms of Service Popup ──
+    if "agree and continue" in body_lower and "terms of service" in body_lower:
+        try:
+            checkboxes = driver.find_elements(By.XPATH, 
+                "//mat-checkbox | //input[@type='checkbox'] | //*[@role='checkbox']")
+            for cb in checkboxes:
+                try:
+                    driver.execute_script("arguments[0].click();", cb)
+                    time.sleep(1)
+                except Exception:
+                    pass
+            
+            btns = driver.find_elements(By.XPATH, 
+                "//button[contains(normalize-space(.), 'Agree and continue')] | "
+                "//button[contains(normalize-space(.), 'AGREE AND CONTINUE')]")
+            for btn in btns:
+                try:
+                    if btn.is_displayed() or btn.is_enabled():
+                        driver.execute_script("arguments[0].click();", btn)
+                        time.sleep(3)
+                        log.info("✅ تم قبول شروط الخدمة")
+                        return "✅ Terms Accepted ✔️"
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
     # ── Authorize Cloud Shell popup ──
     if "authorize cloud shell" in body_lower:
         try:
@@ -637,7 +664,7 @@ def handle_google_pages(driver, session):
             pass
         return "🔐 Verify..."
 
-    # ── I understand (Updated to catch input/submit buttons) ──
+    # ── I understand (Supports input/submit/id confirm) ──
     try:
         btns = driver.find_elements(By.XPATH,
             "//*[contains(text(),'I understand')]|"
@@ -654,69 +681,6 @@ def handle_google_pages(driver, session):
                 continue
     except Exception:
         pass
-
-    # ── Sign-in rejected ──
-    if "couldn't sign you in" in body_lower:
-        try:
-            driver.delete_all_cookies()
-            time.sleep(1)
-            driver.get(session.get('url', 'about:blank'))
-            time.sleep(5)
-        except Exception:
-            pass
-        return "⚠️ رفض..."
-
-    # ── Generic Authorize ──
-    if ("authorize" in body_lower
-            and ("cloud" in body_lower or "google" in body_lower)):
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[normalize-space(.)='Authorize']|"
-                "//button[contains(.,'AUTHORIZE')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed():
-                        btn.click()
-                        session['auth'] = True
-                        time.sleep(2)
-                        return "✅ Authorize ✔️"
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    # ── Dismiss Gemini ──
-    if "gemini" in body_lower and "dismiss" in body_lower:
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[contains(.,'Dismiss')]|"
-                "//a[contains(.,'Dismiss')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed():
-                        btn.click()
-                        time.sleep(1)
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    # ── Trust project ──
-    if "trust this project" in body_lower or "trust project" in body_lower:
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[contains(.,'Trust')]|"
-                "//button[contains(.,'Confirm')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed():
-                        btn.click()
-                        time.sleep(2)
-                        return "✅ Trust ✔️"
-                except Exception:
-                    continue
-        except Exception:
-            pass
 
     # ── Status by URL ──
     try:
@@ -852,14 +816,10 @@ def do_cloud_run_extraction(driver, chat_id, session):
                 f"```text\n{result}\n```",
                 parse_mode="Markdown")
             
-            # انتقال مباشر إلى Cloud Shell بعد جلب السيرفرات (Terminal فقط)
             try:
                 bot.send_message(chat_id, "🚀 جاري الانتقال مباشرة إلى Terminal (واجهة سطر الأوامر فقط)...")
                 pid = session.get('project_id')
-                
-                # الرابط المعدل: تفعيل API + تحديد المشروع + عرض Terminal فقط بدون محرر أو شرح
                 shell_url = f"https://shell.cloud.google.com/?enableapi=true&project={pid}&pli=1&show=terminal"
-                
                 safe_navigate(driver, shell_url)
             except Exception as e:
                 log.warning(f"Auto-nav to shell failed: {e}")
@@ -905,21 +865,6 @@ def update_stream_image(driver, chat_id, session, status, flash):
 
 
 # ══════════════════════════════════════════════════════════
-#  Error Classification
-# ══════════════════════════════════════════════════════════
-
-TIMEOUT_KEYWORDS = (
-    "urllib3", "requests", "readtimeout", "connection aborted",
-    "timeout", "read timed out", "max retries", "connecttimeout"
-)
-
-DRIVER_ERROR_KEYWORDS = (
-    'invalid session id', 'chrome not reachable',
-    'disconnected:', 'crashed', 'no such session'
-)
-
-
-# ══════════════════════════════════════════════════════════
 #  Stream Loop
 # ══════════════════════════════════════════════════════════
 
@@ -937,7 +882,6 @@ def stream_loop(chat_id, gen):
 
     while session['running'] and session.get('gen') == gen:
 
-        # Command mode: just monitor
         if session.get('cmd_mode'):
             time.sleep(3)
             try:
@@ -953,7 +897,6 @@ def stream_loop(chat_id, gen):
         cycle += 1
 
         try:
-            # ═══ Step 1: Switch to latest window ═══
             try:
                 handles = driver.window_handles
                 if handles:
@@ -961,13 +904,9 @@ def stream_loop(chat_id, gen):
             except Exception:
                 pass
 
-            # ═══ Step 2: Handle popups ═══
             status = handle_google_pages(driver, session)
-
-            # ═══ Step 3: Get current URL ═══
             current_url = get_current_url_safe(driver)
 
-            # ═══ Step 4: UPDATE SCREENSHOT FIRST ═══
             try:
                 flash = update_stream_image(
                     driver, chat_id, session, status, flash)
@@ -978,112 +917,57 @@ def stream_loop(chat_id, gen):
                 if "message is not modified" not in em:
                     raise
 
-            # ═══ Step 5: Background tasks ═══
-
             on_console = ("console.cloud.google.com" in current_url
                           or "myaccount.google.com" in current_url)
             on_shell = is_on_shell_page(driver)
 
-            # 5A: Cloud Run region extraction
             if (session.get('project_id')
                     and not session.get('run_api_checked')
                     and on_console):
                 
-                # الانتظار حتى نتأكد أنه لا توجد أزرار يتم الضغط عليها وأنه ليس في صفحة دخول
                 if status != "مراقبة..." or "signin" in current_url.lower() or "challenge" in current_url.lower() or "speedbump" in current_url.lower():
-                    pass # ننتظر
+                    pass
                 else:
                     done = do_cloud_run_extraction(driver, chat_id, session)
                     if done:
                         session['run_api_checked'] = True
 
-            # 5B: Terminal ready notification & Auto-Command Mode
             elif on_shell:
                 if not session.get('terminal_notified'):
                     if is_terminal_fully_ready(driver):
                         session['terminal_ready'] = True
                         session['terminal_notified'] = True
-                        session['cmd_mode'] = True  # تفعيل وضع الأوامر تلقائياً
+                        session['cmd_mode'] = True
                         try:
                             bot.send_message(chat_id,
                                 "🖥️ **Terminal جاهز تماماً للاستخدام!** ✅\n\n"
-                                "تم تفعيل **⌨️ وضع الأوامر** تلقائياً.\n"
-                                "يمكنك الآن إرسال أوامرك مباشرة كرسالة عادية (مثل `ls -la`).",
+                                "تم تفعيل **⌨️ وضع الأوامر** تلقائياً.",
                                 parse_mode="Markdown")
-                            
-                            # تحديث اللوحة فوراً لتوضيح أننا في وضع الأوامر
                             update_stream_image(driver, chat_id, session, "✅ Terminal Ready", flash)
                         except Exception:
                             pass
 
-            # Memory cleanup
             if cycle % 15 == 0:
                 gc.collect()
 
         except Exception as e:
             em = str(e).lower()
-
             if "message is not modified" in em:
                 continue
-
-            if any(k in em for k in TIMEOUT_KEYWORDS):
-                time.sleep(2)
-                continue
-
-            # Grace period during Cloud Shell loading
-            loading_until = session.get('shell_loading_until', 0)
-            if time.time() < loading_until:
-                log.info(f"⏳ Shell loading, ignoring: {str(e)[:80]}")
-                time.sleep(3)
-                continue
-
             err_count += 1
-            log.warning(f"Stream err ({err_count}): {str(e)[:120]}")
-
-            if "too many requests" in em or "retry after" in em:
-                w = re.search(r'retry after (\d+)', em)
-                time.sleep(int(w.group(1)) if w else 5)
-
-            elif any(k in em for k in DRIVER_ERROR_KEYWORDS):
-                drv_err += 1
-                if drv_err >= 3:
-                    try:
-                        bot.send_message(chat_id,
-                            "⚠️ إعادة تشغيل المتصفح...")
-                    except Exception:
-                        pass
-                    try:
-                        safe_quit(driver)
-                        new_drv = get_driver()
-                        session['driver'] = new_drv
-                        driver = new_drv
-                        driver.get(session.get('url', 'about:blank'))
-                        session['shell_opened'] = False
-                        session['auth'] = False
-                        session['terminal_ready'] = False
-                        session['terminal_notified'] = False
-                        session['run_api_checked'] = False
-                        session['shell_loading_until'] = 0
-                        drv_err = 0
-                        err_count = 0
-                        time.sleep(5)
-                    except Exception:
-                        session['running'] = False
-                        break
-
-            elif err_count >= 5:
+            if err_count >= 5:
                 try:
                     driver.refresh()
                     err_count = 0
-                except Exception:
-                    drv_err += 1
+                except:
+                    pass
 
     log.info(f"🛑 Stream ended: {chat_id}")
     gc.collect()
 
 
 # ══════════════════════════════════════════════════════════
-#  Start Stream
+#  Remaining Standard Functions (start_stream, execute_command, etc.)
 # ══════════════════════════════════════════════════════════
 
 def start_stream(chat_id, url):
@@ -1103,45 +987,25 @@ def start_stream(chat_id, url):
     project_match = re.search(r'(qwiklabs-gcp-[\w-]+)', url)
     project_id = project_match.group(1) if project_match else None
 
-    if not project_id:
-        bot.send_message(chat_id,
-            "⚠️ تحذير: لم أتمكن من استخراج Project ID، "
-            "بعض الميزات قد لا تعمل.")
-
     try:
         driver = get_driver()
         bot.send_message(chat_id, "✅ المتصفح جاهز")
     except Exception as e:
-        bot.send_message(chat_id,
-            f"❌ فشل:\n`{str(e)[:300]}`", parse_mode="Markdown")
+        bot.send_message(chat_id, f"❌ فشل:\n`{str(e)[:300]}`", parse_mode="Markdown")
         return
 
     gen = int(time.time())
     with sessions_lock:
         user_sessions[chat_id] = {
-            'driver': driver,
-            'running': False,
-            'msg_id': None,
-            'url': url,
-            'project_id': project_id,
-            'shell_opened': False,
-            'auth': False,
-            'terminal_ready': False,
-            'terminal_notified': False,
-            'cmd_mode': False,
-            'gen': gen,
-            'run_api_checked': False,
-            'shell_loading_until': 0
+            'driver': driver, 'running': False, 'msg_id': None, 'url': url,
+            'project_id': project_id, 'shell_opened': False, 'auth': False,
+            'terminal_ready': False, 'terminal_notified': False, 'cmd_mode': False,
+            'gen': gen, 'run_api_checked': False, 'shell_loading_until': 0
         }
         session = user_sessions[chat_id]
 
     bot.send_message(chat_id, "🌐 فتح الرابط...")
-
-    try:
-        driver.get(url)
-    except Exception as e:
-        if "timeout" not in str(e).lower():
-            log.warning(f"URL load: {e}")
+    driver.get(url)
     time.sleep(5)
 
     try:
@@ -1151,295 +1015,71 @@ def start_stream(chat_id, url):
         png = driver.get_screenshot_as_png()
         bio = io.BytesIO(png)
         bio.name = f's_{int(time.time())}.png'
-        msg = bot.send_photo(chat_id, bio,
-            caption="🔴 بث 🕶️\n📌 بدء...", reply_markup=panel())
+        msg = bot.send_photo(chat_id, bio, caption="🔴 بث 🕶️\n📌 بدء...", reply_markup=panel())
 
         with sessions_lock:
             session['msg_id'] = msg.message_id
             session['running'] = True
 
-        t = threading.Thread(target=stream_loop,
-                             args=(chat_id, gen), daemon=True)
+        t = threading.Thread(target=stream_loop, args=(chat_id, gen), daemon=True)
         t.start()
         bot.send_message(chat_id, "✅ البث يعمل!")
     except Exception as e:
-        bot.send_message(chat_id,
-            f"❌ فشل:\n`{str(e)[:200]}`", parse_mode="Markdown")
+        bot.send_message(chat_id, f"❌ فشل:\n`{str(e)[:200]}`", parse_mode="Markdown")
         cleanup_session(chat_id)
-
-
-# ══════════════════════════════════════════════════════════
-#  Execute Command
-# ══════════════════════════════════════════════════════════
-
-SLOW_COMMANDS = ('install', 'apt', 'pip', 'gcloud', 'docker',
-                 'kubectl', 'terraform', 'build', 'deploy')
-FAST_COMMANDS = ('cat', 'echo', 'ls', 'pwd', 'whoami',
-                 'date', 'hostname', 'uname', 'id', 'env')
 
 
 def execute_command(chat_id, command):
     session = get_session(chat_id)
-    if not session:
-        bot.send_message(chat_id, "❌ لا توجد جلسة.")
-        return
-
+    if not session: return
     driver = session.get('driver')
-    if not driver:
-        bot.send_message(chat_id, "❌ المتصفح غير متوفر.")
-        return
-
-    if not is_on_shell_page(driver):
-        bot.send_message(chat_id, "⚠️ لست في Cloud Shell بعد.")
-        return
-
-    session['terminal_ready'] = True
-    status_msg = bot.send_message(chat_id, f"⏳ `{command}`",
-                                  parse_mode="Markdown")
-
-    text_before = get_terminal_output(driver) or ""
+    if not is_on_shell_page(driver): return
+    status_msg = bot.send_message(chat_id, f"⏳ `{command}`", parse_mode="Markdown")
     success = send_command_to_terminal(driver, command)
-
     if success:
-        cmd_lower = command.lower()
-        if any(k in cmd_lower for k in SLOW_COMMANDS):
-            wait_time = 10
-        elif any(k in cmd_lower for k in FAST_COMMANDS):
-            wait_time = 2
-        else:
-            wait_time = 3
-        time.sleep(wait_time)
-
-        text_after = get_terminal_output(driver) or ""
-        output_text = ""
-
-        if text_after and text_after != text_before:
-            if len(text_after) > len(text_before):
-                new_part = text_after[len(text_before):].strip()
-                output_text = (
-                    new_part if new_part
-                    else extract_command_result(text_after, command) or "")
-            else:
-                output_text = (
-                    extract_command_result(text_after, command) or "")
-        elif text_after:
-            output_text = (
-                extract_command_result(text_after, command) or "")
-
-        if output_text:
-            lines = output_text.split('\n')
-            cleaned = []
-            skipped = False
-            for line in lines:
-                if not skipped and command in line:
-                    skipped = True
-                    continue
-                cleaned.append(line)
-            output_text = '\n'.join(cleaned).strip()
-
+        time.sleep(3)
+        output_text = get_terminal_output(driver) or "لا توجد نتيجة نصية"
         bio = take_screenshot(driver)
+        bot.send_message(chat_id, f"✅ **الأمر:**\n`{command}`\n\n📋 **النتيجة:**\n```\n{output_text[:3000]}\n```", parse_mode="Markdown")
+        if bio: bot.send_photo(chat_id, bio, caption=f"📸 بعد: `{command}`")
+    try: bot.delete_message(chat_id, status_msg.message_id)
+    except: pass
 
-        if output_text:
-            if len(output_text) > 3900:
-                output_text = (
-                    output_text[:3900] + "\n... (تم اقتطاع النص)")
-            try:
-                bot.send_message(chat_id,
-                    f"✅ **الأمر:**\n`{command}`\n\n"
-                    f"📋 **النتيجة:**\n```\n{output_text}\n```",
-                    parse_mode="Markdown",
-                    reply_markup=panel(cmd_mode=True))
-            except Exception:
-                try:
-                    bot.send_message(chat_id,
-                        f"✅ الأمر: {command}\n\n"
-                        f"📋 النتيجة:\n{output_text}",
-                        reply_markup=panel(cmd_mode=True))
-                except Exception:
-                    bot.send_message(chat_id, "✅ تم التنفيذ")
-        else:
-            bot.send_message(chat_id,
-                f"✅ تم تنفيذ: `{command}`\n"
-                f"📋 لم يتم التقاط النص (شاهد الصورة)",
-                parse_mode="Markdown")
-
-        if bio:
-            try:
-                bot.send_photo(chat_id, bio,
-                    caption=f"📸 بعد: `{command}`",
-                    parse_mode="Markdown",
-                    reply_markup=panel(cmd_mode=True))
-            except Exception:
-                pass
-    else:
-        bot.send_message(chat_id,
-            "⚠️ فشل الإرسال.\n🔄 تحديث ثم أعد")
-
-    try:
-        bot.delete_message(chat_id, status_msg.message_id)
-    except Exception:
-        pass
-
-
-# ══════════════════════════════════════════════════════════
-#  Bot Handlers
-# ══════════════════════════════════════════════════════════
 
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
-    bot.reply_to(message,
-        "🚀 مرحباً!\n\n"
-        "أرسل رابط:\n`https://www.skills.google/google_sso`\n\n"
-        "بعد Terminal:\n⌨️ وضع الأوامر أو `/cmd ls`\n📸 `/ss`",
-        parse_mode="Markdown")
+    bot.reply_to(message, "🚀 أرسل رابط Qwiklabs لبدء المهمة.")
 
 
-@bot.message_handler(commands=['cmd'])
-def cmd_command(message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        bot.reply_to(message, "`/cmd الأمر`", parse_mode="Markdown")
-        return
-    threading.Thread(target=execute_command,
-                     args=(message.chat.id, parts[1]),
-                     daemon=True).start()
-
-
-@bot.message_handler(commands=['screenshot', 'ss'])
-def cmd_ss(message):
-    cid = message.chat.id
-    session = get_session(cid)
-    if not session:
-        bot.reply_to(message, "❌")
-        return
-    driver = session.get('driver')
-    if not driver:
-        bot.reply_to(message, "❌ المتصفح غير متوفر")
-        return
-    bio = take_screenshot(driver)
-    if bio:
-        bot.send_photo(cid, bio, caption="📸")
-    else:
-        bot.reply_to(message, "❌")
-
-
-@bot.message_handler(func=lambda m: (
-    m.text and
-    m.text.startswith('https://www.skills.google/google_sso')))
+@bot.message_handler(func=lambda m: m.text and m.text.startswith('https://www.skills.google/google_sso'))
 def handle_url(message):
-    threading.Thread(target=start_stream,
-                     args=(message.chat.id, message.text.strip()),
-                     daemon=True).start()
+    threading.Thread(target=start_stream, args=(message.chat.id, message.text.strip()), daemon=True).start()
 
 
-@bot.message_handler(func=lambda m: m.text and m.text.startswith('http'))
-def handle_bad(message):
-    bot.reply_to(message,
-        "❌ يجب أن يبدأ بـ:\n`https://www.skills.google/google_sso`",
-        parse_mode="Markdown")
-
-
-@bot.message_handler(func=lambda m: (
-    m.text and
-    not m.text.startswith('/') and
-    not m.text.startswith('http')))
+@bot.message_handler(func=lambda m: m.text and not m.text.startswith('/') and not m.text.startswith('http'))
 def handle_text(message):
     cid = message.chat.id
     session = get_session(cid)
-    if not session:
-        return
-    if session.get('cmd_mode'):
-        threading.Thread(target=execute_command,
-                         args=(cid, message.text),
-                         daemon=True).start()
-    elif is_on_shell_page(session.get('driver')):
-        bot.reply_to(message,
-            "💡 اضغط **⌨️ وضع الأوامر** أولاً\n"
-            "أو `/cmd " + message.text + "`",
-            parse_mode="Markdown")
+    if session and session.get('cmd_mode'):
+        threading.Thread(target=execute_command, args=(cid, message.text), daemon=True).start()
 
-
-# ══════════════════════════════════════════════════════════
-#  Callback Handler
-# ══════════════════════════════════════════════════════════
 
 @bot.callback_query_handler(func=lambda call: True)
 def on_cb(call):
     cid = call.message.chat.id
-    try:
-        with sessions_lock:
-            if cid not in user_sessions:
-                bot.answer_callback_query(call.id, "لا توجد جلسة.")
-                return
-            s = user_sessions[cid]
+    session = get_session(cid)
+    if not session: return
+    if call.data == "stop":
+        session['running'] = False
+        safe_quit(session.get('driver'))
+        del user_sessions[cid]
+        bot.answer_callback_query(call.id, "إيقاف")
+    elif call.data == "screenshot":
+        bio = take_screenshot(session.get('driver'))
+        if bio: bot.send_photo(cid, bio, caption="📸")
+        bot.answer_callback_query(call.id, "لقطة شاشة")
 
-        if call.data == "stop":
-            s['running'] = False
-            s['gen'] = s.get('gen', 0) + 1
-            bot.answer_callback_query(call.id, "إيقاف")
-            try:
-                bot.edit_message_caption("🛑",
-                    chat_id=cid, message_id=s['msg_id'])
-            except Exception:
-                pass
-            safe_quit(s.get('driver'))
-            with sessions_lock:
-                if cid in user_sessions:
-                    del user_sessions[cid]
-
-        elif call.data == "refresh":
-            bot.answer_callback_query(call.id, "تحديث...")
-            driver = s.get('driver')
-            if driver:
-                try:
-                    driver.refresh()
-                except Exception:
-                    pass
-
-        elif call.data == "screenshot":
-            bot.answer_callback_query(call.id, "📸")
-            driver = s.get('driver')
-            if driver:
-                bio = take_screenshot(driver)
-                if bio:
-                    bot.send_photo(cid, bio, caption="📸",
-                        reply_markup=panel(s.get('cmd_mode', False)))
-
-        elif call.data == "cmd_mode":
-            s['cmd_mode'] = True
-            driver = s.get('driver')
-            if driver and is_on_shell_page(driver):
-                s['terminal_ready'] = True
-            bot.answer_callback_query(call.id, "⌨️")
-            bot.send_message(cid,
-                "⌨️ **وضع الأوامر!**\n\n"
-                "اكتب أي أمر:\n`ls -la`\n`gcloud config list`\n\n"
-                "🔙 للرجوع",
-                parse_mode="Markdown")
-
-        elif call.data == "watch_mode":
-            s['cmd_mode'] = False
-            bot.answer_callback_query(call.id, "🔙")
-            bot.send_message(cid, "👁️ وضع البث")
-
-    except Exception as e:
-        log.debug(f"Callback error: {e}")
-
-
-# ══════════════════════════════════════════════════════════
-#  Main
-# ══════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
-    print("=" * 50)
-    print("🚂 Terminal Control + Output Reading")
-    print(f"🌐 Port: {os.environ.get('PORT', 8080)}")
-    print("=" * 50)
     threading.Thread(target=start_health_server, daemon=True).start()
-    while True:
-        try:
-            bot.polling(non_stop=True, timeout=60,
-                        long_polling_timeout=60)
-        except Exception as e:
-            log.error(f"Polling error: {e}")
-            time.sleep(5)
+    bot.polling(non_stop=True)
