@@ -16,6 +16,8 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
 from pyvirtualdisplay import Display
 
 TOKEN = os.getenv('BOT_TOKEN')
@@ -28,7 +30,7 @@ sessions_lock = threading.Lock()
 
 
 # ─────────────────────────────────────────────
-# 🌐 Health Check (مهم جداً لاستضافة Render)
+# 🌐 Health Check
 # ─────────────────────────────────────────────
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -40,7 +42,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         pass
 
 def start_health_server():
-    # Render يعطي البورت تلقائياً عبر متغير البيئة PORT
     port = int(os.getenv('PORT', 8000))
     HTTPServer(('0.0.0.0', port), HealthHandler).serve_forever()
 
@@ -163,9 +164,14 @@ def get_driver():
     options.binary_location = browser
 
     # ═══════════════════════════════════════
-    # 🕶️ الوضع المتخفي
+    # 🕶️ الوضع المتخفي + الكوكيز للشل
     # ═══════════════════════════════════════
     options.add_argument('--incognito')
+    prefs = {
+        "profile.block_third_party_cookies": False,
+        "profile.default_content_setting_values.cookies": 1
+    }
+    options.add_experimental_option("prefs", prefs)
 
     # 🛡️ تخفي ضد الكشف
     options.add_argument('--disable-blink-features=AutomationControlled')
@@ -179,7 +185,7 @@ def get_driver():
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
 
-    # ⚡ توفير موارد (مهم جداً للرامات المحدودة في Render)
+    # ⚡ توفير موارد
     options.add_argument('--window-size=800,600')
     options.add_argument('--renderer-process-limit=1')
     options.add_argument('--disable-background-timer-throttling')
@@ -197,34 +203,26 @@ def get_driver():
 
     options.page_load_strategy = 'eager'
 
-    print("🚀 إنشاء المتصفح (incognito + chromedriver مُصحَّح)...")
-
     service = Service(executable_path=patched_drv)
     driver = webdriver.Chrome(service=service, options=options)
 
     # حقن التخفي
     try:
         driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': STEALTH_JS})
-        print("🛡️ Stealth JS ✓")
     except: pass
 
     try:
         driver.execute_cdp_cmd('Network.setUserAgentOverride', {
             "userAgent": ua, "platform": "Win32", "acceptLanguage": "en-US,en;q=0.9"
         })
-        print("🛡️ UA ✓")
     except: pass
 
     driver.set_page_load_timeout(25)
 
-    # فحص
     try:
         driver.get("about:blank")
-        wd = driver.execute_script("return navigator.webdriver")
-        print(f"🔍 webdriver={wd} {'✅' if not wd else '❌'}")
     except: pass
 
-    print("✅ المتصفح جاهز (وضع متخفي incognito)")
     return driver
 
 
@@ -245,13 +243,6 @@ def cleanup_session(chat_id):
             safe_quit(s.get('driver'))
             del user_sessions[chat_id]
             gc.collect()
-
-def driver_alive(driver):
-    try:
-        _ = driver.title
-        return True
-    except:
-        return False
 
 
 # ─────────────────────────────────────────────
@@ -292,11 +283,10 @@ def handle_google_pages(driver, session):
                     time.sleep(random.uniform(0.5, 1.5))
                     btn.click()
                     status = "✅ ضغط Continue (Verify)"
-                    print("🤖 ضغط Continue")
                     time.sleep(3)
                     return status
         except Exception as e:
-            print(f"⚠️ Continue: {e}")
+            pass
         status = "🔐 Verify - جاري الضغط..."
         return status
 
@@ -359,7 +349,7 @@ def handle_google_pages(driver, session):
     # ─── التعرف على الصفحة ───
     url = driver.current_url
     if "shell.cloud.google.com" in url:
-        status = "✅ Cloud Shell جاهز!" if session.get('auth') else "✅ Cloud Shell يعمل"
+        status = "✅ Cloud Shell جاهز! (أرسل أوامرك الآن ⌨️)" if session.get('auth') else "✅ Cloud Shell يعمل"
     elif "console.cloud.google.com" in url:
         status = "📊 Cloud Console"
     elif "myaccount.google.com" in url:
@@ -409,6 +399,7 @@ def stream_loop(chat_id, gen):
                     if pid:
                         status = "🚀 Cloud Shell..."
                         try:
+                            # نستخدم رابط يفتح المحرر والـ Terminal بشكل أسرع
                             driver.get(f"https://shell.cloud.google.com/?project={pid}&pli=1&show=terminal")
                             session['shell_opened'] = True
                             time.sleep(5)
@@ -499,7 +490,6 @@ def start_stream(chat_id, url):
 
     try:
         driver = get_driver()
-        bot.send_message(chat_id, "✅ المتصفح جاهز (incognito 🕶️)")
     except Exception as e:
         bot.send_message(chat_id, f"❌ فشل:\n`{str(e)[:300]}`", parse_mode="Markdown")
         return
@@ -523,7 +513,7 @@ def start_stream(chat_id, url):
         driver.get(url)
     except Exception as e:
         if "timeout" not in str(e).lower():
-            print(f"⚠️ {e}")
+            pass
 
     time.sleep(5)
 
@@ -538,7 +528,7 @@ def start_stream(chat_id, url):
 
         msg = bot.send_photo(
             chat_id, bio,
-            caption="🔴 بث مباشر (incognito 🕶️)\n📌 بدء...",
+            caption="🔴 بث مباشر\n📌 بدء...",
             reply_markup=panel()
         )
 
@@ -547,15 +537,6 @@ def start_stream(chat_id, url):
 
         t = threading.Thread(target=stream_loop, args=(chat_id, gen), daemon=True)
         t.start()
-
-        bot.send_message(chat_id,
-            "✅ البث يعمل! (incognito 🕶️)\n"
-            "🤖 الطيار الآلي:\n"
-            "  • Verify → Continue\n"
-            "  • I understand → ضغط\n"
-            "  • Authorize → ضغط\n"
-            "  • رفض → إعادة محاولة"
-        )
 
     except Exception as e:
         bot.send_message(chat_id, f"❌ فشل:\n`{str(e)[:200]}`", parse_mode="Markdown")
@@ -569,9 +550,9 @@ def start_stream(chat_id, url):
 def cmd_start(message):
     bot.reply_to(message,
         "🚀 مرحباً!\n"
-        "🕶️ الوضع المتخفي (incognito)\n\n"
         "أرسل رابط يبدأ بـ:\n"
-        "`https://www.skills.google/google_sso`",
+        "`https://www.skills.google/google_sso`\n\n"
+        "💡 **تلميح:** عندما يفتح Cloud Shell، يمكنك كتابة أي أمر وسأقوم بتنفيذه مباشرة!",
         parse_mode="Markdown"
     )
 
@@ -579,9 +560,40 @@ def cmd_start(message):
 def handle_url(message):
     threading.Thread(target=start_stream, args=(message.chat.id, message.text), daemon=True).start()
 
-@bot.message_handler(func=lambda m: m.text and m.text.startswith('http'))
-def handle_bad(message):
-    bot.reply_to(message, "❌ يجب أن يبدأ بـ:\n`https://www.skills.google/google_sso`", parse_mode="Markdown")
+# ─────────────────────────────────────────────
+# ⌨️ استقبال الأوامر وتنفيذها في Terminal
+# ─────────────────────────────────────────────
+@bot.message_handler(func=lambda m: m.text and not m.text.startswith('http') and not m.text.startswith('/'))
+def handle_terminal_command(message):
+    chat_id = message.chat.id
+    cmd_text = message.text
+
+    with sessions_lock:
+        if chat_id not in user_sessions:
+            return
+        session = user_sessions[chat_id]
+
+    if not session.get('running'):
+        return
+
+    if not session.get('shell_opened'):
+        bot.reply_to(message, "⚠️ انتظر قليلاً، لم يفتح Cloud Shell بالكامل بعد.")
+        return
+
+    driver = session.get('driver')
+    if not driver:
+        return
+
+    try:
+        # إرسال النص إلى المتصفح ثم الضغط على Enter
+        actions = ActionChains(driver)
+        actions.send_keys(cmd_text)
+        actions.send_keys(Keys.RETURN)
+        actions.perform()
+
+        bot.reply_to(message, f"⌨️ تم إرسال الأمر:\n`{cmd_text}`\n\n📸 ستظهر النتيجة في البث القادم.", parse_mode="Markdown")
+    except Exception as e:
+        bot.reply_to(message, f"❌ فشل إرسال الأمر:\n`{str(e)[:100]}`", parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: True)
 def on_cb(call):
@@ -616,10 +628,8 @@ def on_cb(call):
 # ─────────────────────────────────────────────
 if __name__ == '__main__':
     print("=" * 45)
-    print("🕶️ وضع متخفي incognito + تخفي كامل")
+    print("🚀 البوت يعمل - مع دعم إرسال الأوامر")
     print("=" * 45)
-    
-    # خادم الويب يعمل في الخلفية لضمان عدم توقف خدمة Render
     threading.Thread(target=start_health_server, daemon=True).start()
 
     while True:
