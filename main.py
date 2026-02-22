@@ -8,6 +8,7 @@ import random
 import shutil
 import gc
 import subprocess
+import urllib.parse
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telebot.types import InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton
@@ -157,7 +158,7 @@ def get_driver():
     except: pass
     try: driver.execute_cdp_cmd('Network.setUserAgentOverride', {"userAgent": ua, "platform": "Win32", "acceptLanguage": "en-US,en;q=0.9"})
     except: pass
-    driver.set_page_load_timeout(45) # تم زيادة وقت الانتظار قليلاً للـ Cloud Shell
+    driver.set_page_load_timeout(45)
     print("✅ المتصفح جاهز")
     return driver
 
@@ -510,11 +511,12 @@ def stream_loop(chat_id, gen):
                                     let regions = [];
                                     
                                     options.forEach(opt => {
-                                        // التعديل السحري: استثناء الخيارات المعطلة أو المخفية
+                                        // فلترة ذكية لضمان جلب العناصر الظاهرة والمسموحة فقط
+                                        let rect = opt.getBoundingClientRect();
+                                        let isHidden = rect.width === 0 || rect.height === 0 || window.getComputedStyle(opt).display === 'none' || window.getComputedStyle(opt).visibility === 'hidden';
                                         let isDisabled = opt.classList.contains('mat-option-disabled') || opt.getAttribute('aria-disabled') === 'true';
-                                        let isHidden = opt.offsetParent === null || window.getComputedStyle(opt).display === 'none';
                                         
-                                        if(!isDisabled && !isHidden) {
+                                        if(!isHidden && !isDisabled) {
                                             let txt = opt.innerText || "";
                                             let serverName = txt.trim().split('\\n')[0]; 
                                             if(serverName && serverName.includes('-') && !serverName.toLowerCase().includes('learn')) {
@@ -552,15 +554,30 @@ def stream_loop(chat_id, gen):
                     
                     session['run_api_checked'] = True
 
-            # --- التوجه إلى Cloud Shell بعد الانتهاء من فحص المناطق ---
+            # --- التوجه إلى Cloud Shell بسلاسة وبدون إعادة تشغيل ---
             if not session.get('shell_opened') and session.get('run_api_checked'):
                 if "console.cloud.google.com" in url or "myaccount.google.com" in url:
                     pid = session.get('project_id')
                     if pid:
                         try:
                             bot.send_message(chat_id, "🚀 جاري الانتقال لفتح Cloud Shell...")
-                            driver.get(f"https://shell.cloud.google.com/?project={pid}&pli=1&show=terminal")
-                            session['shell_opened'] = True; time.sleep(5); status = "🚀 Shell..."
+                            
+                            # استخراج الـ walkthrough_id بذكاء من الرابط الأصلي إن وجد
+                            walk_str = ""
+                            original_url = urllib.parse.unquote(urllib.parse.unquote(session.get('url', '')))
+                            w_match = re.search(r'walkthrough_id.*?([^=&]+display_token[^&]+)', original_url)
+                            if w_match:
+                                walk_val = urllib.parse.quote(w_match.group(1), safe='')
+                                walk_str = f"&walkthrough_id={walk_val}"
+                                
+                            shell_url = f"https://shell.cloud.google.com/?enableapi=true{walk_str}&project={pid}&pli=1&show=ide,terminal"
+                            
+                            # نستخدم جافاسكريبت للانتقال لتفادي مشكلة Timeout الخاص بـ Selenium الذي يسبب إعادة التشغيل
+                            driver.execute_script(f"window.location.href = '{shell_url}';")
+                            
+                            session['shell_opened'] = True
+                            time.sleep(5)
+                            status = "🚀 Shell..."
                         except Exception as e:
                             print(f"Shell Open Error: {e}")
                             pass
@@ -591,8 +608,8 @@ def stream_loop(chat_id, gen):
             em = str(e).lower()
             if "message is not modified" in em: continue
             
-            # فلتر يمنع الأخطاء البسيطة كتقطيع النت في تيليجرام من عمل إعادة تشغيل
-            if any(k in em for k in ["urllib3", "requests", "readtimeout", "connection aborted", "api"]):
+            # تجاهل أخطاء التايم آوت لكي لا يتم إعادة تشغيل البوت عبثاً
+            if any(k in em for k in ["urllib3", "requests", "readtimeout", "connection aborted", "api", "timeout"]):
                 time.sleep(2)
                 continue
                 
@@ -632,7 +649,7 @@ def start_stream(chat_id, url):
     project_id = project_match.group(1) if project_match else None
 
     if not project_id:
-        bot.send_message(chat_id, "⚠️ تحذير: لم أتمكن من استخراج Project ID من الرابط، ميزة قراءة السيرفرات قد لا تعمل بشكل صحيح.")
+        bot.send_message(chat_id, "⚠️ تحذير: لم أتمكن من استخراج Project ID من الرابط، بعض الميزات قد لا تعمل بشكل صحيح.")
 
     try:
         driver = get_driver()
