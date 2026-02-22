@@ -131,24 +131,39 @@ def patch_chromedriver(original_path):
 
 
 def safe_navigate(driver, url):
-    """Navigate using JS to avoid Selenium timeout crashes."""
+    """Navigate using multiple methods to avoid crashes."""
+    # Method 1: JS navigation (non-blocking, avoids Selenium timeout)
     try:
-        safe_url = json.dumps(url)
-        driver.execute_script(f"window.location.href = {safe_url};")
+        js_url = json.dumps(url)
+        driver.execute_script(f'window.location.href = {js_url};')
+        log.info(f"✅ Navigate [JS href]: {url[:80]}...")
         return True
-    except Exception:
-        try:
-            driver.get(url)
-            return True
-        except TimeoutException:
-            return True
-        except Exception as e:
-            log.error(f"Navigation failed: {e}")
-            return False
+    except Exception as e:
+        log.debug(f"JS href failed: {e}")
+
+    # Method 2: JS location.assign
+    try:
+        js_url = json.dumps(url)
+        driver.execute_script(f'window.location.assign({js_url});')
+        log.info(f"✅ Navigate [JS assign]: {url[:80]}...")
+        return True
+    except Exception as e:
+        log.debug(f"JS assign failed: {e}")
+
+    # Method 3: Direct Selenium (may timeout but page still loads)
+    try:
+        driver.get(url)
+        log.info(f"✅ Navigate [driver.get]: {url[:80]}...")
+        return True
+    except TimeoutException:
+        log.info(f"⏱️ Navigate timeout (page loading): {url[:80]}...")
+        return True  # Page is still loading, that's OK
+    except Exception as e:
+        log.error(f"❌ All navigation failed: {e}")
+        return False
 
 
 def get_current_url_safe(driver):
-    """Get current URL without crashing."""
     try:
         return driver.current_url
     except Exception:
@@ -336,7 +351,7 @@ def send_command_to_terminal(driver, command):
     except Exception:
         pass
 
-    # ── Method 1: xterm textarea via JS ──
+    # Method 1: xterm textarea via JS
     try:
         result = driver.execute_script("""
             function findTA(doc) {
@@ -375,7 +390,7 @@ def send_command_to_terminal(driver, command):
     except Exception as e:
         log.debug(f"Method 1: {e}")
 
-    # ── Method 2: Click on xterm element ──
+    # Method 2: Click on xterm element
     try:
         xterm_els = driver.find_elements(By.CSS_SELECTOR,
             ".xterm-screen, .xterm-rows, canvas.xterm-link-layer, "
@@ -398,7 +413,7 @@ def send_command_to_terminal(driver, command):
     except Exception as e:
         log.debug(f"Method 2: {e}")
 
-    # ── Method 3: Focus + active element ──
+    # Method 3: Focus + active element
     try:
         driver.execute_script("""
             var el = document.querySelector('.xterm-helper-textarea') ||
@@ -532,7 +547,7 @@ def handle_google_pages(driver, session):
 
     body_lower = body.lower()
 
-    # ── Authorize Cloud Shell (specific) ──
+    # ── Authorize Cloud Shell (popup) ──
     if "authorize cloud shell" in body_lower:
         try:
             btns = driver.find_elements(By.XPATH,
@@ -541,12 +556,13 @@ def handle_google_pages(driver, session):
             for btn in btns:
                 try:
                     btn_text = (btn.text or "").strip().lower()
-                    if btn.is_displayed() and btn_text == "authorize":
+                    if btn.is_displayed() and "authorize" in btn_text:
                         time.sleep(random.uniform(0.5, 1.0))
                         try:
                             btn.click()
                         except Exception:
-                            driver.execute_script("arguments[0].click();", btn)
+                            driver.execute_script(
+                                "arguments[0].click();", btn)
                         session['auth'] = True
                         time.sleep(2)
                         log.info("✅ Authorize Cloud Shell clicked")
@@ -701,25 +717,25 @@ def handle_google_pages(driver, session):
 
 
 # ══════════════════════════════════════════════════════════
-#  Dismiss Tutorial + Editor (Cloud Shell)
+#  Dismiss Tutorial + Editor (after Cloud Shell loads)
 # ══════════════════════════════════════════════════════════
 
 DISMISS_JS = """
 (function() {
-    /* === 1. Close Tutorial / Walkthrough Panel === */
-    var panelSelectors = [
+    /* 1. Close Tutorial/Walkthrough panels */
+    var selectors = [
         '[class*="walkthrough"]',
         '[class*="tutorial"]',
         '[class*="guide-panel"]',
-        '[class*="cfc-panel"]'
+        '[class*="cfc-panel"]',
+        '[class*="cloudshell-tutorial"]'
     ];
-    for (var p = 0; p < panelSelectors.length; p++) {
-        var panels = document.querySelectorAll(panelSelectors[p]);
+    for (var p = 0; p < selectors.length; p++) {
+        var panels = document.querySelectorAll(selectors[p]);
         for (var q = 0; q < panels.length; q++) {
-            var closeBtns = panels[q].querySelectorAll(
-                'button, [role="button"]');
-            for (var r = 0; r < closeBtns.length; r++) {
-                var btn = closeBtns[r];
+            var btns = panels[q].querySelectorAll('button, [role="button"]');
+            for (var r = 0; r < btns.length; r++) {
+                var btn = btns[r];
                 var aria = (btn.getAttribute('aria-label') || '').toLowerCase();
                 var title = (btn.getAttribute('title') || '').toLowerCase();
                 var text = (btn.innerText || '').toLowerCase().trim();
@@ -727,47 +743,45 @@ DISMISS_JS = """
                     title.indexOf('close') !== -1 ||
                     text === 'x' || text === 'close' ||
                     text === 'end tour' || text === 'quit' ||
-                    text === 'exit tutorial' || text === 'dismiss') {
-                    try {
-                        if (btn.offsetParent !== null) btn.click();
-                    } catch(e) {}
+                    text === 'exit tutorial' || text === 'dismiss' ||
+                    text === 'exit') {
+                    try { if (btn.offsetParent !== null) btn.click(); }
+                    catch(e) {}
                 }
             }
         }
     }
 
-    /* === 2. Generic close buttons === */
+    /* 2. Close specific buttons */
     var closeSelectors = [
         'button[aria-label="Close panel"]',
         'button[aria-label="Close walkthrough"]',
         'button[aria-label="Close tutorial"]',
+        'button[aria-label="Close"]',
         '.walkthrough-close-button',
-        '.tutorial-close-button'
+        '.tutorial-close-button',
+        '.cfc-panel-close'
     ];
     for (var i = 0; i < closeSelectors.length; i++) {
         var els = document.querySelectorAll(closeSelectors[i]);
         for (var j = 0; j < els.length; j++) {
-            try {
-                if (els[j].offsetParent !== null) els[j].click();
-            } catch(e) {}
+            try { if (els[j].offsetParent !== null) els[j].click(); }
+            catch(e) {}
         }
     }
 
-    /* === 3. Switch from Editor to Terminal === */
+    /* 3. Click "Open Terminal" if editor is shown */
     var allBtns = document.querySelectorAll('button, a, [role="button"]');
     for (var k = 0; k < allBtns.length; k++) {
         var btnText = (allBtns[k].innerText || '').trim();
         if (btnText === 'Open Terminal') {
-            try {
-                if (allBtns[k].offsetParent !== null) {
-                    allBtns[k].click();
-                }
-            } catch(e) {}
+            try { if (allBtns[k].offsetParent !== null) allBtns[k].click(); }
+            catch(e) {}
             break;
         }
     }
 
-    /* === 4. Close any "Start" tutorial modal === */
+    /* 4. Close tutorial start modals */
     var modals = document.querySelectorAll(
         '[role="dialog"], .modal, .cdk-overlay-pane');
     for (var m = 0; m < modals.length; m++) {
@@ -775,10 +789,10 @@ DISMISS_JS = """
         for (var n = 0; n < mBtns.length; n++) {
             var mText = (mBtns[n].innerText || '').toLowerCase().trim();
             if (mText === 'close' || mText === 'dismiss' ||
-                mText === 'not now' || mText === 'skip') {
-                try {
-                    if (mBtns[n].offsetParent !== null) mBtns[n].click();
-                } catch(e) {}
+                mText === 'not now' || mText === 'skip' ||
+                mText === 'exit') {
+                try { if (mBtns[n].offsetParent !== null) mBtns[n].click(); }
+                catch(e) {}
             }
         }
     }
@@ -787,12 +801,10 @@ DISMISS_JS = """
 
 
 def dismiss_tutorial_and_editor(driver):
-    """Close tutorial panel and switch from editor to terminal."""
     if not driver:
         return
     try:
         driver.execute_script(DISMISS_JS)
-        log.debug("Tutorial/Editor dismiss executed")
     except Exception as e:
         log.debug(f"Dismiss failed: {e}")
 
@@ -873,14 +885,12 @@ setTimeout(function() {
 
 
 def do_cloud_run_extraction(driver, chat_id, session):
-    """Extract Cloud Run regions. Returns True if done."""
     pid = session.get('project_id')
     if not pid:
         return True
 
     current_url = get_current_url_safe(driver)
 
-    # Step A: Navigate to Cloud Run page (non-blocking)
     if "run/create" not in current_url:
         try:
             bot.send_message(chat_id,
@@ -891,9 +901,8 @@ def do_cloud_run_extraction(driver, chat_id, session):
                 f"?enableapi=true&project={pid}")
         except Exception as e:
             log.warning(f"Cloud Run nav: {e}")
-        return False  # will try extraction next cycle
+        return False
 
-    # Step B: Extract regions from the page
     try:
         bot.send_message(chat_id,
             "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
@@ -927,31 +936,103 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
 
 # ══════════════════════════════════════════════════════════
-#  Cloud Shell Navigation (Terminal ONLY - No Editor/Tutorial)
+#  Walkthrough Extraction from SSO URL
+# ══════════════════════════════════════════════════════════
+
+def extract_walkthrough_info(sso_url):
+    """Extract walkthrough_id (display_token URL) from SSO URL."""
+    if not sso_url:
+        return None
+
+    # Decode URL progressively
+    decoded = sso_url
+    for _ in range(5):
+        new = urllib.parse.unquote(decoded)
+        if new == decoded:
+            break
+        decoded = new
+
+    # Method 1: Find display_in_context URL with display_token
+    match = re.search(
+        r'(https?://[^\s&"\']*display_in_context[^\s&"\']*'
+        r'display_token[^\s&"\']*)',
+        decoded)
+    if match:
+        result = match.group(1).rstrip('&').rstrip('?')
+        log.info(f"✅ Walkthrough found: {result[:80]}...")
+        return result
+
+    # Method 2: Find walkthrough_id parameter value
+    match = re.search(r'walkthrough_id=([^\s&"\']+)', decoded)
+    if match:
+        val = match.group(1).rstrip('&').rstrip('?')
+        log.info(f"✅ Walkthrough ID found: {val[:80]}...")
+        return val
+
+    # Method 3: Find display_token directly
+    match = re.search(
+        r'(https?://[^\s&"\']*display_token=[^\s&"\']+)',
+        decoded)
+    if match:
+        result = match.group(1).rstrip('&').rstrip('?')
+        log.info(f"✅ Display token found: {result[:80]}...")
+        return result
+
+    log.info("ℹ️ No walkthrough info found in URL")
+    return None
+
+
+# ══════════════════════════════════════════════════════════
+#  Cloud Shell Navigation (with proper walkthrough URL)
 # ══════════════════════════════════════════════════════════
 
 def open_cloud_shell(driver, session, chat_id):
-    """Open Cloud Shell with TERMINAL ONLY - no editor, no tutorial."""
+    """Open Cloud Shell with the correct walkthrough URL."""
     pid = session.get('project_id')
     if not pid:
         return False
 
     try:
-        bot.send_message(chat_id,
-            "🚀 جاري الانتقال لفتح Cloud Shell (Terminal فقط)...")
+        # Extract walkthrough info from original SSO URL
+        walkthrough = extract_walkthrough_info(session.get('url', ''))
 
-        # ═══ URL بدون walkthrough_id (يمنع التيوتوريال) ═══
-        # ═══ show=terminal فقط (يمنع الـ Editor) ═══
-        shell_url = (
-            f"https://shell.cloud.google.com/"
-            f"?project={pid}&pli=1&show=terminal"
-        )
+        if walkthrough:
+            # ═══ Build FULL URL with walkthrough (as Qwiklabs expects) ═══
+            encoded_wt = urllib.parse.quote(walkthrough, safe='')
+            shell_url = (
+                f"https://shell.cloud.google.com/"
+                f"?enableapi=true"
+                f"&walkthrough_id={encoded_wt}"
+                f"&project={pid}"
+                f"&pli=1"
+                f"&show=ide%2Cterminal"
+            )
+            bot.send_message(chat_id,
+                "🚀 جاري فتح Cloud Shell مع Walkthrough...")
+            log.info(f"Shell URL (walkthrough): {shell_url[:120]}...")
+        else:
+            # ═══ Fallback: Terminal only ═══
+            shell_url = (
+                f"https://shell.cloud.google.com/"
+                f"?project={pid}&pli=1&show=terminal"
+            )
+            bot.send_message(chat_id,
+                "🚀 جاري فتح Cloud Shell (Terminal)...")
+            log.info(f"Shell URL (basic): {shell_url}")
 
-        safe_navigate(driver, shell_url)
-        session['shell_opened'] = True
-        time.sleep(3)
-        log.info(f"🚀 Cloud Shell opened (terminal only): {pid}")
-        return True
+        # Navigate using JS (avoids Selenium timeout crash)
+        success = safe_navigate(driver, shell_url)
+
+        if success:
+            session['shell_opened'] = True
+            # Grace period: 60 seconds for Cloud Shell to load
+            session['shell_loading_until'] = time.time() + 60
+            log.info("✅ Cloud Shell navigation started")
+            return True
+        else:
+            log.error("❌ Cloud Shell navigation failed")
+            return False
+
     except Exception as e:
         log.error(f"Shell Open Error: {e}")
         return False
@@ -962,13 +1043,19 @@ def open_cloud_shell(driver, session, chat_id):
 # ══════════════════════════════════════════════════════════
 
 def update_stream_image(driver, chat_id, session, status, flash):
-    """Take screenshot and update the stream message. Returns new flash."""
     flash = not flash
     icon = "🔴" if flash else "⭕"
     now = datetime.now().strftime("%H:%M:%S")
     proj = (f"📁 {session.get('project_id')}"
             if session.get('project_id') else "")
     t_st = " | ⌨️" if session.get('terminal_ready') else ""
+
+    # Show loading indicator during Cloud Shell load
+    loading_until = session.get('shell_loading_until', 0)
+    if time.time() < loading_until:
+        remaining = int(loading_until - time.time())
+        t_st += f" | ⏳{remaining}s"
+
     cap = f"{icon} بث 🕶️\n{proj}\n📌 {status}{t_st}\n⏱ {now}"
 
     png = driver.get_screenshot_as_png()
@@ -1000,7 +1087,7 @@ DRIVER_ERROR_KEYWORDS = (
 
 
 # ══════════════════════════════════════════════════════════
-#  Stream Loop (FIXED: always updates screenshot first)
+#  Stream Loop
 # ══════════════════════════════════════════════════════════
 
 def stream_loop(chat_id, gen):
@@ -1014,11 +1101,11 @@ def stream_loop(chat_id, gen):
     err_count = 0
     drv_err = 0
     cycle = 0
-    dismiss_count = 0  # عداد لمحاولات إغلاق التيوتوريال
+    dismiss_count = 0
 
     while session['running'] and session.get('gen') == gen:
 
-        # ── وضع الأوامر: مراقبة فقط ──
+        # Command mode: just monitor
         if session.get('cmd_mode'):
             time.sleep(3)
             try:
@@ -1034,9 +1121,7 @@ def stream_loop(chat_id, gen):
         cycle += 1
 
         try:
-            # ═══════════════════════════════════════════
-            # المرحلة 1: تبديل النافذة
-            # ═══════════════════════════════════════════
+            # ═══ Step 1: Switch to latest window ═══
             try:
                 handles = driver.window_handles
                 if handles:
@@ -1044,19 +1129,13 @@ def stream_loop(chat_id, gen):
             except Exception:
                 pass
 
-            # ═══════════════════════════════════════════
-            # المرحلة 2: معالجة النوافذ المنبثقة (سريع)
-            # ═══════════════════════════════════════════
+            # ═══ Step 2: Handle popups (fast) ═══
             status = handle_google_pages(driver, session)
 
-            # ═══════════════════════════════════════════
-            # المرحلة 3: عنوان الصفحة الحالية
-            # ═══════════════════════════════════════════
+            # ═══ Step 3: Get current URL ═══
             current_url = get_current_url_safe(driver)
 
-            # ═══════════════════════════════════════════
-            # المرحلة 4: تحديث البث دائماً (لقطة شاشة)
-            # ═══════════════════════════════════════════
+            # ═══ Step 4: UPDATE SCREENSHOT FIRST (always!) ═══
             try:
                 flash = update_stream_image(
                     driver, chat_id, session, status, flash)
@@ -1065,41 +1144,37 @@ def stream_loop(chat_id, gen):
             except Exception as e:
                 em = str(e).lower()
                 if "message is not modified" not in em:
-                    raise  # re-raise for outer handler
+                    raise
 
-            # ═══════════════════════════════════════════
-            # المرحلة 5: مهام الخلفية (بعد تحديث البث)
-            # ═══════════════════════════════════════════
+            # ═══ Step 5: Background tasks (after screenshot) ═══
 
             on_console = ("console.cloud.google.com" in current_url
                           or "myaccount.google.com" in current_url)
             on_shell = is_on_shell_page(driver)
 
-            # ── 5A: استخراج سيرفرات Cloud Run ──
+            # 5A: Cloud Run region extraction
             if (session.get('project_id')
                     and not session.get('run_api_checked')
                     and on_console):
-
                 done = do_cloud_run_extraction(
                     driver, chat_id, session)
                 if done:
                     session['run_api_checked'] = True
 
-            # ── 5B: فتح Cloud Shell (Terminal فقط) ──
+            # 5B: Open Cloud Shell (with walkthrough URL)
             elif (not session.get('shell_opened')
                   and session.get('run_api_checked')
                   and on_console):
-
                 open_cloud_shell(driver, session, chat_id)
 
-            # ── 5C: إغلاق التيوتوريال والـ Editor ──
+            # 5C: Dismiss tutorial/editor + terminal notification
             elif on_shell:
-                # إغلاق التيوتوريال/الـ Editor (أول 8 دورات)
-                if dismiss_count < 8:
+                # Dismiss tutorial/editor (first 10 cycles ≈ 40-60 sec)
+                if dismiss_count < 10:
                     dismiss_tutorial_and_editor(driver)
                     dismiss_count += 1
 
-                # إشعار Terminal جاهز
+                # Terminal ready notification
                 if (session.get('terminal_ready')
                         and not session.get('terminal_notified')):
                     session['terminal_notified'] = True
@@ -1112,7 +1187,7 @@ def stream_loop(chat_id, gen):
                     except Exception:
                         pass
 
-            # ── تنظيف الذاكرة كل 15 دورة ──
+            # Memory cleanup
             if cycle % 15 == 0:
                 gc.collect()
 
@@ -1122,9 +1197,18 @@ def stream_loop(chat_id, gen):
             if "message is not modified" in em:
                 continue
 
-            # تجاهل أخطاء الشبكة/Timeout
+            # Skip timeout/network errors
             if any(k in em for k in TIMEOUT_KEYWORDS):
                 time.sleep(2)
+                continue
+
+            # ═══ GRACE PERIOD: Cloud Shell loading ═══
+            # Don't count errors during Shell loading phase
+            loading_until = session.get('shell_loading_until', 0)
+            if time.time() < loading_until:
+                log.info(f"⏳ Cloud Shell loading, ignoring: "
+                         f"{str(e)[:80]}")
+                time.sleep(3)
                 continue
 
             err_count += 1
@@ -1153,6 +1237,7 @@ def stream_loop(chat_id, gen):
                         session['terminal_ready'] = False
                         session['terminal_notified'] = False
                         session['run_api_checked'] = False
+                        session['shell_loading_until'] = 0
                         dismiss_count = 0
                         drv_err = 0
                         err_count = 0
@@ -1198,6 +1283,13 @@ def start_stream(chat_id, url):
             "⚠️ تحذير: لم أتمكن من استخراج Project ID، "
             "بعض الميزات قد لا تعمل.")
 
+    # Log walkthrough extraction early
+    walkthrough = extract_walkthrough_info(url)
+    if walkthrough:
+        log.info(f"📋 Walkthrough detected: {walkthrough[:80]}...")
+    else:
+        log.info("📋 No walkthrough in URL")
+
     try:
         driver = get_driver()
         bot.send_message(chat_id, "✅ المتصفح جاهز")
@@ -1220,7 +1312,8 @@ def start_stream(chat_id, url):
             'terminal_notified': False,
             'cmd_mode': False,
             'gen': gen,
-            'run_api_checked': False
+            'run_api_checked': False,
+            'shell_loading_until': 0
         }
         session = user_sessions[chat_id]
 
@@ -1315,7 +1408,6 @@ def execute_command(chat_id, command):
             output_text = (
                 extract_command_result(text_after, command) or "")
 
-        # Clean: remove command echo
         if output_text:
             lines = output_text.split('\n')
             cleaned = []
