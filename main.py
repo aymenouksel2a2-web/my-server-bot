@@ -8,6 +8,7 @@ import random
 import shutil
 import gc
 import subprocess
+import json
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telebot.types import InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton
@@ -246,10 +247,8 @@ def send_command_to_terminal(driver, command):
                 actions.pause(random.uniform(0.02, 0.06))
             actions.send_keys(Keys.RETURN)
             actions.perform()
-            print(f"⌨️ [1] أمر: {command}")
             return True
-    except Exception as e:
-        print(f"⚠️ طريقة 1: {e}")
+    except: pass
 
     try:
         xterm_els = driver.find_elements(By.CSS_SELECTOR,
@@ -265,11 +264,9 @@ def send_command_to_terminal(driver, command):
                         actions.pause(random.uniform(0.02, 0.06))
                     actions.send_keys(Keys.RETURN)
                     actions.perform()
-                    print(f"⌨️ [2] أمر: {command}")
                     return True
             except: continue
-    except Exception as e:
-        print(f"⚠️ طريقة 2: {e}")
+    except: pass
 
     try:
         driver.execute_script("""
@@ -283,12 +280,9 @@ def send_command_to_terminal(driver, command):
             active.send_keys(char)
             time.sleep(random.uniform(0.01, 0.04))
         active.send_keys(Keys.RETURN)
-        print(f"⌨️ [3] أمر: {command}")
         return True
-    except Exception as e:
-        print(f"⚠️ طريقة 3: {e}")
+    except: pass
 
-    print(f"❌ فشل: {command}")
     return False
 
 
@@ -463,7 +457,105 @@ def stream_loop(chat_id, gen):
             status = handle_google_pages(driver, session)
 
             url = driver.current_url
-            if not session.get('shell_opened'):
+            
+            # --- استخراج مناطق Cloud Run قبل التوجه للـ Shell ---
+            if not session.get('run_api_checked'):
+                if "console.cloud.google.com" in url or "myaccount.google.com" in url:
+                    pid = session.get('project_id')
+                    if pid:
+                        if "run/create" not in url:
+                            try:
+                                driver.get(f"https://console.cloud.google.com/run/create?enableapi=false&project={pid}")
+                                time.sleep(4)
+                            except: pass
+                            continue
+                        
+                        try:
+                            bot.send_message(chat_id, "🔍 جاري فحص السيرفرات المتاحة للاستخدام عبر API...")
+                            # سكريبت يستخرج التوكن وينفذ الـ fetch
+                            js_code = """
+                            var callback = arguments[1];
+                            var projectId = arguments[0];
+                            async function fetchRegions() {
+                                try {
+                                    let match = document.cookie.match(/SAPISID=([^;]+)/);
+                                    if (!match) { callback("❌ لم يتم العثور على SAPISID"); return; }
+                                    let sapisid = match[1];
+                                    let time = Math.floor(Date.now() / 1000);
+                                    let origin = "https://console.cloud.google.com";
+                                    let str = time + " " + sapisid + " " + origin;
+
+                                    const buffer = new TextEncoder("utf-8").encode(str);
+                                    const hashBuffer = await crypto.subtle.digest("SHA-1", buffer);
+                                    const hashArray = Array.from(new Uint8Array(hashBuffer));
+                                    const hashHex = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+                                    let authHeader = "SAPISIDHASH " + time + "_" + hashHex;
+                                    let auth1Header = "SAPISID1PHASH " + time + "_" + hashHex;
+                                    let auth3Header = "SAPISID3PHASH " + time + "_" + hashHex;
+
+                                    let payload = {
+                                      "requestContext": {
+                                        "platformMetadata": {"platformType": "RIF"},
+                                        "projectId": projectId
+                                      },
+                                      "operationName": "CreateService",
+                                      "variables": {
+                                        "serviceSpec": {
+                                          "serviceLocator": {
+                                            "projectId": projectId,
+                                            "region": "us-west1",
+                                            "name": "dry-run-region-validation-test"
+                                          },
+                                          "revision": {
+                                            "containers": [{"image": "us-docker.pkg.dev/cloudrun/container/hello"}]
+                                          }
+                                        },
+                                        "dryRun": true
+                                      }
+                                    };
+
+                                    let res = await fetch("https://cloudconsole-pa.clients6.google.com/v3/entityServices/ServerlessEntityService/schemas/SERVERLESS_ENTITY_SERVICE_GQL_TRANSPORT:batchGraphql?key=AIzaSyCI-zsRP85UVOi0DjtiCwWBwQ1djDy741g&prettyPrint=false", {
+                                        method: "POST",
+                                        headers: {
+                                            "authorization": authHeader + " " + auth1Header + " " + auth3Header,
+                                            "content-type": "application/json",
+                                            "x-goog-authuser": "0"
+                                        },
+                                        body: JSON.stringify(payload)
+                                    });
+                                    let text = await res.text();
+                                    callback(text);
+                                } catch(e) {
+                                    callback("Error: " + e.toString());
+                                }
+                            }
+                            fetchRegions();
+                            """
+                            driver.set_script_timeout(20)
+                            result = driver.execute_async_script(js_code, pid)
+                            
+                            # البحث عن مصفوفة المناطق في الرد
+                            matches = re.findall(r'\[([a-z0-9-,\s]+)\]', str(result))
+                            regions = []
+                            for m in matches:
+                                if 'us-' in m or 'europe-' in m or 'asia-' in m:
+                                    regions.append(m)
+                                    
+                            if regions:
+                                text_res = f"🌍 **السيرفرات المسموحة:**\n`{regions[-1]}`"
+                            elif "error" not in str(result).lower() and "us-west1" in str(result):
+                                text_res = "✅ جميع المناطق متاحة (لا توجد قيود على هذا الحساب)."
+                            else:
+                                text_res = f"الرد الخام من الخادم:\n`{str(result)[:3000]}`"
+                                
+                            bot.send_message(chat_id, f"✅ **تم فحص القيود بنجاح:**\n\n{text_res}", parse_mode="Markdown")
+                        except Exception as e:
+                            bot.send_message(chat_id, f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:200]}`", parse_mode="Markdown")
+                        
+                        session['run_api_checked'] = True
+
+            # --- التوجه إلى Cloud Shell بعد الانتهاء من فحص المناطق ---
+            if not session.get('shell_opened') and session.get('run_api_checked'):
                 if "console.cloud.google.com" in url or "myaccount.google.com" in url:
                     pid = session.get('project_id')
                     if pid:
@@ -509,7 +601,7 @@ def stream_loop(chat_id, gen):
                         safe_quit(driver); new_drv = get_driver()
                         session['driver'] = new_drv; driver = new_drv
                         driver.get(session.get('url','about:blank'))
-                        session['shell_opened']=False;session['auth']=False;session['terminal_ready']=False
+                        session['shell_opened']=False;session['auth']=False;session['terminal_ready']=False;session['run_api_checked']=False
                         drv_err=0;err_count=0;time.sleep(5)
                     except: session['running']=False;break
             elif err_count >= 5:
@@ -543,7 +635,8 @@ def start_stream(chat_id, url):
         user_sessions[chat_id] = {
             'driver':driver,'running':False,'msg_id':None,'url':url,
             'project_id':project_id,'shell_opened':False,'auth':False,
-            'terminal_ready':False,'terminal_notified':False,'cmd_mode':False,'gen':gen
+            'terminal_ready':False,'terminal_notified':False,'cmd_mode':False,'gen':gen,
+            'run_api_checked': False
         }
 
     session = user_sessions[chat_id]
