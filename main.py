@@ -1019,7 +1019,7 @@ def stream_loop(chat_id, gen):
                     and on_console):
                 
                 # الانتظار حتى نتأكد أنه لا توجد أزرار يتم الضغط عليها وأنه ليس في صفحة دخول أو تحدي
-                if status != "مراقبة..." or "signin" in current_url.lower() or "challenge" in current_url.lower() or "speedbump" in current_url.lower():
+                if (status != "مراقبة..." and status != "📊 Console") or "signin" in current_url.lower() or "challenge" in current_url.lower() or "speedbump" in current_url.lower():
                     pass # ننتظر
                 else:
                     done = do_cloud_run_extraction(driver, chat_id, session)
