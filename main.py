@@ -317,7 +317,7 @@ def panel(cmd_mode=False):
 
 
 # ══════════════════════════════════════════════════════════
-#  Shell Detection
+#  Shell Detection & Readiness
 # ══════════════════════════════════════════════════════════
 
 def is_on_shell_page(driver):
@@ -327,6 +327,26 @@ def is_on_shell_page(driver):
         url = driver.current_url
         return ("shell.cloud.google.com" in url
                 or "ide.cloud.google.com" in url)
+    except Exception:
+        return False
+
+def is_terminal_fully_ready(driver):
+    if not is_on_shell_page(driver):
+        return False
+    try:
+        ready = driver.execute_script("""
+            var rows = document.querySelectorAll('.xterm-rows > div');
+            if (rows.length > 0) {
+                for(var i=0; i<rows.length; i++) {
+                    var txt = rows[i].textContent || rows[i].innerText || '';
+                    if(txt.indexOf('$') !== -1 || txt.indexOf('@') !== -1 || txt.indexOf('#') !== -1) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        """)
+        return ready
     except Exception:
         return False
 
@@ -828,6 +848,17 @@ def do_cloud_run_extraction(driver, chat_id, session):
                 f"🌍 **السيرفرات المسموحة فقط للإنشاء هي:**\n"
                 f"```text\n{result}\n```",
                 parse_mode="Markdown")
+            
+            # انتقال مباشر إلى Cloud Shell بعد جلب السيرفرات
+            try:
+                bot.send_message(chat_id, "🚀 جاري الانتقال مباشرة إلى Terminal...")
+                pid = session.get('project_id')
+                # استخدام رابط التوجيه المباشر المطلوب
+                shell_url = f"https://shell.cloud.google.com/?enableapi=true&walkthrough_id=https%3A%2F%2Fwww.skills.google%2Fdisplay_in_context%3Fdisplay_token%3D-A4oK7NhZPZytZd90l3_WpyCncyYV_-zPVtpIZFuuPE&project={pid}&pli=1&show=ide%2Cterminal"
+                safe_navigate(driver, shell_url)
+            except Exception as e:
+                log.warning(f"Auto-nav to shell failed: {e}")
+
     except Exception as e:
         bot.send_message(chat_id,
             f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:200]}`",
@@ -905,7 +936,7 @@ def stream_loop(chat_id, gen):
         if session.get('cmd_mode'):
             time.sleep(3)
             try:
-                if driver and is_on_shell_page(driver):
+                if driver and is_terminal_fully_ready(driver):
                     session['terminal_ready'] = True
             except Exception:
                 pass
@@ -957,19 +988,21 @@ def stream_loop(chat_id, gen):
                 if done:
                     session['run_api_checked'] = True
 
-            # 5B: Terminal ready notification
+            # 5B: Terminal ready notification & Auto-Command Mode
             elif on_shell:
-                if (session.get('terminal_ready')
-                        and not session.get('terminal_notified')):
-                    session['terminal_notified'] = True
-                    try:
-                        bot.send_message(chat_id,
-                            "🖥️ **Terminal جاهز!**\n\n"
-                            "اضغط **⌨️ وضع الأوامر**\n"
-                            "أو `/cmd ls -la`",
-                            parse_mode="Markdown")
-                    except Exception:
-                        pass
+                if not session.get('terminal_notified'):
+                    if is_terminal_fully_ready(driver):
+                        session['terminal_ready'] = True
+                        session['terminal_notified'] = True
+                        session['cmd_mode'] = True  # تفعيل وضع الأوامر تلقائياً
+                        try:
+                            bot.send_message(chat_id,
+                                "🖥️ **Terminal جاهز تماماً للاستخدام!** ✅\n\n"
+                                "تم تفعيل **⌨️ وضع الأوامر** تلقائياً.\n"
+                                "يمكنك الآن إرسال أوامرك مباشرة كرسالة عادية.",
+                                parse_mode="Markdown")
+                        except Exception:
+                            pass
 
             # Memory cleanup
             if cycle % 15 == 0:
