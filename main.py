@@ -318,27 +318,15 @@ def panel(cmd_mode=False):
 
 
 # ══════════════════════════════════════════════════════════
-#  Shell Detection (FIXED: multi-method)
+#  Shell Detection
 # ══════════════════════════════════════════════════════════
 
 def is_on_shell_page(driver):
-    """
-    Detect Cloud Shell using 3 methods:
-    1. URL check (shell.cloud.google.com or ide.cloud.google.com)
-    2. DOM elements check (xterm terminal elements)
-    3. Page title check
-    
-    BUG FIX: switch_to_latest_window() BEFORE checking.
-    The old code checked the URL without switching windows first,
-    so if Cloud Shell opened in a new tab, the check would fail.
-    """
     if not driver:
         return False
 
-    # ═══ CRITICAL: Switch to latest window first ═══
     switch_to_latest_window(driver)
 
-    # Method 1: URL
     try:
         url = driver.current_url
         if ("shell.cloud.google.com" in url
@@ -348,7 +336,6 @@ def is_on_shell_page(driver):
     except Exception:
         pass
 
-    # Method 2: xterm DOM elements
     try:
         has_terminal = driver.execute_script("""
             return !!(
@@ -364,7 +351,6 @@ def is_on_shell_page(driver):
     except Exception:
         pass
 
-    # Method 3: Page title
     try:
         title = driver.title.lower()
         if 'cloud shell' in title:
@@ -377,10 +363,9 @@ def is_on_shell_page(driver):
 
 
 # ══════════════════════════════════════════════════════════
-#  Terminal Command Sending (IMPROVED: 4 methods)
+#  Terminal Command Sending
 # ══════════════════════════════════════════════════════════
 
-# DevShell API endpoint template for command events
 DEVSHELL_CMD_JS = """
 try {
     var cmd = arguments[0];
@@ -411,26 +396,16 @@ try {
 }
 """
 
-
 def send_command_to_terminal(driver, command):
-    """
-    Send command to Cloud Shell terminal using 4 methods:
-    M1: JS find xterm textarea + ActionChains typing
-    M2: Click xterm element + ActionChains typing
-    M3: Active element focus + send_keys
-    M4: DevShell API endpoint (supplementary)
-    """
     if not driver:
         return False
 
-    # ═══ Switch to latest window + reset context ═══
     switch_to_latest_window(driver)
     try:
         driver.switch_to.default_content()
     except Exception:
         pass
 
-    # ── Method 1: JS textarea focus + ActionChains ──
     try:
         result = driver.execute_script("""
             function findTA(doc) {
@@ -466,7 +441,6 @@ def send_command_to_terminal(driver, command):
             actions.send_keys(Keys.RETURN)
             actions.perform()
             log.info(f"⌨️ [M1] sent: {command[:60]}")
-            # Also fire DevShell API event
             try:
                 driver.execute_script(DEVSHELL_CMD_JS, command)
             except Exception:
@@ -475,7 +449,6 @@ def send_command_to_terminal(driver, command):
     except Exception as e:
         log.debug(f"M1 failed: {e}")
 
-    # ── Method 2: Click xterm element + ActionChains ──
     try:
         xterm_els = driver.find_elements(By.CSS_SELECTOR,
             ".xterm-screen, .xterm-rows, "
@@ -502,7 +475,6 @@ def send_command_to_terminal(driver, command):
     except Exception as e:
         log.debug(f"M2 failed: {e}")
 
-    # ── Method 3: Active element + send_keys ──
     try:
         driver.execute_script("""
             var el = document.querySelector('.xterm-helper-textarea') ||
@@ -525,7 +497,6 @@ def send_command_to_terminal(driver, command):
     except Exception as e:
         log.debug(f"M3 failed: {e}")
 
-    # ── Method 4: DevShell API only ──
     try:
         status = driver.execute_script(DEVSHELL_CMD_JS, command)
         if status == 200:
@@ -653,7 +624,6 @@ def handle_google_pages(driver, session):
 
     body_lower = body.lower()
 
-    # ── Authorize Cloud Shell popup ──
     if "authorize cloud shell" in body_lower:
         try:
             btns = driver.find_elements(By.XPATH,
@@ -679,7 +649,6 @@ def handle_google_pages(driver, session):
             pass
         return "🔐 Authorize..."
 
-    # ── Cloud Shell Continue popup ──
     if ("cloud shell" in body_lower
             and "continue" in body_lower
             and "free" in body_lower):
@@ -706,7 +675,6 @@ def handle_google_pages(driver, session):
             pass
         return "☁️ popup..."
 
-    # ── Verify ──
     if "verify it" in body_lower:
         try:
             btns = driver.find_elements(By.XPATH,
@@ -726,7 +694,6 @@ def handle_google_pages(driver, session):
             pass
         return "🔐 Verify..."
 
-    # ── I understand ──
     if "I understand" in body:
         try:
             btns = driver.find_elements(By.XPATH,
@@ -742,7 +709,6 @@ def handle_google_pages(driver, session):
         except Exception:
             pass
 
-    # ── Sign-in rejected ──
     if "couldn't sign you in" in body_lower:
         try:
             driver.delete_all_cookies()
@@ -753,7 +719,6 @@ def handle_google_pages(driver, session):
             pass
         return "⚠️ رفض..."
 
-    # ── Generic Authorize ──
     if ("authorize" in body_lower
             and ("cloud" in body_lower or "google" in body_lower)):
         try:
@@ -772,7 +737,6 @@ def handle_google_pages(driver, session):
         except Exception:
             pass
 
-    # ── Dismiss notifications ──
     if "gemini" in body_lower and "dismiss" in body_lower:
         try:
             btns = driver.find_elements(By.XPATH,
@@ -788,7 +752,6 @@ def handle_google_pages(driver, session):
         except Exception:
             pass
 
-    # ── Dismiss terminal recovery notification ──
     if "recovered" in body_lower and "dismiss" in body_lower:
         try:
             btns = driver.find_elements(By.XPATH,
@@ -805,7 +768,6 @@ def handle_google_pages(driver, session):
         except Exception:
             pass
 
-    # ── Trust project ──
     if "trust this project" in body_lower or "trust project" in body_lower:
         try:
             btns = driver.find_elements(By.XPATH,
@@ -822,7 +784,6 @@ def handle_google_pages(driver, session):
         except Exception:
             pass
 
-    # ── Status by URL ──
     try:
         url = driver.current_url
     except Exception:
@@ -964,32 +925,36 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
 
 # ══════════════════════════════════════════════════════════
-#  Cloud Shell Navigation (Terminal ONLY)
+#  Cloud Shell Navigation (تم التعديل لتجنب Crash المتصفح)
 # ══════════════════════════════════════════════════════════
 
 def open_cloud_shell(driver, session, chat_id):
-    """
-    Open Cloud Shell with Terminal ONLY:
-    - No walkthrough_id → No tutorial panel
-    - show=terminal → No editor panel
-    """
     pid = session.get('project_id')
     if not pid:
         return False
 
     try:
-        shell_url = (
-            f"https://shell.cloud.google.com/"
-            f"?enableapi=true"
-            f"&project={pid}"
-            f"&pli=1"
-            f"&show=terminal"
-        )
+        # استخدام الرابط الأصلي للعودة للبيئة كما كانت (IDE + Terminal)
+        shell_url = session.get('url')
 
         bot.send_message(chat_id,
-            "🚀 جاري فتح Cloud Shell (Terminal فقط)...")
+            "🚀 جاري إعادة فتح Cloud Shell...")
 
         log.info(f"🚀 Shell URL: {shell_url}")
+
+        # 💡 تفريغ الذاكرة لتجنب انهيار المتصفح (OOM Crash):
+        # نقوم بفتح تبويبة فارغة جديدة، ونغلق تبويبة Cloud Run الثقيلة 
+        # لتفريغ الرام، ثم ننتقل للرابط المطلوب.
+        try:
+            driver.execute_script("window.open('about:blank', '_blank');")
+            time.sleep(1)
+            handles = driver.window_handles
+            if len(handles) > 1:
+                driver.switch_to.window(handles[0])
+                driver.close()
+                driver.switch_to.window(handles[-1])
+        except Exception as e:
+            log.warning(f"Tab switch failed: {e}")
 
         success = safe_navigate(driver, shell_url)
 
@@ -1284,7 +1249,7 @@ def start_stream(chat_id, url):
 
 
 # ══════════════════════════════════════════════════════════
-#  Execute Command (FIXED: switch window before detection)
+#  Execute Command
 # ══════════════════════════════════════════════════════════
 
 SLOW_COMMANDS = ('install', 'apt', 'pip', 'gcloud', 'docker',
@@ -1304,9 +1269,7 @@ def execute_command(chat_id, command):
         bot.send_message(chat_id, "❌ المتصفح غير متوفر.")
         return
 
-    # ═══ FIXED: is_on_shell_page() now switches window internally ═══
     if not is_on_shell_page(driver):
-        # Give extra chance: wait and retry
         time.sleep(3)
         if not is_on_shell_page(driver):
             bot.send_message(chat_id,
