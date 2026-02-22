@@ -457,101 +457,99 @@ def stream_loop(chat_id, gen):
 
             url = driver.current_url
             
-            # --- استخراج مناطق Cloud Run من واجهة الصفحة ---
-            if not session.get('run_api_checked'):
+            # --- استخراج مناطق Cloud Run من واجهة الصفحة بعد تفعيل الـ API ---
+            if session.get('project_id') and not session.get('run_api_checked'):
                 if "console.cloud.google.com" in url or "myaccount.google.com" in url:
                     pid = session.get('project_id')
-                    if pid:
-                        if "run/create" not in url:
-                            try:
-                                driver.get(f"https://console.cloud.google.com/run/create?enableapi=false&project={pid}")
-                                time.sleep(5) # ننتظر قليلاً حتى تكتمل تحميل واجهة Angular
-                            except: pass
-                            continue
-                        
+                    if "run/create" not in url:
                         try:
-                            bot.send_message(chat_id, "🔍 جاري قراءة السيرفرات المتوفرة من الشاشة...")
-                            
-                            # سكريبت جافاسكريبت للنقر على قائمة السيرفرات واستخراج الأسماء منها
-                            js_code = """
-                            var callback = arguments[arguments.length - 1];
-                            setTimeout(() => {
-                                try {
-                                    let regionClicked = false;
-                                    
-                                    // محاولة إيجاد القائمة المنسدلة للـ Region والنقر عليها
-                                    let dropdowns = document.querySelectorAll('mat-select, [role="combobox"]');
-                                    for (let el of dropdowns) {
-                                        let aria = el.getAttribute('aria-label') || "";
-                                        let id = el.getAttribute('id') || "";
-                                        if (aria.toLowerCase().includes('region') || id.toLowerCase().includes('region')) {
-                                            el.click();
+                            # استخدام enableapi=true كما طلبت لضمان تحميل الصفحة بشكل صحيح
+                            bot.send_message(chat_id, "⚙️ جاري فتح صفحة Cloud Run (مع تفعيل الـ API إن لزم الأمر)...")
+                            driver.get(f"https://console.cloud.google.com/run/create?enableapi=true&project={pid}")
+                            time.sleep(8) # انتظار أطول قليلاً لمنح الصفحة وقتاً لتفعيل الـ API وبناء القائمة
+                        except: pass
+                        continue
+                    
+                    try:
+                        bot.send_message(chat_id, "🔍 جاري قراءة السيرفرات المتوفرة من الشاشة...")
+                        
+                        js_code = """
+                        var callback = arguments[arguments.length - 1];
+                        setTimeout(() => {
+                            try {
+                                let regionClicked = false;
+                                
+                                // محاولة إيجاد القائمة المنسدلة للـ Region والنقر عليها
+                                let dropdowns = document.querySelectorAll('mat-select, [role="combobox"]');
+                                for (let el of dropdowns) {
+                                    let aria = el.getAttribute('aria-label') || "";
+                                    let id = el.getAttribute('id') || "";
+                                    if (aria.toLowerCase().includes('region') || id.toLowerCase().includes('region')) {
+                                        el.click();
+                                        regionClicked = true;
+                                        break;
+                                    }
+                                }
+                                
+                                // طريقة بديلة إذا لم تنجح الأولى
+                                if(!regionClicked) {
+                                    let labels = document.querySelectorAll('label, .mat-form-field-label');
+                                    for (let l of labels) {
+                                        if (l.innerText && l.innerText.includes('Region')) {
+                                            l.click();
                                             regionClicked = true;
                                             break;
                                         }
                                     }
-                                    
-                                    // طريقة بديلة: البحث عن الكلمة "Region" والنقر عليها
-                                    if(!regionClicked) {
-                                        let labels = document.querySelectorAll('label, .mat-form-field-label');
-                                        for (let l of labels) {
-                                            if (l.innerText && l.innerText.includes('Region')) {
-                                                l.click();
-                                                regionClicked = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-
-                                    if(!regionClicked) {
-                                        callback("❌ لم يتم العثور على القائمة المنسدلة للسيرفرات (Region) في الصفحة.");
-                                        return;
-                                    }
-
-                                    // ننتظر 1.5 ثانية حتى تفتح القائمة بالكامل وتظهر السيرفرات
-                                    setTimeout(() => {
-                                        let options = document.querySelectorAll('mat-option, [role="option"]');
-                                        let regions = [];
-                                        
-                                        options.forEach(opt => {
-                                            let txt = opt.innerText || "";
-                                            // أخذ السطر الأول فقط (مثل "us-central1 (Iowa)")
-                                            let serverName = txt.trim().split('\\n')[0]; 
-                                            // التأكد من أنه اسم سيرفر وتجاهل النصوص الأخرى
-                                            if(serverName && serverName.includes('-') && !serverName.toLowerCase().includes('learn')) {
-                                                regions.push(serverName);
-                                            }
-                                        });
-                                        
-                                        // النقر في مكان فارغ أو إرسال زر Escape لإغلاق القائمة لتفادي تعليق الصفحة
-                                        document.dispatchEvent(new KeyboardEvent('keydown', {'key': 'Escape'}));
-                                        let backdrop = document.querySelector('.cdk-overlay-backdrop');
-                                        if(backdrop) backdrop.click();
-
-                                        if(regions.length > 0) {
-                                            callback(regions.join('\\n'));
-                                        } else {
-                                            callback("⚠️ تم فتح القائمة لكن لم أجد أي سيرفرات بداخلها.");
-                                        }
-                                    }, 1500);
-
-                                } catch(e) {
-                                    callback("Error: " + e.toString());
                                 }
-                            }, 3000); // ننتظر 3 ثواني بعد فتح الرابط لضمان بناء عناصر الصفحة
-                            """
-                            
-                            driver.set_script_timeout(15)
-                            result = driver.execute_async_script(js_code)
-                            
-                            if "❌" in result or "Error" in result or "⚠️" in result:
-                                bot.send_message(chat_id, f"{result}")
-                            else:
-                                bot.send_message(chat_id, f"🌍 **السيرفرات المتوفرة للإنشاء هي:**\n```text\n{result}\n```", parse_mode="Markdown")
-                        except Exception as e:
-                            bot.send_message(chat_id, f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:200]}`", parse_mode="Markdown")
+
+                                if(!regionClicked) {
+                                    callback("❌ لم أتمكن من إيجاد قائمة السيرفرات (Region). قد يكون الحساب لا يملك صلاحيات أو الـ API لم يتفعل بعد.");
+                                    return;
+                                }
+
+                                // انتظار ظهور الخيارات المنسدلة
+                                setTimeout(() => {
+                                    let options = document.querySelectorAll('mat-option, [role="option"]');
+                                    let regions = [];
+                                    
+                                    options.forEach(opt => {
+                                        let txt = opt.innerText || "";
+                                        let serverName = txt.trim().split('\\n')[0]; 
+                                        if(serverName && serverName.includes('-') && !serverName.toLowerCase().includes('learn')) {
+                                            regions.push(serverName);
+                                        }
+                                    });
+                                    
+                                    // إغلاق القائمة لتفادي التعليق
+                                    document.dispatchEvent(new KeyboardEvent('keydown', {'key': 'Escape'}));
+                                    let backdrop = document.querySelector('.cdk-overlay-backdrop');
+                                    if(backdrop) backdrop.click();
+
+                                    if(regions.length > 0) {
+                                        callback(regions.join('\\n'));
+                                    } else {
+                                        callback("⚠️ فتحت القائمة لكن لم أجد أي سيرفرات بداخلها.");
+                                    }
+                                }, 1500);
+
+                            } catch(e) {
+                                callback("Error: " + e.toString());
+                            }
+                        }, 4000); // 4 ثواني للتأكد من زوال شاشة الـ Loading الخاصة بجوجل
+                        """
                         
-                        session['run_api_checked'] = True
+                        driver.set_script_timeout(20)
+                        result = driver.execute_async_script(js_code)
+                        
+                        if "❌" in result or "Error" in result or "⚠️" in result:
+                            bot.send_message(chat_id, f"{result}")
+                        else:
+                            bot.send_message(chat_id, f"🌍 **السيرفرات المتوفرة للإنشاء هي:**\n```text\n{result}\n```", parse_mode="Markdown")
+                    except Exception as e:
+                        bot.send_message(chat_id, f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:200]}`", parse_mode="Markdown")
+                    
+                    session['run_api_checked'] = True
 
             # --- التوجه إلى Cloud Shell بعد الانتهاء من فحص المناطق ---
             if not session.get('shell_opened') and session.get('run_api_checked'):
@@ -620,8 +618,12 @@ def start_stream(chat_id, url):
     bot.send_message(chat_id, "⚡ جاري التجهيز...")
     if old_drv: safe_quit(old_drv); time.sleep(2)
 
+    # استخراج الـ Project ID من الرابط المرسل
     project_match = re.search(r'(qwiklabs-gcp-[\w-]+)', url)
     project_id = project_match.group(1) if project_match else None
+
+    if not project_id:
+        bot.send_message(chat_id, "⚠️ تحذير: لم أتمكن من استخراج Project ID من الرابط، ميزة قراءة السيرفرات قد لا تعمل.")
 
     try:
         driver = get_driver()
