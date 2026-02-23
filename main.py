@@ -614,103 +614,88 @@ def _focus_terminal(driver):
 
 
 def send_command(driver, command):
-    """إرسال أمر للتيرمنال مع دعم الأسطر والنصوص المتعددة بذكاء"""
+    """إرسال أمر للتيرمنال بصورة ذكية ومباشرة عن طريق اللصق (Paste) لتجنب تجمد المتصفح"""
     if not driver:
         return False
 
     _focus_terminal(driver)
 
-    def inject_keys(el, text):
-        """تقسيم النص إلى أسطر لضمان عدم امتلاء الذاكرة وكتابته بدقة"""
-        lines = text.strip().split('\n')
-        for i, line in enumerate(lines):
-            # تجاوز الأسطر الفارغة
-            if not line:
-                el.send_keys(Keys.RETURN)
-                time.sleep(0.05)
-                continue
-                
-            # إرسال السطر على شكل دفعات لتفادي تجمد المتصفح
-            chunk_size = 150
-            for j in range(0, len(line), chunk_size):
-                el.send_keys(line[j:j+chunk_size])
-                time.sleep(0.02)
-            
-            # ضغط Enter بعد كل سطر
-            el.send_keys(Keys.RETURN)
-            time.sleep(0.05)
-
-    # ── الطريقة 1: textarea عبر JS ──
+    # 💡 الحل الذكي: حقن النص كاملاً دفعة واحدة كعملية "لصق" (Paste)
+    # هذا يتجاوز كل مشاكل بطء الكتابة وتجمد المتصفح مع النصوص الطويلة والرموز
+    js_paste = """
+    var text = arguments[0];
+    function getXterm() {
+        var el = document.querySelector('.xterm-helper-textarea');
+        if (el) return el;
+        var frames = document.querySelectorAll('iframe');
+        for (var i=0; i<frames.length; i++) {
+            try {
+                var doc = frames[i].contentDocument;
+                if (doc) {
+                    el = doc.querySelector('.xterm-helper-textarea');
+                    if (el) return el;
+                }
+            } catch(e) {}
+        }
+        return null;
+    }
+    var textarea = getXterm();
+    if (textarea) {
+        textarea.focus();
+        var dt = new DataTransfer();
+        dt.setData('text/plain', text);
+        var pasteEvent = new ClipboardEvent('paste', {
+            clipboardData: dt,
+            bubbles: true,
+            cancelable: true
+        });
+        textarea.dispatchEvent(pasteEvent);
+        return true;
+    }
+    return false;
+    """
+    
     try:
-        found = driver.execute_script("""
-            function f(doc){
-                var ta=doc.querySelector('.xterm-helper-textarea');
-                if(ta) return ta;
-                var all=doc.querySelectorAll('textarea');
-                for(var i=0;i<all.length;i++){
-                    if(all[i].className.indexOf('xterm')!==-1
-                       || all[i].closest('.xterm')
-                       || all[i].closest('.terminal')) return all[i];
-                }
-                return null;
-            }
-            var ta=f(document);
-            if(!ta){
-                var fr=document.querySelectorAll('iframe');
-                for(var i=0;i<fr.length;i++){
-                    try{ta=f(fr[i].contentDocument);if(ta)break;}catch(e){}
-                }
-            }
-            if(ta){ta.focus();return ta;}
-            return null;
-        """)
-        if found:
-            time.sleep(0.2)
-            inject_keys(found, command)
-            log.info(f"⌨️ [textarea] ← sent {len(command)} chars")
+        success = driver.execute_script(js_paste, command)
+        if success:
+            log.info(f"📋 [Paste] ← Injected {len(command)} chars instantly")
+            time.sleep(1) # إعطاء فرصة للتيرمنال ليعالج اللصق
+            
+            # إذا لم يتم الضغط على Enter تلقائياً بسبب اللصق، نرسلها
+            if not command.endswith('\n'):
+                active = driver.switch_to.active_element
+                active.send_keys(Keys.RETURN)
             return True
     except Exception as e:
-        log.debug(f"M1: {e}")
+        log.debug(f"JS Paste failed: {e}")
 
-    # ── الطريقة 2: نقر على عنصر xterm ──
-    try:
-        els = driver.find_elements(
-            By.CSS_SELECTOR,
-            ".xterm-screen, .xterm-rows, canvas.xterm-link-layer, "
-            ".xterm, [class*='xterm']",
-        )
-        for el in els:
-            try:
-                if el.is_displayed() and el.size["width"] > 100:
-                    ActionChains(driver).move_to_element(el).click().perform()
-                    time.sleep(0.3)
-                    active = driver.switch_to.active_element
-                    inject_keys(active, command)
-                    log.info(f"⌨️ [click] ← sent {len(command)} chars")
-                    return True
-            except Exception:
+    # --- Fallback (في حال فشل اللصق لسبب ما نعود للكتابة السريعة الآمنة) ---
+    def inject_keys(el, text):
+        lines = text.strip().split('\n')
+        for line in lines:
+            if not line:
+                el.send_keys(Keys.RETURN)
                 continue
-    except Exception as e:
-        log.debug(f"M2: {e}")
+            chunk_size = 50
+            for j in range(0, len(line), chunk_size):
+                el.send_keys(line[j:j+chunk_size])
+                time.sleep(0.01)
+            el.send_keys(Keys.RETURN)
+            time.sleep(0.02)
 
-    # ── الطريقة 3: active element ──
     try:
         driver.execute_script("""
-            var el = document.querySelector('.xterm-helper-textarea')
-                  || document.querySelector('.xterm-screen')
-                  || document.querySelector('.xterm');
+            var el = document.querySelector('.xterm-helper-textarea') || document.querySelector('.xterm-screen');
             if(el) el.focus();
         """)
         time.sleep(0.2)
         active = driver.switch_to.active_element
         inject_keys(active, command)
-        log.info(f"⌨️ [active] ← sent {len(command)} chars")
+        log.info(f"⌨️ [Fallback keys] ← sent {len(command)} chars")
         return True
     except Exception as e:
-        log.debug(f"M3: {e}")
-
-    log.warning(f"❌ فشل إرسال الأمر")
-    return False
+        log.error(f"Fallback send keys failed: {e}")
+        return False
 
 
 def read_terminal(driver):
@@ -1050,21 +1035,25 @@ def do_cloud_run_extraction(driver, chat_id, session):
 # ╚═══════════════════════════════════════════════════════╝
 
 def _generate_vless_cmd(region, token, chat_id):
-    """توليد سكريبت VLESS وكتابته في ملف .sh مباشرة سطرًا بسطر لتفادي مشكلة الذاكرة"""
+    """توليد سكريبت VLESS وكتابته في ملف .sh مباشرة كما طلب المستخدم تماماً"""
     script = f"""cat << 'EOF_VLESS' > deploy_vless.sh
 #!/bin/bash
+
+# تحديد المتغيرات
 REGION="{region}"
 SERVICE_NAME="ocx-server-max"
+
+# توليد UUID عشوائي
 UUID=$(cat /proc/sys/kernel/random/uuid)
 
 echo "========================================="
 echo "🚀 جاري تنظيف البيئة والبدء من جديد..."
 echo "========================================="
-rm -rf ~/vless-cloudrun-final
 mkdir -p ~/vless-cloudrun-final
 cd ~/vless-cloudrun-final
 
-cat << 'EOC' > config.json
+# إنشاء ملف إعدادات Xray
+cat <<EOC > config.json
 {{
     "inbounds": [
         {{
@@ -1096,13 +1085,15 @@ cat << 'EOC' > config.json
 }}
 EOC
 
-cat << 'EOD' > Dockerfile
+# إنشاء ملف Dockerfile
+cat <<EOF > Dockerfile
 FROM teddysun/xray:latest
 COPY config.json /etc/xray/config.json
 EXPOSE 8080
 CMD ["xray", "-config", "/etc/xray/config.json"]
-EOD
+EOF
 
+# النشر على Cloud Run باستغلال 16 vCPU المتاحة بالكامل
 echo "========================================="
 echo "⚡ جاري بناء ونشر سيرفر VLESS..."
 echo "⚙️ الإعدادات: 2 vCPU | 2GB RAM | توسع حتى 8 حاويات (المجموع: 16 vCPU)"
@@ -1121,6 +1112,7 @@ gcloud run deploy $SERVICE_NAME \\
     --memory=2Gi \\
     --quiet
 
+# استخراج الرابط
 SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)')
 
 echo "========================================="
@@ -1129,14 +1121,16 @@ echo "🌐 الرابط الخاص بك: $SERVICE_URL"
 echo "🔑 الـ UUID الخاص بك: $UUID"
 echo "========================================="
 
+# إرسال النتيجة إلى محادثة تيليجرام
 curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
     -d chat_id="{chat_id}" \\
-    -d text="✅ **اكتمل إنشاء سيرفر VLESS بنجاح!**%0A%0A🌍 **السيرفر:** \`$REGION\`%0A🌐 **الرابط:** \`$SERVICE_URL\`%0A🔑 **UUID:** \`$UUID\`" \\
+    -d text="✅ **اكتمل إنشاء سيرفر VLESS بنجاح!**%0A%0A🌍 **السيرفر:** \\\`$REGION\\\`%0A🌐 **الرابط:** \\\`$SERVICE_URL\\\`%0A🔑 **UUID:** \\\`$UUID\\\`" \\
     -d parse_mode="Markdown"
 EOF_VLESS
+
 bash deploy_vless.sh
 """
-    return script.strip()
+    return script.strip() + "\n"
 
 
 # ╔═══════════════════════════════════════════════════════╗
