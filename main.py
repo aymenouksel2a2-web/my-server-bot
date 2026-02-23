@@ -1,5 +1,14 @@
+"""
+╔══════════════════════════════════════════════════════════╗
+║  🤖 Google Cloud Shell — Telegram Bot                    ║
+║  📌 Premium Edition v2.0                                 ║
+║  🔧 Railway Optimized · Low RAM · Anti-Detection         ║
+╚══════════════════════════════════════════════════════════╝
+"""
+
 import telebot
 import os
+import sys
 import time
 import threading
 import io
@@ -10,9 +19,14 @@ import gc
 import subprocess
 import json
 import logging
+import signal
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telebot.types import InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import (
+    InputMediaPhoto,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -20,157 +34,244 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from pyvirtualdisplay import Display
 
-# ══════════════════════════════════════════════════════════
-#  Logging
-# ══════════════════════════════════════════════════════════
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  1 · CONFIGURATION                                    ║
+# ╚═══════════════════════════════════════════════════════╝
+
+class Config:
+    """جميع الإعدادات في مكان واحد لتسهيل التعديل"""
+
+    TOKEN = os.environ.get("BOT_TOKEN")
+    PORT = int(os.environ.get("PORT", 8080))
+    VERSION = "2.0"
+
+    # ── المتصفح ──
+    PAGE_LOAD_TIMEOUT = 45
+    SCRIPT_TIMEOUT = 20
+    WINDOW_SIZE = (1024, 768)
+
+    # ── البث المباشر ──
+    STREAM_INTERVAL = (4, 6)          # (min, max) ثانية
+    CMD_CHECK_INTERVAL = 3            # ثانية في وضع الأوامر
+
+    # ── الجلسات ──
+    SESSION_MAX_AGE_HOURS = 4
+    CLEANUP_INTERVAL_SEC = 1800       # 30 دقيقة
+
+    # ── عتبات الأخطاء ──
+    MAX_ERR_BEFORE_REFRESH = 5
+    MAX_DRV_ERR_BEFORE_RESTART = 3
+
+    # ── تصنيف الأوامر ──
+    SLOW_CMDS = (
+        "install", "apt", "pip", "gcloud", "docker",
+        "kubectl", "terraform", "build", "deploy",
+        "npm", "yarn", "wget", "curl", "git clone",
+    )
+    FAST_CMDS = (
+        "cat", "echo", "ls", "pwd", "whoami",
+        "date", "hostname", "uname", "id", "env",
+        "which", "type", "head", "tail", "wc",
+    )
+
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  2 · LOGGING                                          ║
+# ╚═══════════════════════════════════════════════════════╝
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%H:%M:%S'
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
-log = logging.getLogger(__name__)
+log = logging.getLogger("CSBot")
 
-TOKEN = os.environ.get('BOT_TOKEN')
-if not TOKEN:
-    raise ValueError("BOT_TOKEN غير موجود!")
 
-bot = telebot.TeleBot(TOKEN)
-user_sessions = {}
+# ╔═══════════════════════════════════════════════════════╗
+# ║  3 · BOT + GLOBAL STATE                               ║
+# ╚═══════════════════════════════════════════════════════╝
+
+if not Config.TOKEN:
+    log.critical("❌ BOT_TOKEN غير موجود! أضفه كمتغير بيئة.")
+    sys.exit(1)
+
+bot = telebot.TeleBot(Config.TOKEN)
+
+user_sessions: dict = {}
 sessions_lock = threading.Lock()
 chromedriver_lock = threading.Lock()
+shutdown_event = threading.Event()
 
-# ══════════════════════════════════════════════════════════
-#  Health Server
-# ══════════════════════════════════════════════════════════
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  4 · HEALTH SERVER                                    ║
+# ╚═══════════════════════════════════════════════════════╝
 
 class HealthHandler(BaseHTTPRequestHandler):
+    """يُرجع JSON بحالة البوت والجلسات"""
+
     def do_GET(self):
-        if self.path in ('/', '/health', '/healthz'):
+        if self.path in ("/", "/health", "/healthz"):
             self.send_response(200)
-            self.send_header('Content-Type', 'text/html')
+            self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
             with sessions_lock:
                 active = len(user_sessions)
-            self.wfile.write(
-                f"<h1>Bot Running</h1><p>Sessions: {active}</p>".encode()
+                details = [
+                    {
+                        "chat_id": cid,
+                        "running": s.get("running", False),
+                        "terminal": s.get("terminal_ready", False),
+                        "project": s.get("project_id", "N/A"),
+                    }
+                    for cid, s in user_sessions.items()
+                ]
+            payload = json.dumps(
+                {
+                    "status": "running",
+                    "version": Config.VERSION,
+                    "sessions": active,
+                    "details": details,
+                    "ts": datetime.now().isoformat(),
+                },
+                ensure_ascii=False,
             )
+            self.wfile.write(payload.encode())
         else:
             self.send_response(404)
             self.end_headers()
 
-    def log_message(self, *args):
+    def log_message(self, *_):
         pass
 
 
-def start_health_server():
-    port = int(os.environ.get('PORT', 8080))
-    log.info(f"🌐 Health Check: port {port}")
-    HTTPServer(('0.0.0.0', port), HealthHandler).serve_forever()
+def _health_server():
+    try:
+        HTTPServer(("0.0.0.0", Config.PORT), HealthHandler).serve_forever()
+    except Exception as exc:
+        log.error(f"❌ Health-server: {exc}")
 
 
-# ══════════════════════════════════════════════════════════
-#  Virtual Display
-# ══════════════════════════════════════════════════════════
+# ╔═══════════════════════════════════════════════════════╗
+# ║  5 · VIRTUAL DISPLAY                                  ║
+# ╚═══════════════════════════════════════════════════════╝
 
 display = None
-try:
-    display = Display(visible=0, size=(1024, 768), color_depth=16)
-    display.start()
-    log.info("✅ Xvfb يعمل")
-except Exception:
+for size, depth in [(Config.WINDOW_SIZE, 16), ((800, 600), 24)]:
     try:
-        display = Display(visible=0, size=(800, 600))
+        display = Display(visible=0, size=size, color_depth=depth)
         display.start()
-        log.info("✅ Xvfb يعمل (fallback)")
-    except Exception as e:
-        log.error(f"❌ Xvfb فشل: {e}")
+        log.info(f"✅ Xvfb {size[0]}×{size[1]}")
+        break
+    except Exception:
+        continue
+if display is None:
+    log.warning("⚠️ Xvfb غير متوفر — قد لا تعمل لقطات الشاشة")
 
 
-# ══════════════════════════════════════════════════════════
-#  Utilities
-# ══════════════════════════════════════════════════════════
+# ╔═══════════════════════════════════════════════════════╗
+# ║  6 · UTILITY HELPERS                                   ║
+# ╚═══════════════════════════════════════════════════════╝
 
 def find_path(names, extras=None):
     for n in names:
         p = shutil.which(n)
         if p:
             return p
-    for p in (extras or []):
+    for p in extras or []:
         if os.path.isfile(p):
             return p
     return None
 
 
-def get_browser_version(path):
+def browser_version(path):
     try:
-        r = subprocess.run([path, '--version'],
-                           capture_output=True, text=True, timeout=5)
-        m = re.search(r'(\d+)', r.stdout)
+        r = subprocess.run([path, "--version"], capture_output=True,
+                           text=True, timeout=5)
+        m = re.search(r"(\d+)", r.stdout)
         return m.group(1) if m else "120"
     except Exception:
         return "120"
 
 
-def patch_chromedriver(original_path):
+def patch_driver(orig):
     with chromedriver_lock:
-        patched = '/tmp/chromedriver_patched'
-        shutil.copy2(original_path, patched)
-        os.chmod(patched, 0o755)
-        with open(patched, 'r+b') as f:
-            content = f.read()
-            count = content.count(b'cdc_')
-            if count > 0:
+        dst = "/tmp/chromedriver_patched"
+        shutil.copy2(orig, dst)
+        os.chmod(dst, 0o755)
+        with open(dst, "r+b") as f:
+            data = f.read()
+            cnt = data.count(b"cdc_")
+            if cnt:
                 f.seek(0)
-                f.write(content.replace(b'cdc_', b'aaa_'))
-                log.info(f"✅ chromedriver: {count} cdc_ removed")
-    return patched
+                f.write(data.replace(b"cdc_", b"aaa_"))
+                log.info(f"🔧 chromedriver: {cnt} markers patched")
+    return dst
 
 
 def safe_navigate(driver, url):
-    """Navigate using JS first to avoid Selenium timeout crashes."""
-    try:
-        js_url = json.dumps(url)
-        driver.execute_script(f'window.location.href = {js_url};')
-        log.info(f"✅ Navigate [JS]: {url[:100]}...")
-        return True
-    except Exception as e:
-        log.debug(f"JS nav failed: {e}")
-
-    try:
-        js_url = json.dumps(url)
-        driver.execute_script(f'window.location.assign({js_url});')
-        log.info(f"✅ Navigate [JS assign]: {url[:100]}...")
-        return True
-    except Exception as e:
-        log.debug(f"JS assign failed: {e}")
-
-    try:
-        driver.get(url)
-        log.info(f"✅ Navigate [get]: {url[:100]}...")
-        return True
-    except TimeoutException:
-        log.info(f"⏱️ Navigate timeout (page loading): {url[:80]}...")
-        return True
-    except Exception as e:
-        log.error(f"❌ Navigation failed: {e}")
-        return False
+    for label, fn in [
+        ("JS", lambda: driver.execute_script(
+            f"window.location.href={json.dumps(url)};")),
+        ("assign", lambda: driver.execute_script(
+            f"window.location.assign({json.dumps(url)});")),
+        ("get", lambda: driver.get(url)),
+    ]:
+        try:
+            fn()
+            log.info(f"✅ Nav [{label}]: {url[:80]}")
+            return True
+        except TimeoutException:
+            log.info(f"⏱️ Nav [{label}] timeout (page loading)")
+            return True
+        except Exception as e:
+            log.debug(f"Nav [{label}] fail: {e}")
+    log.error(f"❌ Navigation failed: {url[:80]}")
+    return False
 
 
-def get_current_url_safe(driver):
+def current_url(driver):
     try:
         return driver.current_url
     except Exception:
         return ""
 
 
-# ══════════════════════════════════════════════════════════
-#  Stealth JavaScript
-# ══════════════════════════════════════════════════════════
+def extract_project_id(url):
+    for pat in [r"(qwiklabs-gcp-[\w-]+)", r"project[=/]([\w-]+)",
+                r"(gcp-[\w-]+)"]:
+        m = re.search(pat, url)
+        if m:
+            return m.group(1)
+    return None
 
-STEALTH_JS = '''
+
+def fmt_duration(secs):
+    if secs < 60:
+        return f"{int(secs)}ث"
+    if secs < 3600:
+        return f"{int(secs // 60)}د {int(secs % 60)}ث"
+    return f"{int(secs // 3600)}س {int((secs % 3600) // 60)}د"
+
+
+def send_safe(chat_id, text, **kw):
+    """إرسال رسالة مع حماية من الأخطاء"""
+    try:
+        return bot.send_message(chat_id, text, **kw)
+    except Exception as e:
+        log.warning(f"send_safe: {e}")
+        return None
+
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  7 · STEALTH JAVASCRIPT                               ║
+# ╚═══════════════════════════════════════════════════════╝
+
+STEALTH_JS = r"""
 Object.defineProperty(navigator,'webdriver',{get:()=>undefined});
 Object.defineProperty(navigator,'plugins',{get:function(){return[
 {name:'Chrome PDF Plugin',filename:'internal-pdf-viewer',length:1},
@@ -196,85 +297,119 @@ Object.defineProperty(screen,'width',{get:()=>1920});
 Object.defineProperty(screen,'height',{get:()=>1080});
 Object.defineProperty(screen,'colorDepth',{get:()=>24});
 for(var p in window){if(/^cdc_/.test(p)){try{delete window[p]}catch(e){}}}
-'''
+"""
 
 
-# ══════════════════════════════════════════════════════════
-#  Browser Driver (Optimized for low RAM)
-# ══════════════════════════════════════════════════════════
+# ╔═══════════════════════════════════════════════════════╗
+# ║  8 · BROWSER DRIVER FACTORY                           ║
+# ╚═══════════════════════════════════════════════════════╝
 
-def get_driver():
-    browser = find_path(['chromium', 'chromium-browser'],
-                        ['/usr/bin/chromium', '/usr/bin/chromium-browser'])
-    drv = find_path(['chromedriver'],
-                    ['/usr/bin/chromedriver', '/usr/lib/chromium/chromedriver'])
+def create_driver():
+    browser = find_path(
+        ["chromium", "chromium-browser"],
+        ["/usr/bin/chromium", "/usr/bin/chromium-browser"],
+    )
+    drv = find_path(
+        ["chromedriver"],
+        ["/usr/bin/chromedriver", "/usr/lib/chromium/chromedriver"],
+    )
     if not browser:
-        raise Exception("المتصفح غير موجود!")
+        raise RuntimeError("المتصفح Chromium غير موجود!")
     if not drv:
-        raise Exception("ChromeDriver غير موجود!")
+        raise RuntimeError("ChromeDriver غير موجود!")
 
-    patched_drv = patch_chromedriver(drv)
-    version = get_browser_version(browser)
+    patched = patch_driver(drv)
+    ver = browser_version(browser)
     ua = (f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
           f"AppleWebKit/537.36 (KHTML, like Gecko) "
-          f"Chrome/{version}.0.0.0 Safari/537.36")
+          f"Chrome/{ver}.0.0.0 Safari/537.36")
 
-    options = Options()
-    options.binary_location = browser
-    options.add_argument('--incognito')
-    options.add_argument('--disable-blink-features=AutomationControlled')
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-    options.add_argument(f'--user-agent={ua}')
-    options.add_argument('--lang=en-US')
-    
-    # ── Memory Optimization Flags ──
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--disable-features=site-per-process') 
-    options.add_argument('--disable-software-rasterizer')
-    options.add_argument('--js-flags="--max-old-space-size=256"') 
-    options.add_argument('--disable-notifications')
-    
-    options.add_argument('--window-size=1024,768')
-    options.add_argument('--no-first-run')
-    options.add_argument('--no-default-browser-check')
-    options.add_argument('--mute-audio')
-    options.add_argument('--disable-features=TranslateUI')
-    options.add_argument('--disable-extensions')
-    options.add_argument('--disable-component-update')
-    options.add_argument('--disable-sync')
-    options.add_argument('--disable-background-timer-throttling')
-    options.add_argument('--disable-backgrounding-occluded-windows')
-    options.add_argument('--disable-renderer-backgrounding')
-    options.page_load_strategy = 'eager'
+    opts = Options()
+    opts.binary_location = browser
 
-    service = Service(executable_path=patched_drv)
-    driver = webdriver.Chrome(service=service, options=options)
+    # ── مقاومة الاكتشاف ──
+    opts.add_argument("--incognito")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opts.add_experimental_option("useAutomationExtension", False)
+    opts.add_argument(f"--user-agent={ua}")
+    opts.add_argument("--lang=en-US")
 
+    # ── تحسين الذاكرة ──
+    for flag in [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-features=site-per-process",
+        "--disable-software-rasterizer",
+        '--js-flags="--max-old-space-size=256"',
+        "--disable-notifications",
+        f"--window-size={Config.WINDOW_SIZE[0]},{Config.WINDOW_SIZE[1]}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--mute-audio",
+        "--disable-features=TranslateUI",
+        "--disable-extensions",
+        "--disable-component-update",
+        "--disable-sync",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+    ]:
+        opts.add_argument(flag)
+
+    opts.page_load_strategy = "eager"
+
+    driver = webdriver.Chrome(
+        service=Service(executable_path=patched), options=opts
+    )
+
+    # ── Stealth CDP ──
     try:
-        driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument',
-                               {'source': STEALTH_JS})
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument", {"source": STEALTH_JS}
+        )
     except Exception:
         pass
     try:
-        driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+        driver.execute_cdp_cmd("Network.setUserAgentOverride", {
             "userAgent": ua,
             "platform": "Win32",
-            "acceptLanguage": "en-US,en;q=0.9"
+            "acceptLanguage": "en-US,en;q=0.9",
         })
     except Exception:
         pass
 
-    driver.set_page_load_timeout(45)
-    log.info("✅ المتصفح جاهز (محسّن للذاكرة)")
+    driver.set_page_load_timeout(Config.PAGE_LOAD_TIMEOUT)
+    log.info("✅ متصفح جاهز (محسّن للذاكرة)")
     return driver
 
 
-# ══════════════════════════════════════════════════════════
-#  Session Management
-# ══════════════════════════════════════════════════════════
+# ╔═══════════════════════════════════════════════════════╗
+# ║  9 · SESSION MANAGER                                  ║
+# ╚═══════════════════════════════════════════════════════╝
+
+def _new_session_dict(driver, url, project_id, gen):
+    """إنشاء قاموس جلسة جديد بقيم مبدئية"""
+    return {
+        "driver": driver,
+        "running": False,
+        "msg_id": None,
+        "url": url,
+        "project_id": project_id,
+        "shell_opened": False,
+        "auth": False,
+        "terminal_ready": False,
+        "terminal_notified": False,
+        "cmd_mode": False,
+        "gen": gen,
+        "run_api_checked": False,
+        "shell_loading_until": 0,
+        "created_at": time.time(),
+        "cmd_history": [],        # ← جديد: سجل الأوامر
+        "last_activity": time.time(),
+    }
+
 
 def safe_quit(driver):
     if driver:
@@ -287,12 +422,11 @@ def safe_quit(driver):
 
 def cleanup_session(chat_id):
     with sessions_lock:
-        if chat_id in user_sessions:
-            s = user_sessions[chat_id]
-            s['running'] = False
-            safe_quit(s.get('driver'))
-            del user_sessions[chat_id]
-            gc.collect()
+        s = user_sessions.pop(chat_id, None)
+    if s:
+        s["running"] = False
+        safe_quit(s.get("driver"))
+        gc.collect()
 
 
 def get_session(chat_id):
@@ -300,73 +434,156 @@ def get_session(chat_id):
         return user_sessions.get(chat_id)
 
 
-# ══════════════════════════════════════════════════════════
-#  UI Panel
-# ══════════════════════════════════════════════════════════
+def _auto_cleanup_loop():
+    """حذف الجلسات القديمة تلقائياً كل 30 دقيقة"""
+    while not shutdown_event.is_set():
+        shutdown_event.wait(Config.CLEANUP_INTERVAL_SEC)
+        if shutdown_event.is_set():
+            break
+        cutoff = time.time() - Config.SESSION_MAX_AGE_HOURS * 3600
+        stale = []
+        with sessions_lock:
+            for cid, s in list(user_sessions.items()):
+                if s.get("created_at", 0) < cutoff:
+                    stale.append(cid)
+        for cid in stale:
+            log.info(f"🧹 Auto-cleanup session: {cid}")
+            try:
+                send_safe(cid, "⏰ تم إنهاء الجلسة تلقائياً (تجاوزت الحد الأقصى).")
+            except Exception:
+                pass
+            cleanup_session(cid)
+        gc.collect()
 
-def panel(cmd_mode=False):
-    mk = InlineKeyboardMarkup()
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  10 · UI COMPONENTS (Panels & Messages)                ║
+# ╚═══════════════════════════════════════════════════════╝
+
+def build_panel(cmd_mode=False):
+    mk = InlineKeyboardMarkup(row_width=2)
     if cmd_mode:
         mk.row(
-            InlineKeyboardButton("📸 لقطة", callback_data="screenshot"),
-            InlineKeyboardButton("🔙 رجوع للبث", callback_data="watch_mode")
+            InlineKeyboardButton("📸 لقطة شاشة", callback_data="screenshot"),
+            InlineKeyboardButton("🔙 رجوع للبث", callback_data="watch_mode"),
         )
     else:
         mk.row(
             InlineKeyboardButton("⌨️ وضع الأوامر", callback_data="cmd_mode"),
-            InlineKeyboardButton("📸 لقطة", callback_data="screenshot")
+            InlineKeyboardButton("📸 لقطة شاشة", callback_data="screenshot"),
         )
     mk.row(
+        InlineKeyboardButton("🔄 تحديث الصفحة", callback_data="refresh"),
+        InlineKeyboardButton("ℹ️ حالة الجلسة", callback_data="info"),
+    )
+    mk.row(
+        InlineKeyboardButton("🔁 إعادة تشغيل", callback_data="restart_browser"),
         InlineKeyboardButton("⏹ إيقاف", callback_data="stop"),
-        InlineKeyboardButton("🔄 تحديث", callback_data="refresh")
     )
     return mk
 
 
-# ══════════════════════════════════════════════════════════
-#  Shell Detection & Readiness
-# ══════════════════════════════════════════════════════════
+# ── رسائل ثابتة ──
 
-def is_on_shell_page(driver):
+WELCOME_MSG = """
+🤖 **مرحباً بك في بوت Cloud Shell!**
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 **طريقة الاستخدام:**
+1️⃣ أرسل رابط SSO من المختبر
+2️⃣ البوت يفتح المتصفح تلقائياً
+3️⃣ يتعامل مع صفحات Google تلقائياً
+4️⃣ يستخرج السيرفرات المتاحة
+5️⃣ ينتقل لـ Terminal ويُفعّل الأوامر
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💡 **الأوامر:**
+`/help`  ← دليل كامل
+`/cmd ls`  ← تنفيذ أمر
+`/ss`  ← لقطة شاشة
+`/status`  ← حالة الجلسة
+`/stop`  ← إيقاف
+`/restart`  ← إعادة تشغيل المتصفح
+`/url`  ← رابط الصفحة الحالية
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔗 **أرسل الرابط الآن للبدء!**
+"""
+
+HELP_MSG = """
+📖 **دليل الاستخدام الكامل**
+
+━━━ 🔗 **بدء جلسة** ━━━
+أرسل رابط SSO:
+`https://www.skills.google/google_sso...`
+
+━━━ ⌨️ **تنفيذ الأوامر** ━━━
+• في وضع الأوامر: اكتب مباشرة
+• `/cmd ls -la`
+• `/cmd gcloud config list`
+
+━━━ 📸 **لقطات الشاشة** ━━━
+• `/ss` أو `/screenshot`
+• أو زر 📸 من اللوحة
+
+━━━ ℹ️ **المعلومات** ━━━
+• `/status` — حالة الجلسة
+• `/url` — رابط الصفحة الحالية
+
+━━━ 🔧 **التحكم** ━━━
+• `/stop` — إيقاف الجلسة
+• `/restart` — إعادة تشغيل المتصفح
+• الأزرار التفاعلية أسفل البث
+
+━━━ 💡 **نصائح** ━━━
+• البوت يضغط الأزرار تلقائياً
+• Terminal يُكتشف ويُفعّل تلقائياً
+• أرسل رابط جديد لبدء جلسة جديدة
+• الجلسة تنتهي تلقائياً بعد {hours}س
+""".format(hours=Config.SESSION_MAX_AGE_HOURS)
+
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  11 · SHELL DETECTION                                 ║
+# ╚═══════════════════════════════════════════════════════╝
+
+def is_shell_page(driver):
     if not driver:
         return False
     try:
-        url = driver.current_url
-        return ("shell.cloud.google.com" in url
-                or "ide.cloud.google.com" in url)
+        u = driver.current_url
+        return "shell.cloud.google.com" in u or "ide.cloud.google.com" in u
     except Exception:
         return False
 
 
-def is_terminal_fully_ready(driver):
-    if not is_on_shell_page(driver):
+def is_terminal_ready(driver):
+    if not is_shell_page(driver):
         return False
     try:
-        ready = driver.execute_script("""
+        return driver.execute_script("""
             var rows = document.querySelectorAll('.xterm-rows > div');
-            if (rows.length > 0) {
-                for(var i=0; i<rows.length; i++) {
-                    var txt = rows[i].textContent || rows[i].innerText || '';
-                    if(txt.indexOf('$') !== -1 || txt.indexOf('@') !== -1 || txt.indexOf('#') !== -1) {
-                        return true;
-                    }
-                }
+            if (!rows.length) return false;
+            for (var i = 0; i < rows.length; i++) {
+                var t = (rows[i].textContent || '');
+                if (t.indexOf('$') !== -1 || t.indexOf('@') !== -1
+                    || t.indexOf('#') !== -1) return true;
             }
             return false;
         """)
-        return ready
     except Exception:
         return False
 
 
-# ══════════════════════════════════════════════════════════
-#  Terminal Interaction
-# ══════════════════════════════════════════════════════════
+# ╔═══════════════════════════════════════════════════════╗
+# ║  12 · TERMINAL INTERACTION                             ║
+# ╚═══════════════════════════════════════════════════════╝
 
-def send_command_to_terminal(driver, command):
-    if not driver:
-        return False
-
+def _focus_terminal(driver):
+    """حاول الدخول لآخر نافذة وإلغاء أي iframe"""
     try:
         handles = driver.window_handles
         if handles:
@@ -375,572 +592,482 @@ def send_command_to_terminal(driver, command):
     except Exception:
         pass
 
-    # Method 1: xterm textarea via JS
+
+def _type_human(actions, text):
+    """طباعة بشرية مع تأخير عشوائي"""
+    for ch in text:
+        actions.send_keys(ch)
+        actions.pause(random.uniform(0.02, 0.06))
+    actions.send_keys(Keys.RETURN)
+
+
+def send_command(driver, command):
+    """إرسال أمر للتيرمنال بثلاث طرق احتياطية"""
+    if not driver:
+        return False
+
+    _focus_terminal(driver)
+
+    # ── الطريقة 1: textarea عبر JS ──
     try:
-        result = driver.execute_script("""
-            function findTA(doc) {
-                var ta = doc.querySelector('.xterm-helper-textarea');
-                if (ta) return ta;
-                var all = doc.querySelectorAll('textarea');
-                for (var i = 0; i < all.length; i++) {
-                    if (all[i].className.indexOf('xterm') !== -1 ||
-                        all[i].closest('.xterm') || all[i].closest('.terminal'))
-                        return all[i];
+        found = driver.execute_script("""
+            function f(doc){
+                var ta=doc.querySelector('.xterm-helper-textarea');
+                if(ta) return ta;
+                var all=doc.querySelectorAll('textarea');
+                for(var i=0;i<all.length;i++){
+                    if(all[i].className.indexOf('xterm')!==-1
+                       || all[i].closest('.xterm')
+                       || all[i].closest('.terminal')) return all[i];
                 }
                 return null;
             }
-            var ta = findTA(document);
-            if (!ta) {
-                var frames = document.querySelectorAll('iframe');
-                for (var i = 0; i < frames.length; i++) {
-                    try { ta = findTA(frames[i].contentDocument);
-                          if (ta) break; }
-                    catch(e) {}
+            var ta=f(document);
+            if(!ta){
+                var fr=document.querySelectorAll('iframe');
+                for(var i=0;i<fr.length;i++){
+                    try{ta=f(fr[i].contentDocument);if(ta)break;}catch(e){}
                 }
             }
-            if (ta) { ta.focus(); return 'FOUND'; }
-            return 'NOT_FOUND';
+            if(ta){ta.focus();return true;}
+            return false;
         """)
-        if result == 'FOUND':
+        if found:
             time.sleep(0.2)
-            actions = ActionChains(driver)
-            for char in command:
-                actions.send_keys(char)
-                actions.pause(random.uniform(0.02, 0.06))
-            actions.send_keys(Keys.RETURN)
-            actions.perform()
-            log.info(f"⌨️ [M1] أمر: {command[:60]}")
+            act = ActionChains(driver)
+            _type_human(act, command)
+            act.perform()
+            log.info(f"⌨️ [textarea] ← {command[:60]}")
             return True
     except Exception as e:
-        log.debug(f"Method 1: {e}")
+        log.debug(f"M1: {e}")
 
-    # Method 2: Click on xterm element
+    # ── الطريقة 2: نقر على عنصر xterm ──
     try:
-        xterm_els = driver.find_elements(By.CSS_SELECTOR,
+        els = driver.find_elements(
+            By.CSS_SELECTOR,
             ".xterm-screen, .xterm-rows, canvas.xterm-link-layer, "
-            ".xterm, [class*='xterm']")
-        for el in xterm_els:
+            ".xterm, [class*='xterm']",
+        )
+        for el in els:
             try:
-                if el.is_displayed() and el.size['width'] > 100:
+                if el.is_displayed() and el.size["width"] > 100:
                     ActionChains(driver).move_to_element(el).click().perform()
                     time.sleep(0.3)
-                    actions = ActionChains(driver)
-                    for char in command:
-                        actions.send_keys(char)
-                        actions.pause(random.uniform(0.02, 0.06))
-                    actions.send_keys(Keys.RETURN)
-                    actions.perform()
-                    log.info(f"⌨️ [M2] أمر: {command[:60]}")
+                    act = ActionChains(driver)
+                    _type_human(act, command)
+                    act.perform()
+                    log.info(f"⌨️ [click] ← {command[:60]}")
                     return True
             except Exception:
                 continue
     except Exception as e:
-        log.debug(f"Method 2: {e}")
+        log.debug(f"M2: {e}")
 
-    # Method 3: Focus + active element
+    # ── الطريقة 3: active element ──
     try:
         driver.execute_script("""
-            var el = document.querySelector('.xterm-helper-textarea') ||
-                     document.querySelector('.xterm-screen') ||
-                     document.querySelector('.xterm');
-            if (el) el.focus();
+            var el = document.querySelector('.xterm-helper-textarea')
+                  || document.querySelector('.xterm-screen')
+                  || document.querySelector('.xterm');
+            if(el) el.focus();
         """)
         time.sleep(0.2)
         active = driver.switch_to.active_element
-        for char in command:
-            active.send_keys(char)
+        for ch in command:
+            active.send_keys(ch)
             time.sleep(random.uniform(0.01, 0.04))
         active.send_keys(Keys.RETURN)
-        log.info(f"⌨️ [M3] أمر: {command[:60]}")
+        log.info(f"⌨️ [active] ← {command[:60]}")
         return True
     except Exception as e:
-        log.debug(f"Method 3: {e}")
+        log.debug(f"M3: {e}")
 
-    log.warning(f"❌ فشل إرسال: {command[:60]}")
+    log.warning(f"❌ فشل إرسال الأمر: {command[:60]}")
     return False
 
 
-def get_terminal_output(driver):
+def read_terminal(driver):
+    """قراءة محتوى التيرمنال بعدة طرق"""
     if not driver:
         return None
 
-    try:
-        text = driver.execute_script("""
-            var rows = document.querySelectorAll('.xterm-rows > div');
-            if (rows.length === 0) {
-                var xterm = document.querySelector('.xterm');
-                if (xterm) rows = xterm.querySelectorAll('.xterm-rows > div');
-            }
-            if (rows.length > 0) {
-                var lines = [];
-                rows.forEach(function(row) {
-                    var t = row.textContent || row.innerText || '';
-                    if (t.trim().length > 0) lines.push(t);
-                });
-                return lines.join('\\n');
-            }
-            return null;
-        """)
-        if text and text.strip():
-            return text.strip()
-    except Exception:
-        pass
-
-    try:
-        text = driver.execute_script("""
-            var s = document.querySelector('.xterm-screen');
-            if (s) return s.textContent || s.innerText;
-            var x = document.querySelector('.xterm');
-            if (x) return x.textContent || x.innerText;
-            return null;
-        """)
-        if text and text.strip():
-            return text.strip()
-    except Exception:
-        pass
-
-    try:
-        text = driver.execute_script("""
-            var live = document.querySelector('[aria-live]');
-            if (live) return live.textContent || live.innerText;
-            return null;
-        """)
-        if text and text.strip():
-            return text.strip()
-    except Exception:
-        pass
-
+    for js in [
+        # طريقة 1: xterm-rows
+        """var rows=document.querySelectorAll('.xterm-rows > div');
+           if(!rows.length){var x=document.querySelector('.xterm');
+           if(x) rows=x.querySelectorAll('.xterm-rows > div');}
+           if(rows.length){var l=[];rows.forEach(function(r){
+           var t=(r.textContent||'');if(t.trim())l.push(t);});
+           return l.join('\\n');}return null;""",
+        # طريقة 2: xterm-screen
+        """var s=document.querySelector('.xterm-screen');
+           if(s) return s.textContent||s.innerText;
+           var x=document.querySelector('.xterm');
+           if(x) return x.textContent||x.innerText;return null;""",
+        # طريقة 3: aria-live
+        """var l=document.querySelector('[aria-live]');
+           if(l) return l.textContent||l.innerText;return null;""",
+    ]:
+        try:
+            txt = driver.execute_script(js)
+            if txt and txt.strip():
+                return txt.strip()
+        except Exception:
+            continue
     return None
 
 
-def extract_command_result(full_output, command):
+def extract_result(full_output, command):
+    """استخراج نتيجة أمر من مخرجات التيرمنال"""
     if not full_output:
         return None
-    lines = full_output.split('\n')
-    cmd_line_idx = -1
-    for i, line in enumerate(lines):
-        if command in line and ('$' in line or '>' in line or '#' in line):
-            cmd_line_idx = i
-        elif line.strip() == command:
-            cmd_line_idx = i
+    lines = full_output.split("\n")
+    idx = -1
+    for i, ln in enumerate(lines):
+        if command in ln and any(c in ln for c in ("$", ">", "#")):
+            idx = i
+        elif ln.strip() == command:
+            idx = i
 
-    if cmd_line_idx == -1:
+    if idx == -1:
         result_lines = lines[-20:]
     else:
         result_lines = []
-        for i in range(cmd_line_idx + 1, len(lines)):
-            line = lines[i]
-            if re.match(r'^[\w\-_]+@[\w\-_]+.*\$\s*$', line.strip()):
+        for i in range(idx + 1, len(lines)):
+            ln = lines[i]
+            if re.match(r"^[\w\-_]+@[\w\-_]+.*\$\s*$", ln.strip()):
                 break
-            if line.strip().endswith('$ ') and len(line.strip()) > 2:
+            if ln.strip().endswith("$ ") and len(ln.strip()) > 2:
                 break
-            result_lines.append(line)
+            result_lines.append(ln)
 
-    result = '\n'.join(result_lines).strip()
-    while '\n\n\n' in result:
-        result = result.replace('\n\n\n', '\n\n')
-    return result if result else None
+    result = "\n".join(result_lines).strip()
+    while "\n\n\n" in result:
+        result = result.replace("\n\n\n", "\n\n")
+    return result or None
 
 
 def take_screenshot(driver):
     if not driver:
         return None
     try:
-        handles = driver.window_handles
-        if handles:
-            driver.switch_to.window(handles[-1])
+        _focus_terminal(driver)
         png = driver.get_screenshot_as_png()
         bio = io.BytesIO(png)
-        bio.name = f'ss_{int(time.time())}_{random.randint(100, 999)}.png'
-        del png # تحرير الذاكرة
+        bio.name = f"ss_{int(time.time())}_{random.randint(100,999)}.png"
+        del png
         return bio
     except Exception as e:
-        log.debug(f"Screenshot failed: {e}")
+        log.debug(f"Screenshot fail: {e}")
         return None
 
 
-# ══════════════════════════════════════════════════════════
-#  Google Pages Handler
-# ══════════════════════════════════════════════════════════
+# ╔═══════════════════════════════════════════════════════╗
+# ║  13 · GOOGLE PAGES AUTO-HANDLER                       ║
+# ╚═══════════════════════════════════════════════════════╝
+
+def _click_if_visible(driver, xpath_list, delay_before=0.5, delay_after=2):
+    """محاولة نقر أول زر مرئي من قائمة XPath"""
+    for xp in xpath_list:
+        try:
+            btns = driver.find_elements(By.XPATH, xp)
+            for btn in btns:
+                try:
+                    if btn.is_displayed():
+                        time.sleep(delay_before)
+                        try:
+                            btn.click()
+                        except Exception:
+                            driver.execute_script("arguments[0].click();", btn)
+                        time.sleep(delay_after)
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return False
+
 
 def handle_google_pages(driver, session):
+    """التعامل التلقائي مع جميع صفحات / نوافذ Google"""
     status = "مراقبة..."
     try:
         body = driver.find_element(By.TAG_NAME, "body").text[:5000]
     except Exception:
         return status
 
-    body_lower = body.lower()
+    bl = body.lower()
 
-    # ── Welcome / Terms of Service Popup ──
-    if "agree and continue" in body_lower and "terms of service" in body_lower:
+    # ── Terms of Service ──
+    if "agree and continue" in bl and "terms of service" in bl:
         try:
-            checkboxes = driver.find_elements(By.XPATH, 
-                "//mat-checkbox | //input[@type='checkbox'] | //*[@role='checkbox']")
-            for cb in checkboxes:
+            for cb in driver.find_elements(By.XPATH,
+                    "//mat-checkbox|//input[@type='checkbox']|//*[@role='checkbox']"):
                 try:
                     driver.execute_script("arguments[0].click();", cb)
                 except Exception:
                     pass
             time.sleep(1)
-            
-            btns = driver.find_elements(By.XPATH, 
-                "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'agree and continue')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed() or btn.is_enabled():
-                        driver.execute_script("arguments[0].click();", btn)
-                        time.sleep(3)
-                        log.info("✅ تم قبول شروط الخدمة")
-                        return "✅ Terms Accepted ✔️"
-                except Exception:
-                    continue
         except Exception:
             pass
+        if _click_if_visible(driver, [
+            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
+            "'abcdefghijklmnopqrstuvwxyz'),'agree and continue')]"
+        ], 0.5, 3):
+            log.info("✅ Terms accepted")
+            return "✅ تم قبول الشروط"
 
-    # ── Authorize Cloud Shell popup ──
-    if "authorize cloud shell" in body_lower:
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[normalize-space(.)='Authorize']|"
-                "//button[contains(.,'Authorize')]")
-            for btn in btns:
-                try:
-                    btn_text = (btn.text or "").strip().lower()
-                    if btn.is_displayed() and "authorize" in btn_text:
-                        time.sleep(random.uniform(0.5, 1.0))
-                        try:
-                            btn.click()
-                        except Exception:
-                            driver.execute_script("arguments[0].click();", btn)
-                        session['auth'] = True
-                        time.sleep(2)
-                        return "✅ Authorize ✔️"
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        return "🔐 Authorize..."
+    # ── Authorize Cloud Shell ──
+    if "authorize cloud shell" in bl:
+        if _click_if_visible(driver, [
+            "//button[normalize-space(.)='Authorize']",
+            "//button[contains(.,'Authorize')]",
+        ]):
+            session["auth"] = True
+            return "✅ تم التفويض"
+        return "🔐 بانتظار التفويض..."
 
-    # ── Cloud Shell Continue popup ──
-    if ("cloud shell" in body_lower and "continue" in body_lower and "free" in body_lower):
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//a[contains(text(),'Continue')]|"
-                "//button[contains(text(),'Continue')]|"
-                "//button[.//span[contains(text(),'Continue')]]|"
-                "//*[@role='button'][contains(.,'Continue')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed() and btn.is_enabled():
-                        time.sleep(random.uniform(0.5, 1.5))
-                        try:
-                            btn.click()
-                        except Exception:
-                            driver.execute_script("arguments[0].click();", btn)
-                        time.sleep(3)
-                        return "✅ Continue ✔️"
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        return "☁️ popup..."
+    # ── Continue (Cloud Shell free) ──
+    if "cloud shell" in bl and "continue" in bl and "free" in bl:
+        if _click_if_visible(driver, [
+            "//a[contains(text(),'Continue')]",
+            "//button[contains(text(),'Continue')]",
+            "//button[.//span[contains(text(),'Continue')]]",
+            "//*[@role='button'][contains(.,'Continue')]",
+        ], 0.5, 3):
+            return "✅ Continue"
+        return "☁️ نافذة Cloud Shell..."
 
     # ── Verify ──
-    if "verify it" in body_lower:
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[contains(.,'Continue')]|"
-                "//input[@value='Continue']|"
-                "//div[@role='button'][contains(.,'Continue')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed():
-                        time.sleep(0.5)
-                        btn.click()
-                        time.sleep(3)
-                        return "✅ Verify ✔️"
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        return "🔐 Verify..."
+    if "verify it" in bl:
+        if _click_if_visible(driver, [
+            "//button[contains(.,'Continue')]",
+            "//input[@value='Continue']",
+            "//div[@role='button'][contains(.,'Continue')]",
+        ]):
+            return "✅ Verify"
+        return "🔐 تحقق..."
 
     # ── I understand ──
-    try:
-        btns = driver.find_elements(By.XPATH,
-            "//*[contains(text(),'I understand')]|"
-            "//input[@value='I understand']|"
-            "//input[@id='confirm']")
-        for btn in btns:
-            try:
-                if btn.is_displayed():
-                    time.sleep(1)
-                    btn.click()
-                    time.sleep(4)
-                    return "✅ I understand ✔️"
-            except Exception:
-                continue
-    except Exception:
-        pass
+    if _click_if_visible(driver, [
+        "//*[contains(text(),'I understand')]",
+        "//input[@value='I understand']",
+        "//input[@id='confirm']",
+    ], 1, 4):
+        return "✅ I understand"
 
     # ── Sign-in rejected ──
-    if "couldn't sign you in" in body_lower:
+    if "couldn't sign you in" in bl:
         try:
             driver.delete_all_cookies()
             time.sleep(1)
-            driver.get(session.get('url', 'about:blank'))
+            driver.get(session.get("url", "about:blank"))
             time.sleep(5)
         except Exception:
             pass
-        return "⚠️ رفض..."
+        return "⚠️ تم رفض الدخول — إعادة محاولة"
 
     # ── Generic Authorize ──
-    if ("authorize" in body_lower
-            and ("cloud" in body_lower or "google" in body_lower)):
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[normalize-space(.)='Authorize']|"
-                "//button[contains(.,'AUTHORIZE')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed():
-                        btn.click()
-                        session['auth'] = True
-                        time.sleep(2)
-                        return "✅ Authorize ✔️"
-                except Exception:
-                    continue
-        except Exception:
-            pass
+    if "authorize" in bl and ("cloud" in bl or "google" in bl):
+        if _click_if_visible(driver, [
+            "//button[normalize-space(.)='Authorize']",
+            "//button[contains(.,'AUTHORIZE')]",
+        ]):
+            session["auth"] = True
+            return "✅ تم التفويض"
 
     # ── Dismiss Gemini ──
-    if "gemini" in body_lower and "dismiss" in body_lower:
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[contains(.,'Dismiss')]|"
-                "//a[contains(.,'Dismiss')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed():
-                        btn.click()
-                        time.sleep(1)
-                except Exception:
-                    continue
-        except Exception:
-            pass
+    if "gemini" in bl and "dismiss" in bl:
+        _click_if_visible(driver, [
+            "//button[contains(.,'Dismiss')]",
+            "//a[contains(.,'Dismiss')]",
+        ], 0.3, 1)
 
     # ── Trust project ──
-    if "trust this project" in body_lower or "trust project" in body_lower:
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[contains(.,'Trust')]|"
-                "//button[contains(.,'Confirm')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed():
-                        btn.click()
-                        time.sleep(2)
-                        return "✅ Trust ✔️"
-                except Exception:
-                    continue
-        except Exception:
-            pass
+    if "trust this project" in bl or "trust project" in bl:
+        if _click_if_visible(driver, [
+            "//button[contains(.,'Trust')]",
+            "//button[contains(.,'Confirm')]",
+        ]):
+            return "✅ Trust"
 
-    # ── Status by URL ──
+    # ── الحالة بحسب الرابط ──
     try:
-        url = driver.current_url
+        u = driver.current_url
     except Exception:
         return status
 
-    if "shell.cloud.google.com" in url or "ide.cloud.google.com" in url:
-        session['terminal_ready'] = True
-        return "✅ Terminal ⌨️"
-    elif "console.cloud.google.com" in url:
+    if "shell.cloud.google.com" in u or "ide.cloud.google.com" in u:
+        session["terminal_ready"] = True
+        return "✅ Terminal جاهز"
+    if "console.cloud.google.com" in u:
         return "📊 Console"
-    elif "accounts.google.com" in url:
-        return "🔐 تسجيل..."
+    if "accounts.google.com" in u:
+        return "🔐 تسجيل الدخول..."
     return status
 
 
-# ══════════════════════════════════════════════════════════
-#  Cloud Run Region Extraction
-# ══════════════════════════════════════════════════════════
+# ╔═══════════════════════════════════════════════════════╗
+# ║  14 · CLOUD RUN REGION EXTRACTION                     ║
+# ╚═══════════════════════════════════════════════════════╝
 
 REGION_JS = """
 var callback = arguments[arguments.length - 1];
 setTimeout(function() {
     try {
-        var regionClicked = false;
-        var dropdowns = document.querySelectorAll('mat-select, [role="combobox"]');
-        for (var i = 0; i < dropdowns.length; i++) {
-            var el = dropdowns[i];
-            var aria = (el.getAttribute('aria-label') || '').toLowerCase();
-            var id = (el.getAttribute('id') || '').toLowerCase();
-            if (aria.indexOf('region') !== -1 || id.indexOf('region') !== -1) {
-                el.click();
-                regionClicked = true;
-                break;
+        var clicked = false;
+        var dd = document.querySelectorAll('mat-select, [role="combobox"]');
+        for (var i = 0; i < dd.length; i++) {
+            var a = (dd[i].getAttribute('aria-label') || '').toLowerCase();
+            var id = (dd[i].getAttribute('id') || '').toLowerCase();
+            if (a.indexOf('region') !== -1 || id.indexOf('region') !== -1) {
+                dd[i].click(); clicked = true; break;
             }
         }
-        if (!regionClicked) {
-            var labels = document.querySelectorAll('label, .mat-form-field-label');
-            for (var j = 0; j < labels.length; j++) {
-                if (labels[j].innerText && labels[j].innerText.indexOf('Region') !== -1) {
-                    labels[j].click();
-                    regionClicked = true;
-                    break;
+        if (!clicked) {
+            var lbl = document.querySelectorAll('label, .mat-form-field-label');
+            for (var j = 0; j < lbl.length; j++) {
+                if (lbl[j].innerText && lbl[j].innerText.indexOf('Region') !== -1) {
+                    lbl[j].click(); clicked = true; break;
                 }
             }
         }
-        if (!regionClicked) {
-            callback('NO_DROPDOWN');
-            return;
-        }
+        if (!clicked) { callback('NO_DROPDOWN'); return; }
         setTimeout(function() {
-            var options = document.querySelectorAll('mat-option, [role="option"]');
-            var regions = [];
-            for (var k = 0; k < options.length; k++) {
-                var opt = options[k];
-                var rect = opt.getBoundingClientRect();
-                var style = window.getComputedStyle(opt);
-                var isHidden = rect.width === 0 || rect.height === 0 || style.display === 'none' || style.visibility === 'hidden';
-                var isDisabled = opt.classList.contains('mat-option-disabled') || opt.getAttribute('aria-disabled') === 'true';
-                if (!isHidden && !isDisabled) {
-                    var txt = (opt.innerText || '').trim().split('\\n')[0];
-                    if (txt && txt.indexOf('-') !== -1 && txt.toLowerCase().indexOf('learn') === -1) {
-                        regions.push(txt);
-                    }
-                }
+            var opts = document.querySelectorAll('mat-option, [role="option"]');
+            var res = [];
+            for (var k = 0; k < opts.length; k++) {
+                var o = opts[k];
+                var r = o.getBoundingClientRect();
+                var s = window.getComputedStyle(o);
+                if (r.width === 0 || r.height === 0 ||
+                    s.display === 'none' || s.visibility === 'hidden') continue;
+                if (o.classList.contains('mat-option-disabled') ||
+                    o.getAttribute('aria-disabled') === 'true') continue;
+                var t = (o.innerText || '').trim().split('\\n')[0];
+                if (t && t.indexOf('-') !== -1 &&
+                    t.toLowerCase().indexOf('learn') === -1) res.push(t);
             }
-            document.dispatchEvent(new KeyboardEvent('keydown', {'key': 'Escape'}));
-            var backdrop = document.querySelector('.cdk-overlay-backdrop');
-            if (backdrop) backdrop.click();
-            callback(regions.length > 0 ? regions.join('\\n') : 'NO_REGIONS');
+            document.dispatchEvent(new KeyboardEvent('keydown', {'key':'Escape'}));
+            var bk = document.querySelector('.cdk-overlay-backdrop');
+            if (bk) bk.click();
+            callback(res.length ? res.join('\\n') : 'NO_REGIONS');
         }, 1500);
-    } catch(e) {
-        callback('ERROR:' + e.toString());
-    }
+    } catch(e) { callback('ERROR:' + e); }
 }, 4000);
 """
 
 
 def do_cloud_run_extraction(driver, chat_id, session):
-    pid = session.get('project_id')
+    pid = session.get("project_id")
     if not pid:
         return True
 
-    current_url = get_current_url_safe(driver)
+    cur = current_url(driver)
 
-    if "run/create" not in current_url:
-        try:
-            bot.send_message(chat_id, "⚙️ جاري فتح صفحة Cloud Run (مع تفعيل الـ API إن لزم الأمر)...")
-            safe_navigate(driver, f"https://console.cloud.google.com/run/create?enableapi=true&project={pid}")
-        except Exception as e:
-            log.warning(f"Cloud Run nav: {e}")
+    if "run/create" not in cur:
+        send_safe(chat_id,
+            "⚙️ جاري فتح صفحة Cloud Run "
+            "(مع تفعيل الـ API إن لزم الأمر)...")
+        safe_navigate(
+            driver,
+            f"https://console.cloud.google.com/run/create"
+            f"?enableapi=true&project={pid}",
+        )
         return False
 
-    try:
-        bot.send_message(chat_id, "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
+    send_safe(chat_id, "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
 
-        driver.set_script_timeout(20)
+    try:
+        driver.set_script_timeout(Config.SCRIPT_TIMEOUT)
         result = driver.execute_async_script(REGION_JS)
 
         if result is None:
-            bot.send_message(chat_id, "⚠️ لم يتم الحصول على نتيجة من الصفحة.")
+            send_safe(chat_id, "⚠️ لم يتم الحصول على نتيجة.")
         elif result == "NO_DROPDOWN":
-            bot.send_message(chat_id, "❌ لم أتمكن من إيجاد قائمة السيرفرات (Region).")
+            send_safe(chat_id, "❌ لم أجد قائمة السيرفرات (Region).")
         elif result == "NO_REGIONS":
-            bot.send_message(chat_id, "⚠️ فتحت القائمة لكن جميع السيرفرات مقيدة.")
+            send_safe(chat_id, "⚠️ جميع السيرفرات مقيّدة.")
         elif result.startswith("ERROR:"):
-            bot.send_message(chat_id, f"⚠️ خطأ: {result[6:][:200]}")
+            send_safe(chat_id, f"⚠️ خطأ: {result[6:][:200]}")
         else:
-            bot.send_message(chat_id,
-                f"🌍 **السيرفرات المسموحة فقط للإنشاء هي:**\n```text\n{result}\n```",
-                parse_mode="Markdown")
-            
-            # --- التحسين الجذري لمنع انهيار المتصفح عند فتح التيرمينال ---
+            send_safe(
+                chat_id,
+                f"🌍 **السيرفرات المسموحة للإنشاء:**\n"
+                f"```\n{result}\n```",
+                parse_mode="Markdown",
+            )
+
+            # ── الانتقال التلقائي لـ Terminal ──
+            send_safe(chat_id, "🚀 جاري الانتقال إلى Terminal...")
             try:
-                bot.send_message(chat_id, "🚀 جاري الانتقال مباشرة إلى Terminal (تفريغ الذاكرة أولاً)...")
-                pid = session.get('project_id')
-                # الرابط الذي طلبته بالضبط:
-                shell_url = f"https://shell.cloud.google.com/?enableapi=true&project={pid}&pli=1&show=terminal"
-                
-                # إجبار المتصفح على فتح صفحة بيضاء لتنظيف الرام قبل فتح صفحة التيرمينال الثقيلة
-                try:
-                    driver.get("about:blank")
-                    time.sleep(1.5)
-                    gc.collect()
-                except:
-                    pass
-
-                safe_navigate(driver, shell_url)
-                
-                # إعطاء المتصفح 10 ثواني راحة ليحمل التيرمينال بدون أخذ لقطات شاشة تضغط عليه
-                session['shell_loading_until'] = time.time() + 10
-
-            except Exception as e:
-                log.warning(f"Auto-nav to shell failed: {e}")
+                driver.get("about:blank")
+                time.sleep(1.5)
+                gc.collect()
+            except Exception:
+                pass
+            shell = (
+                f"https://shell.cloud.google.com/"
+                f"?enableapi=true&project={pid}&pli=1&show=terminal"
+            )
+            safe_navigate(driver, shell)
+            session["shell_loading_until"] = time.time() + 10
 
     except Exception as e:
-        bot.send_message(chat_id, f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:200]}`", parse_mode="Markdown")
+        send_safe(
+            chat_id,
+            f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:200]}`",
+            parse_mode="Markdown",
+        )
 
     return True
 
 
-# ══════════════════════════════════════════════════════════
-#  Stream Update Helper
-# ══════════════════════════════════════════════════════════
+# ╔═══════════════════════════════════════════════════════╗
+# ║  15 · STREAM ENGINE                                   ║
+# ╚═══════════════════════════════════════════════════════╝
 
-def update_stream_image(driver, chat_id, session, status, flash):
+# ── أنماط أخطاء ──
+_TIMEOUT_KEYS = (
+    "urllib3", "requests", "readtimeout", "connection aborted",
+    "timeout", "read timed out", "max retries", "connecttimeout",
+)
+_DRIVER_KEYS = (
+    "invalid session id", "chrome not reachable",
+    "disconnected:", "crashed", "no such session",
+)
+
+
+def _update_stream(driver, chat_id, session, status, flash):
+    """تحديث صورة البث المباشر"""
     flash = not flash
     icon = "🔴" if flash else "⭕"
     now = datetime.now().strftime("%H:%M:%S")
-    proj = (f"📁 {session.get('project_id')}" if session.get('project_id') else "")
-    t_st = " | ⌨️" if session.get('terminal_ready') else ""
+    proj = f"📁 {session['project_id']}" if session.get("project_id") else ""
+    extra = ""
+    if session.get("terminal_ready"):
+        extra += " | ⌨️"
+    loading = session.get("shell_loading_until", 0)
+    if time.time() < loading:
+        extra += f" | ⏳{int(loading - time.time())}s"
 
-    loading_until = session.get('shell_loading_until', 0)
-    if time.time() < loading_until:
-        remaining = int(loading_until - time.time())
-        t_st += f" | ⏳{remaining}s"
-
-    cap = f"{icon} بث 🕶️\n{proj}\n📌 {status}{t_st}\n⏱ {now}"
+    cap = f"{icon} بث مباشر\n{proj}\n📌 {status}{extra}\n⏱ {now}"
 
     png = driver.get_screenshot_as_png()
     bio = io.BytesIO(png)
-    bio.name = f'l_{int(time.time())}_{random.randint(10, 99)}.png'
+    bio.name = f"l_{int(time.time())}_{random.randint(10,99)}.png"
 
     bot.edit_message_media(
         media=InputMediaPhoto(bio, caption=cap),
         chat_id=chat_id,
-        message_id=session['msg_id'],
-        reply_markup=panel(session.get('cmd_mode', False))
+        message_id=session["msg_id"],
+        reply_markup=build_panel(session.get("cmd_mode", False)),
     )
-    
-    # تنظيف الذاكرة بشكل مستمر
     bio.close()
-    del png 
+    del png
     return flash
 
-
-# ══════════════════════════════════════════════════════════
-#  Error Classification
-# ══════════════════════════════════════════════════════════
-
-TIMEOUT_KEYWORDS = (
-    "urllib3", "requests", "readtimeout", "connection aborted",
-    "timeout", "read timed out", "max retries", "connecttimeout"
-)
-
-DRIVER_ERROR_KEYWORDS = (
-    'invalid session id', 'chrome not reachable',
-    'disconnected:', 'crashed', 'no such session'
-)
-
-
-# ══════════════════════════════════════════════════════════
-#  Stream Loop
-# ══════════════════════════════════════════════════════════
 
 def stream_loop(chat_id, gen):
     with sessions_lock:
@@ -948,151 +1075,119 @@ def stream_loop(chat_id, gen):
             return
         session = user_sessions[chat_id]
 
-    driver = session['driver']
+    driver = session["driver"]
     flash = True
-    err_count = 0
+    err_n = 0
     drv_err = 0
     cycle = 0
 
-    while session['running'] and session.get('gen') == gen:
+    while session["running"] and session.get("gen") == gen:
 
-        # Command mode: just monitor
-        if session.get('cmd_mode'):
-            time.sleep(3)
+        # ── وضع الأوامر: فقط تحقق من الجاهزية ──
+        if session.get("cmd_mode"):
+            time.sleep(Config.CMD_CHECK_INTERVAL)
             try:
-                if driver and is_terminal_fully_ready(driver):
-                    session['terminal_ready'] = True
+                if driver and is_terminal_ready(driver):
+                    session["terminal_ready"] = True
             except Exception:
                 pass
             continue
 
-        time.sleep(random.uniform(4, 6))
-        if not session['running'] or session.get('gen') != gen:
+        time.sleep(random.uniform(*Config.STREAM_INTERVAL))
+        if not session["running"] or session.get("gen") != gen:
             break
         cycle += 1
 
         try:
-            # ═══ Step 1: Switch to latest window ═══
-            try:
-                handles = driver.window_handles
-                if handles:
-                    driver.switch_to.window(handles[-1])
-            except Exception:
-                pass
-
-            # ═══ Step 2: Handle popups ═══
+            _focus_terminal(driver)
             status = handle_google_pages(driver, session)
+            cur = current_url(driver)
 
-            # ═══ Step 3: Get current URL ═══
-            current_url = get_current_url_safe(driver)
-
-            # ═══ Step 4: UPDATE SCREENSHOT FIRST ═══
+            # ── تحديث الصورة ──
             try:
-                # إذا لم نكن في فترة انتظار تحميل التيرمينال، التقط شاشة
-                loading_until = session.get('shell_loading_until', 0)
-                if time.time() >= loading_until:
-                    flash = update_stream_image(driver, chat_id, session, status, flash)
-                err_count = 0
+                if time.time() >= session.get("shell_loading_until", 0):
+                    flash = _update_stream(
+                        driver, chat_id, session, status, flash
+                    )
+                err_n = 0
                 drv_err = 0
             except Exception as e:
-                em = str(e).lower()
-                if "message is not modified" not in em:
+                if "message is not modified" not in str(e).lower():
                     raise
 
-            # ═══ Step 5: Background tasks ═══
+            on_console = any(
+                k in cur for k in (
+                    "console.cloud.google.com", "myaccount.google.com"
+                )
+            )
+            on_shell = is_shell_page(driver)
 
-            on_console = ("console.cloud.google.com" in current_url or "myaccount.google.com" in current_url)
-            on_shell = is_on_shell_page(driver)
+            # ── Cloud Run extraction ──
+            if (session.get("project_id")
+                    and not session.get("run_api_checked")
+                    and on_console):
+                popup = status not in ("مراقبة...", "📊 Console",
+                                       "✅ Terminal جاهز")
+                auth_url = any(k in cur.lower() for k in
+                               ("signin", "challenge", "speedbump",
+                                "accounts.google.com"))
+                if not popup and not auth_url:
+                    gc.collect()
+                    if do_cloud_run_extraction(driver, chat_id, session):
+                        session["run_api_checked"] = True
 
-            # 5A: Cloud Run region extraction
-            if session.get('project_id') and not session.get('run_api_checked') and on_console:
-                
-                is_handling_popup = status not in ["مراقبة...", "📊 Console", "✅ Terminal ⌨️"]
-                is_on_auth_url = any(k in current_url.lower() for k in ["signin", "challenge", "speedbump", "accounts.google.com"])
-                
-                if is_handling_popup or is_on_auth_url:
-                    pass # ننتظر
-                else:
-                    gc.collect() 
-                    done = do_cloud_run_extraction(driver, chat_id, session)
-                    if done:
-                        session['run_api_checked'] = True
+            # ── Terminal ready notification ──
+            elif on_shell and not session.get("terminal_notified"):
+                if is_terminal_ready(driver):
+                    session["terminal_ready"] = True
+                    session["terminal_notified"] = True
+                    session["cmd_mode"] = True
+                    send_safe(
+                        chat_id,
+                        "🖥️ **Terminal جاهز تماماً!** ✅\n\n"
+                        "تم تفعيل **⌨️ وضع الأوامر** تلقائياً.\n"
+                        "أرسل أوامرك مباشرة كرسالة عادية.",
+                        parse_mode="Markdown",
+                    )
+                    try:
+                        _update_stream(driver, chat_id, session,
+                                       "✅ Terminal Ready", flash)
+                    except Exception:
+                        pass
 
-            # 5B: Terminal ready notification & Auto-Command Mode
-            elif on_shell:
-                if not session.get('terminal_notified'):
-                    if is_terminal_fully_ready(driver):
-                        session['terminal_ready'] = True
-                        session['terminal_notified'] = True
-                        session['cmd_mode'] = True  # تفعيل وضع الأوامر تلقائياً
-                        try:
-                            bot.send_message(chat_id,
-                                "🖥️ **Terminal جاهز تماماً للاستخدام!** ✅\n\n"
-                                "تم تفعيل **⌨️ وضع الأوامر** تلقائياً.\n"
-                                "يمكنك الآن إرسال أوامرك مباشرة كرسالة عادية.",
-                                parse_mode="Markdown")
-                            
-                            update_stream_image(driver, chat_id, session, "✅ Terminal Ready", flash)
-                        except Exception:
-                            pass
-
-            # Memory cleanup
+            # ── تنظيف دوري ──
             if cycle % 8 == 0:
                 gc.collect()
 
         except Exception as e:
             em = str(e).lower()
-
             if "message is not modified" in em:
                 continue
-
-            if any(k in em for k in TIMEOUT_KEYWORDS):
+            if any(k in em for k in _TIMEOUT_KEYS):
                 time.sleep(2)
                 continue
-
-            loading_until = session.get('shell_loading_until', 0)
-            if time.time() < loading_until:
-                # نتجاهل الأخطاء أثناء فترة التحميل المسموح بها لعدم إزعاج المستخدم
+            if time.time() < session.get("shell_loading_until", 0):
                 time.sleep(3)
                 continue
 
-            err_count += 1
-            log.warning(f"Stream err ({err_count}): {str(e)[:120]}")
+            err_n += 1
+            log.warning(f"Stream err ({err_n}): {str(e)[:120]}")
 
             if "too many requests" in em or "retry after" in em:
-                w = re.search(r'retry after (\d+)', em)
+                w = re.search(r"retry after (\d+)", em)
                 time.sleep(int(w.group(1)) if w else 5)
-
-            elif any(k in em for k in DRIVER_ERROR_KEYWORDS):
+            elif any(k in em for k in _DRIVER_KEYS):
                 drv_err += 1
-                if drv_err >= 3:
-                    try:
-                        bot.send_message(chat_id, "⚠️ إعادة تشغيل المتصفح (تم تفريغ الذاكرة)...")
-                    except Exception:
-                        pass
-                    try:
-                        safe_quit(driver)
-                        new_drv = get_driver()
-                        session['driver'] = new_drv
-                        driver = new_drv
-                        driver.get(session.get('url', 'about:blank'))
-                        session['shell_opened'] = False
-                        session['auth'] = False
-                        session['terminal_ready'] = False
-                        session['terminal_notified'] = False
-                        session['run_api_checked'] = False
-                        session['shell_loading_until'] = 0
-                        drv_err = 0
-                        err_count = 0
-                        time.sleep(5)
-                    except Exception:
-                        session['running'] = False
-                        break
-
-            elif err_count >= 5:
+                if drv_err >= Config.MAX_DRV_ERR_BEFORE_RESTART:
+                    _restart_driver(chat_id, session)
+                    driver = session["driver"]
+                    drv_err = 0
+                    err_n = 0
+                    time.sleep(5)
+            elif err_n >= Config.MAX_ERR_BEFORE_REFRESH:
                 try:
                     driver.refresh()
-                    err_count = 0
+                    err_n = 0
                 except Exception:
                     drv_err += 1
 
@@ -1100,61 +1195,73 @@ def stream_loop(chat_id, gen):
     gc.collect()
 
 
-# ══════════════════════════════════════════════════════════
-#  Start Stream
-# ══════════════════════════════════════════════════════════
+def _restart_driver(chat_id, session):
+    """إعادة تشغيل المتصفح مع الحفاظ على الجلسة"""
+    send_safe(chat_id, "🔁 إعادة تشغيل المتصفح...")
+    try:
+        safe_quit(session.get("driver"))
+        new_drv = create_driver()
+        session["driver"] = new_drv
+        new_drv.get(session.get("url", "about:blank"))
+        session.update({
+            "shell_opened": False,
+            "auth": False,
+            "terminal_ready": False,
+            "terminal_notified": False,
+            "run_api_checked": False,
+            "shell_loading_until": 0,
+        })
+        send_safe(chat_id, "✅ تم إعادة التشغيل بنجاح!")
+    except Exception as e:
+        send_safe(chat_id, f"❌ فشل إعادة التشغيل:\n`{str(e)[:200]}`",
+                  parse_mode="Markdown")
+        session["running"] = False
+
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  16 · START STREAM                                    ║
+# ╚═══════════════════════════════════════════════════════╝
 
 def start_stream(chat_id, url):
+    # ── إنهاء أي جلسة سابقة ──
     old_drv = None
     with sessions_lock:
         if chat_id in user_sessions:
             old = user_sessions[chat_id]
-            old['running'] = False
-            old['gen'] = old.get('gen', 0) + 1
-            old_drv = old.get('driver')
+            old["running"] = False
+            old["gen"] = old.get("gen", 0) + 1
+            old_drv = old.get("driver")
 
-    bot.send_message(chat_id, "⚡ جاري التجهيز...")
+    send_safe(chat_id, "⚡ جاري التجهيز...")
     if old_drv:
         safe_quit(old_drv)
         time.sleep(2)
 
-    project_match = re.search(r'(qwiklabs-gcp-[\w-]+)', url)
-    project_id = project_match.group(1) if project_match else None
-
+    project_id = extract_project_id(url)
     if not project_id:
-        bot.send_message(chat_id,
-            "⚠️ تحذير: لم أتمكن من استخراج Project ID، "
-            "بعض الميزات قد لا تعمل.")
+        send_safe(chat_id,
+            "⚠️ لم أتمكن من استخراج Project ID.\n"
+            "بعض الميزات التلقائية قد لا تعمل.")
 
+    # ── إنشاء المتصفح ──
     try:
-        driver = get_driver()
-        bot.send_message(chat_id, "✅ المتصفح جاهز")
+        driver = create_driver()
+        send_safe(chat_id, "✅ المتصفح جاهز")
     except Exception as e:
-        bot.send_message(chat_id,
-            f"❌ فشل:\n`{str(e)[:300]}`", parse_mode="Markdown")
+        send_safe(chat_id,
+            f"❌ فشل تشغيل المتصفح:\n`{str(e)[:300]}`",
+            parse_mode="Markdown")
         return
 
     gen = int(time.time())
     with sessions_lock:
-        user_sessions[chat_id] = {
-            'driver': driver,
-            'running': False,
-            'msg_id': None,
-            'url': url,
-            'project_id': project_id,
-            'shell_opened': False,
-            'auth': False,
-            'terminal_ready': False,
-            'terminal_notified': False,
-            'cmd_mode': False,
-            'gen': gen,
-            'run_api_checked': False,
-            'shell_loading_until': 0
-        }
+        user_sessions[chat_id] = _new_session_dict(
+            driver, url, project_id, gen
+        )
         session = user_sessions[chat_id]
 
-    bot.send_message(chat_id, "🌐 فتح الرابط...")
-
+    # ── فتح الرابط ──
+    send_safe(chat_id, "🌐 فتح الرابط...")
     try:
         driver.get(url)
     except Exception as e:
@@ -1162,309 +1269,548 @@ def start_stream(chat_id, url):
             log.warning(f"URL load: {e}")
     time.sleep(5)
 
+    # ── لقطة أولية + بدء البث ──
     try:
-        handles = driver.window_handles
-        if handles:
-            driver.switch_to.window(handles[-1])
+        _focus_terminal(driver)
         png = driver.get_screenshot_as_png()
         bio = io.BytesIO(png)
-        bio.name = f's_{int(time.time())}.png'
-        msg = bot.send_photo(chat_id, bio,
-            caption="🔴 بث 🕶️\n📌 بدء...", reply_markup=panel())
+        bio.name = f"s_{int(time.time())}.png"
+        msg = bot.send_photo(
+            chat_id, bio,
+            caption="🔴 بث مباشر\n📌 جاري البدء...",
+            reply_markup=build_panel(),
+        )
         bio.close()
         del png
 
         with sessions_lock:
-            session['msg_id'] = msg.message_id
-            session['running'] = True
+            session["msg_id"] = msg.message_id
+            session["running"] = True
 
-        t = threading.Thread(target=stream_loop,
-                             args=(chat_id, gen), daemon=True)
-        t.start()
-        bot.send_message(chat_id, "✅ البث يعمل!")
+        threading.Thread(
+            target=stream_loop, args=(chat_id, gen), daemon=True
+        ).start()
+
+        send_safe(chat_id,
+            "✅ **البث يعمل!**\n\n"
+            "• البوت سيتعامل مع الصفحات تلقائياً\n"
+            "• سيتم إعلامك عند جاهزية Terminal\n"
+            "• استخدم الأزرار أدناه للتحكم",
+            parse_mode="Markdown")
+
     except Exception as e:
-        bot.send_message(chat_id,
-            f"❌ فشل:\n`{str(e)[:200]}`", parse_mode="Markdown")
+        send_safe(chat_id,
+            f"❌ فشل بدء البث:\n`{str(e)[:200]}`",
+            parse_mode="Markdown")
         cleanup_session(chat_id)
 
 
-# ══════════════════════════════════════════════════════════
-#  Execute Command
-# ══════════════════════════════════════════════════════════
+# ╔═══════════════════════════════════════════════════════╗
+# ║  17 · COMMAND EXECUTOR                                ║
+# ╚═══════════════════════════════════════════════════════╝
 
-SLOW_COMMANDS = ('install', 'apt', 'pip', 'gcloud', 'docker',
-                 'kubectl', 'terraform', 'build', 'deploy')
-FAST_COMMANDS = ('cat', 'echo', 'ls', 'pwd', 'whoami',
-                 'date', 'hostname', 'uname', 'id', 'env')
+def _adaptive_wait(command):
+    """تحديد وقت الانتظار بناءً على نوع الأمر"""
+    cl = command.lower()
+    if any(k in cl for k in Config.SLOW_CMDS):
+        return 10
+    if any(k in cl for k in Config.FAST_CMDS):
+        return 2
+    if "|" in command or ">" in command:
+        return 5
+    return 3
 
 
 def execute_command(chat_id, command):
     session = get_session(chat_id)
     if not session:
-        bot.send_message(chat_id, "❌ لا توجد جلسة.")
+        send_safe(chat_id, "❌ لا توجد جلسة نشطة.\nأرسل رابط SSO أولاً.")
         return
 
-    driver = session.get('driver')
+    driver = session.get("driver")
     if not driver:
-        bot.send_message(chat_id, "❌ المتصفح غير متوفر.")
+        send_safe(chat_id, "❌ المتصفح غير متوفر.")
         return
 
-    if not is_on_shell_page(driver):
-        bot.send_message(chat_id, "⚠️ لست في Cloud Shell بعد.")
+    if not is_shell_page(driver):
+        send_safe(chat_id,
+            "⚠️ لست في Cloud Shell بعد.\n"
+            "انتظر حتى يصل البوت للتيرمنال.")
         return
 
-    session['terminal_ready'] = True
-    status_msg = bot.send_message(chat_id, f"⏳ `{command}`",
-                                  parse_mode="Markdown")
+    session["terminal_ready"] = True
+    session["last_activity"] = time.time()
 
-    text_before = get_terminal_output(driver) or ""
-    success = send_command_to_terminal(driver, command)
+    # حفظ في السجل
+    history = session.setdefault("cmd_history", [])
+    history.append({"cmd": command, "ts": datetime.now().isoformat()})
+    if len(history) > 20:
+        history.pop(0)
 
-    if success:
-        cmd_lower = command.lower()
-        if any(k in cmd_lower for k in SLOW_COMMANDS):
-            wait_time = 10
-        elif any(k in cmd_lower for k in FAST_COMMANDS):
-            wait_time = 2
+    status_msg = send_safe(chat_id, f"⏳ جاري تنفيذ:\n`{command}`",
+                           parse_mode="Markdown")
+
+    text_before = read_terminal(driver) or ""
+    success = send_command(driver, command)
+
+    if not success:
+        send_safe(chat_id,
+            "⚠️ فشل إرسال الأمر للتيرمنال.\n"
+            "جرّب 🔄 تحديث ثم أعد المحاولة.")
+        _delete_msg(chat_id, status_msg)
+        return
+
+    # ── انتظار تكيّفي ──
+    wait = _adaptive_wait(command)
+    time.sleep(wait)
+
+    text_after = read_terminal(driver) or ""
+    output = ""
+
+    if text_after and text_after != text_before:
+        if len(text_after) > len(text_before):
+            new_part = text_after[len(text_before):].strip()
+            output = new_part or extract_result(text_after, command) or ""
         else:
-            wait_time = 3
-        time.sleep(wait_time)
+            output = extract_result(text_after, command) or ""
+    elif text_after:
+        output = extract_result(text_after, command) or ""
 
-        text_after = get_terminal_output(driver) or ""
-        output_text = ""
+    # تنظيف المخرجات
+    if output:
+        lines = output.split("\n")
+        cleaned = []
+        skip_first = False
+        for ln in lines:
+            if not skip_first and command in ln:
+                skip_first = True
+                continue
+            cleaned.append(ln)
+        output = "\n".join(cleaned).strip()
 
-        if text_after and text_after != text_before:
-            if len(text_after) > len(text_before):
-                new_part = text_after[len(text_before):].strip()
-                output_text = (new_part if new_part else extract_command_result(text_after, command) or "")
-            else:
-                output_text = (extract_command_result(text_after, command) or "")
-        elif text_after:
-            output_text = (extract_command_result(text_after, command) or "")
+    bio = take_screenshot(driver)
 
-        if output_text:
-            lines = output_text.split('\n')
-            cleaned = []
-            skipped = False
-            for line in lines:
-                if not skipped and command in line:
-                    skipped = True
-                    continue
-                cleaned.append(line)
-            output_text = '\n'.join(cleaned).strip()
-
-        bio = take_screenshot(driver)
-
-        if output_text:
-            if len(output_text) > 3900:
-                output_text = (output_text[:3900] + "\n... (تم اقتطاع النص)")
-            try:
-                bot.send_message(chat_id,
-                    f"✅ **الأمر:**\n`{command}`\n\n"
-                    f"📋 **النتيجة:**\n```\n{output_text}\n```",
-                    parse_mode="Markdown",
-                    reply_markup=panel(cmd_mode=True))
-            except Exception:
-                try:
-                    bot.send_message(chat_id,
-                        f"✅ الأمر: {command}\n\n"
-                        f"📋 النتيجة:\n{output_text}",
-                        reply_markup=panel(cmd_mode=True))
-                except Exception:
-                    bot.send_message(chat_id, "✅ تم التنفيذ")
-        else:
-            bot.send_message(chat_id,
-                f"✅ تم تنفيذ: `{command}`\n"
-                f"📋 لم يتم التقاط النص (شاهد الصورة)",
-                parse_mode="Markdown")
-
-        if bio:
-            try:
-                bot.send_photo(chat_id, bio,
-                    caption=f"📸 بعد: `{command}`",
-                    parse_mode="Markdown",
-                    reply_markup=panel(cmd_mode=True))
-            except Exception:
-                pass
-            bio.close()
+    # ── إرسال النتيجة ──
+    if output:
+        if len(output) > 3900:
+            output = output[:3900] + "\n… (تم اقتطاع النص)"
+        try:
+            send_safe(
+                chat_id,
+                f"✅ **الأمر:**\n`{command}`\n\n"
+                f"📋 **النتيجة:**\n```\n{output}\n```",
+                parse_mode="Markdown",
+                reply_markup=build_panel(cmd_mode=True),
+            )
+        except Exception:
+            send_safe(
+                chat_id,
+                f"✅ الأمر: {command}\n\n📋 النتيجة:\n{output}",
+                reply_markup=build_panel(cmd_mode=True),
+            )
     else:
-        bot.send_message(chat_id, "⚠️ فشل الإرسال.\n🔄 تحديث ثم أعد")
+        send_safe(
+            chat_id,
+            f"✅ تم تنفيذ: `{command}`\n📋 لم يُلتقط نص (شاهد الصورة)",
+            parse_mode="Markdown",
+        )
 
+    if bio:
+        try:
+            bot.send_photo(
+                chat_id, bio,
+                caption=f"📸 بعد: `{command}`",
+                parse_mode="Markdown",
+                reply_markup=build_panel(cmd_mode=True),
+            )
+        except Exception:
+            pass
+        bio.close()
+
+    _delete_msg(chat_id, status_msg)
+
+
+def _delete_msg(chat_id, msg):
+    if msg:
+        try:
+            bot.delete_message(chat_id, msg.message_id)
+        except Exception:
+            pass
+
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  18 · BOT COMMAND HANDLERS                            ║
+# ╚═══════════════════════════════════════════════════════╝
+
+@bot.message_handler(commands=["start"])
+def cmd_start(msg):
+    bot.reply_to(msg, WELCOME_MSG, parse_mode="Markdown")
+
+
+@bot.message_handler(commands=["help", "h"])
+def cmd_help(msg):
+    bot.reply_to(msg, HELP_MSG, parse_mode="Markdown")
+
+
+@bot.message_handler(commands=["status"])
+def cmd_status(msg):
+    cid = msg.chat.id
+    s = get_session(cid)
+    if not s:
+        bot.reply_to(msg, "❌ لا توجد جلسة نشطة.\nأرسل رابط SSO للبدء.")
+        return
+
+    uptime = fmt_duration(time.time() - s.get("created_at", time.time()))
+    drv = s.get("driver")
+    cur = current_url(drv) if drv else "غير متوفر"
+    hist = s.get("cmd_history", [])
+    last_cmds = "\n".join(
+        [f"  • `{h['cmd']}`" for h in hist[-5:]]
+    ) if hist else "  لا يوجد"
+
+    text = (
+        "ℹ️ **حالة الجلسة**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"📁 **المشروع:** `{s.get('project_id', 'غير معروف')}`\n"
+        f"🔄 **الحالة:** {'🟢 يعمل' if s.get('running') else '🔴 متوقف'}\n"
+        f"⌨️ **Terminal:** {'✅ جاهز' if s.get('terminal_ready') else '⏳ غير جاهز'}\n"
+        f"🎯 **الوضع:** {'⌨️ أوامر' if s.get('cmd_mode') else '👁️ بث'}\n"
+        f"⏱️ **المدة:** {uptime}\n"
+        f"🌐 **الصفحة:**\n  `{cur[:80]}`\n"
+        f"\n📜 **آخر الأوامر:**\n{last_cmds}"
+    )
+    bot.reply_to(msg, text, parse_mode="Markdown")
+
+
+@bot.message_handler(commands=["stop", "s"])
+def cmd_stop(msg):
+    cid = msg.chat.id
+    s = get_session(cid)
+    if not s:
+        bot.reply_to(msg, "❌ لا توجد جلسة لإيقافها.")
+        return
+    s["running"] = False
+    s["gen"] = s.get("gen", 0) + 1
     try:
-        bot.delete_message(chat_id, status_msg.message_id)
+        bot.edit_message_caption(
+            "🛑 تم الإيقاف",
+            chat_id=cid, message_id=s.get("msg_id"),
+        )
     except Exception:
         pass
+    cleanup_session(cid)
+    bot.reply_to(msg, "🛑 تم إيقاف الجلسة بنجاح.")
 
 
-# ══════════════════════════════════════════════════════════
-#  Bot Handlers
-# ══════════════════════════════════════════════════════════
+@bot.message_handler(commands=["restart"])
+def cmd_restart(msg):
+    cid = msg.chat.id
+    s = get_session(cid)
+    if not s:
+        bot.reply_to(msg, "❌ لا توجد جلسة.")
+        return
+    threading.Thread(
+        target=_restart_driver, args=(cid, s), daemon=True
+    ).start()
 
-@bot.message_handler(commands=['start'])
-def cmd_start(message):
-    bot.reply_to(message,
-        "🚀 مرحباً!\n\n"
-        "أرسل رابط:\n`https://www.skills.google/google_sso`\n\n"
-        "بعد Terminal:\n⌨️ وضع الأوامر أو `/cmd ls`\n📸 `/ss`",
-        parse_mode="Markdown")
+
+@bot.message_handler(commands=["url"])
+def cmd_url(msg):
+    cid = msg.chat.id
+    s = get_session(cid)
+    if not s or not s.get("driver"):
+        bot.reply_to(msg, "❌ لا توجد جلسة نشطة.")
+        return
+    u = current_url(s["driver"])
+    bot.reply_to(msg, f"🌐 الصفحة الحالية:\n`{u}`", parse_mode="Markdown")
 
 
-@bot.message_handler(commands=['cmd'])
-def cmd_command(message):
-    parts = message.text.split(maxsplit=1)
+@bot.message_handler(commands=["cmd"])
+def cmd_command(msg):
+    parts = msg.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.reply_to(message, "`/cmd الأمر`", parse_mode="Markdown")
+        bot.reply_to(
+            msg,
+            "💡 **الاستخدام:**\n"
+            "`/cmd ls -la`\n"
+            "`/cmd gcloud config list`",
+            parse_mode="Markdown",
+        )
         return
-    threading.Thread(target=execute_command,
-                     args=(message.chat.id, parts[1]),
-                     daemon=True).start()
+    threading.Thread(
+        target=execute_command,
+        args=(msg.chat.id, parts[1]),
+        daemon=True,
+    ).start()
 
 
-@bot.message_handler(commands=['screenshot', 'ss'])
-def cmd_ss(message):
-    cid = message.chat.id
-    session = get_session(cid)
-    if not session:
-        bot.reply_to(message, "❌")
+@bot.message_handler(commands=["screenshot", "ss"])
+def cmd_ss(msg):
+    cid = msg.chat.id
+    s = get_session(cid)
+    if not s or not s.get("driver"):
+        bot.reply_to(msg, "❌ لا توجد جلسة نشطة.")
         return
-    driver = session.get('driver')
-    if not driver:
-        bot.reply_to(message, "❌ المتصفح غير متوفر")
-        return
-    bio = take_screenshot(driver)
+    bio = take_screenshot(s["driver"])
     if bio:
-        bot.send_photo(cid, bio, caption="📸")
+        now = datetime.now().strftime("%H:%M:%S")
+        bot.send_photo(
+            cid, bio,
+            caption=f"📸 لقطة شاشة — {now}",
+            reply_markup=build_panel(s.get("cmd_mode", False)),
+        )
         bio.close()
     else:
-        bot.reply_to(message, "❌")
+        bot.reply_to(msg, "❌ فشل التقاط الشاشة.")
 
 
-@bot.message_handler(func=lambda m: (
-    m.text and
-    m.text.startswith('https://www.skills.google/google_sso')))
-def handle_url(message):
-    threading.Thread(target=start_stream,
-                     args=(message.chat.id, message.text.strip()),
-                     daemon=True).start()
-
-
-@bot.message_handler(func=lambda m: m.text and m.text.startswith('http'))
-def handle_bad(message):
-    bot.reply_to(message,
-        "❌ يجب أن يبدأ بـ:\n`https://www.skills.google/google_sso`",
-        parse_mode="Markdown")
-
+# ── معالج الروابط ──
 
 @bot.message_handler(func=lambda m: (
-    m.text and
-    not m.text.startswith('/') and
-    not m.text.startswith('http')))
-def handle_text(message):
-    cid = message.chat.id
-    session = get_session(cid)
-    if not session:
+    m.text and m.text.startswith("https://www.skills.google/google_sso")
+))
+def handle_url_msg(msg):
+    threading.Thread(
+        target=start_stream,
+        args=(msg.chat.id, msg.text.strip()),
+        daemon=True,
+    ).start()
+
+
+@bot.message_handler(func=lambda m: m.text and m.text.startswith("http"))
+def handle_bad_url(msg):
+    bot.reply_to(
+        msg,
+        "❌ الرابط غير صحيح.\n\n"
+        "يجب أن يبدأ بـ:\n"
+        "`https://www.skills.google/google_sso`",
+        parse_mode="Markdown",
+    )
+
+
+# ── معالج النصوص (الأوامر المباشرة) ──
+
+@bot.message_handler(func=lambda m: (
+    m.text
+    and not m.text.startswith("/")
+    and not m.text.startswith("http")
+))
+def handle_text(msg):
+    cid = msg.chat.id
+    s = get_session(cid)
+    if not s:
         return
-    if session.get('cmd_mode'):
-        threading.Thread(target=execute_command,
-                         args=(cid, message.text),
-                         daemon=True).start()
-    elif is_on_shell_page(session.get('driver')):
-        bot.reply_to(message,
+
+    if s.get("cmd_mode"):
+        threading.Thread(
+            target=execute_command,
+            args=(cid, msg.text),
+            daemon=True,
+        ).start()
+    elif is_shell_page(s.get("driver")):
+        bot.reply_to(
+            msg,
             "💡 اضغط **⌨️ وضع الأوامر** أولاً\n"
-            "أو `/cmd " + message.text + "`",
-            parse_mode="Markdown")
+            f"أو أرسل: `/cmd {msg.text}`",
+            parse_mode="Markdown",
+        )
 
 
-# ══════════════════════════════════════════════════════════
-#  Callback Handler
-# ══════════════════════════════════════════════════════════
+# ╔═══════════════════════════════════════════════════════╗
+# ║  19 · CALLBACK HANDLER                                ║
+# ╚═══════════════════════════════════════════════════════╝
 
 @bot.callback_query_handler(func=lambda call: True)
-def on_cb(call):
+def on_callback(call):
     cid = call.message.chat.id
     try:
-        with sessions_lock:
-            if cid not in user_sessions:
-                bot.answer_callback_query(call.id, "لا توجد جلسة.")
-                return
-            s = user_sessions[cid]
+        s = get_session(cid)
+        if not s:
+            bot.answer_callback_query(call.id, "لا توجد جلسة نشطة.")
+            return
 
-        if call.data == "stop":
-            s['running'] = False
-            s['gen'] = s.get('gen', 0) + 1
-            bot.answer_callback_query(call.id, "إيقاف")
+        action = call.data
+
+        if action == "stop":
+            s["running"] = False
+            s["gen"] = s.get("gen", 0) + 1
+            bot.answer_callback_query(call.id, "🛑 إيقاف...")
             try:
-                bot.edit_message_caption("🛑",
-                    chat_id=cid, message_id=s['msg_id'])
+                bot.edit_message_caption(
+                    "🛑 تم الإيقاف",
+                    chat_id=cid, message_id=s.get("msg_id"),
+                )
             except Exception:
                 pass
-            safe_quit(s.get('driver'))
+            safe_quit(s.get("driver"))
             with sessions_lock:
-                if cid in user_sessions:
-                    del user_sessions[cid]
+                user_sessions.pop(cid, None)
 
-        elif call.data == "refresh":
-            bot.answer_callback_query(call.id, "تحديث...")
-            driver = s.get('driver')
-            if driver:
+        elif action == "refresh":
+            bot.answer_callback_query(call.id, "🔄 تحديث...")
+            drv = s.get("driver")
+            if drv:
                 try:
-                    driver.refresh()
+                    drv.refresh()
                 except Exception:
                     pass
 
-        elif call.data == "screenshot":
-            bot.answer_callback_query(call.id, "📸")
-            driver = s.get('driver')
-            if driver:
-                bio = take_screenshot(driver)
+        elif action == "screenshot":
+            bot.answer_callback_query(call.id, "📸 جاري التقاط...")
+            drv = s.get("driver")
+            if drv:
+                bio = take_screenshot(drv)
                 if bio:
-                    bot.send_photo(cid, bio, caption="📸",
-                        reply_markup=panel(s.get('cmd_mode', False)))
+                    now = datetime.now().strftime("%H:%M:%S")
+                    bot.send_photo(
+                        cid, bio,
+                        caption=f"📸 {now}",
+                        reply_markup=build_panel(s.get("cmd_mode", False)),
+                    )
                     bio.close()
 
-        elif call.data == "cmd_mode":
-            s['cmd_mode'] = True
-            driver = s.get('driver')
-            if driver and is_on_shell_page(driver):
-                s['terminal_ready'] = True
-            bot.answer_callback_query(call.id, "⌨️")
-            bot.send_message(cid,
-                "⌨️ **وضع الأوامر!**\n\n"
-                "اكتب أي أمر:\n`ls -la`\n`gcloud config list`\n\n"
-                "🔙 للرجوع",
-                parse_mode="Markdown")
+        elif action == "cmd_mode":
+            s["cmd_mode"] = True
+            drv = s.get("driver")
+            if drv and is_shell_page(drv):
+                s["terminal_ready"] = True
+            bot.answer_callback_query(call.id, "⌨️ وضع الأوامر")
+            send_safe(
+                cid,
+                "⌨️ **وضع الأوامر مُفعّل!**\n\n"
+                "أرسل أي أمر مباشرة كرسالة:\n"
+                "• `ls -la`\n"
+                "• `gcloud config list`\n"
+                "• `cat file.txt`\n\n"
+                "🔙 للرجوع للبث اضغط الزر",
+                parse_mode="Markdown",
+            )
 
-        elif call.data == "watch_mode":
-            s['cmd_mode'] = False
-            bot.answer_callback_query(call.id, "🔙")
-            bot.send_message(cid, "👁️ وضع البث")
+        elif action == "watch_mode":
+            s["cmd_mode"] = False
+            bot.answer_callback_query(call.id, "👁️ وضع البث")
+            send_safe(cid, "👁️ تم الرجوع لوضع البث المباشر.")
+
+        elif action == "info":
+            bot.answer_callback_query(call.id, "ℹ️")
+            uptime = fmt_duration(
+                time.time() - s.get("created_at", time.time())
+            )
+            drv = s.get("driver")
+            u = current_url(drv)[:60] if drv else "—"
+            text = (
+                f"ℹ️ **الحالة:**\n"
+                f"📁 `{s.get('project_id', '—')}`\n"
+                f"⌨️ Terminal: {'✅' if s.get('terminal_ready') else '⏳'}\n"
+                f"⏱️ {uptime}\n"
+                f"🌐 `{u}`"
+            )
+            send_safe(cid, text, parse_mode="Markdown")
+
+        elif action == "restart_browser":
+            bot.answer_callback_query(call.id, "🔁 إعادة تشغيل...")
+            threading.Thread(
+                target=_restart_driver, args=(cid, s), daemon=True
+            ).start()
 
     except Exception as e:
         log.debug(f"Callback error: {e}")
 
 
-# ══════════════════════════════════════════════════════════
-#  Main
-# ══════════════════════════════════════════════════════════
+# ╔═══════════════════════════════════════════════════════╗
+# ║  20 · BOOT CHECK & GRACEFUL SHUTDOWN                  ║
+# ╚═══════════════════════════════════════════════════════╝
 
-if __name__ == '__main__':
-    print("=" * 50)
-    print("🚂 Terminal Control + Output Reading (RAM Optimized & Conflict Fixed)")
-    print(f"🌐 Port: {os.environ.get('PORT', 8080)}")
-    print("=" * 50)
-    
-    threading.Thread(target=start_health_server, daemon=True).start()
-    
+def boot_check():
+    """فحص التبعيات عند بدء التشغيل"""
+    log.info("🔍 فحص التبعيات...")
+
+    browser = find_path(
+        ["chromium", "chromium-browser"],
+        ["/usr/bin/chromium", "/usr/bin/chromium-browser"],
+    )
+    drv = find_path(
+        ["chromedriver"],
+        ["/usr/bin/chromedriver", "/usr/lib/chromium/chromedriver"],
+    )
+
+    if not browser:
+        log.critical("❌ Chromium غير موجود!")
+        sys.exit(1)
+    log.info(f"  ✅ Browser: {browser}")
+
+    if not drv:
+        log.critical("❌ ChromeDriver غير موجود!")
+        sys.exit(1)
+    log.info(f"  ✅ Driver:  {drv}")
+
+    ver = browser_version(browser)
+    log.info(f"  ✅ Version: {ver}")
+    log.info(f"  ✅ Display: {'Active' if display else 'None'}")
+    log.info("✅ جميع التبعيات متوفرة!")
+
+
+def graceful_shutdown(signum, frame):
+    """إنهاء نظيف عند إيقاف التطبيق"""
+    log.info("🛑 إيقاف نظيف...")
+    shutdown_event.set()
+
+    with sessions_lock:
+        for cid in list(user_sessions):
+            try:
+                s = user_sessions[cid]
+                s["running"] = False
+                safe_quit(s.get("driver"))
+            except Exception:
+                pass
+        user_sessions.clear()
+
+    log.info("👋 تم الإنهاء.")
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, graceful_shutdown)
+signal.signal(signal.SIGINT, graceful_shutdown)
+
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  21 · MAIN ENTRY POINT                                ║
+# ╚═══════════════════════════════════════════════════════╝
+
+if __name__ == "__main__":
+    print("═" * 55)
+    print("  🤖 Google Cloud Shell Bot — Premium v2.0")
+    print(f"  🌐 Port: {Config.PORT}")
+    print("═" * 55)
+
+    # فحص التبعيات
+    boot_check()
+
+    # خادم الصحة
+    threading.Thread(target=_health_server, daemon=True).start()
+
+    # تنظيف تلقائي
+    threading.Thread(target=_auto_cleanup_loop, daemon=True).start()
+
     # حل مشكلة التعارض 409
     try:
         bot.remove_webhook()
         time.sleep(1)
     except Exception as e:
-        log.warning(f"Webhook removal failed: {e}")
+        log.warning(f"Webhook removal: {e}")
 
-    while True:
+    log.info("🚀 البوت يعمل الآن!")
+
+    while not shutdown_event.is_set():
         try:
-            bot.polling(non_stop=True, skip_pending=True, timeout=60, long_polling_timeout=60)
+            bot.polling(
+                non_stop=True,
+                skip_pending=True,
+                timeout=60,
+                long_polling_timeout=60,
+            )
         except Exception as e:
             log.error(f"Polling error: {e}")
+            if shutdown_event.is_set():
+                break
             time.sleep(5)
