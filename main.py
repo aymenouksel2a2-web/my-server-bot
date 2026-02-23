@@ -200,7 +200,7 @@ for(var p in window){if(/^cdc_/.test(p)){try{delete window[p]}catch(e){}}}
 
 
 # ══════════════════════════════════════════════════════════
-#  Browser Driver (Optimized for low RAM to prevent Tab Crash)
+#  Browser Driver (Optimized for low RAM)
 # ══════════════════════════════════════════════════════════
 
 def get_driver():
@@ -228,13 +228,13 @@ def get_driver():
     options.add_argument(f'--user-agent={ua}')
     options.add_argument('--lang=en-US')
     
-    # ── Memory Optimization Flags (Crucial for fixing Tab Crashed) ──
+    # ── Memory Optimization Flags ──
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
-    options.add_argument('--disable-features=site-per-process') # يوفر الرام بشكل هائل
+    options.add_argument('--disable-features=site-per-process') 
     options.add_argument('--disable-software-rasterizer')
-    options.add_argument('--js-flags="--max-old-space-size=256"') # تحديد استهلاك الجافاسكربت
+    options.add_argument('--js-flags="--max-old-space-size=256"') 
     options.add_argument('--disable-notifications')
     
     options.add_argument('--window-size=1024,768')
@@ -575,7 +575,6 @@ def handle_google_pages(driver, session):
     # ── Welcome / Terms of Service Popup ──
     if "agree and continue" in body_lower and "terms of service" in body_lower:
         try:
-            # 1. تحديد مربع الموافقة (Checkbox)
             checkboxes = driver.find_elements(By.XPATH, 
                 "//mat-checkbox | //input[@type='checkbox'] | //*[@role='checkbox']")
             for cb in checkboxes:
@@ -585,7 +584,6 @@ def handle_google_pages(driver, session):
                     pass
             time.sleep(1)
             
-            # 2. الضغط على زر Agree and continue
             btns = driver.find_elements(By.XPATH, 
                 "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'agree and continue')]")
             for btn in btns:
@@ -732,6 +730,23 @@ def handle_google_pages(driver, session):
         except Exception:
             pass
 
+    # ── Trust project ──
+    if "trust this project" in body_lower or "trust project" in body_lower:
+        try:
+            btns = driver.find_elements(By.XPATH,
+                "//button[contains(.,'Trust')]|"
+                "//button[contains(.,'Confirm')]")
+            for btn in btns:
+                try:
+                    if btn.is_displayed():
+                        btn.click()
+                        time.sleep(2)
+                        return "✅ Trust ✔️"
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
     # ── Status by URL ──
     try:
         url = driver.current_url
@@ -844,10 +859,26 @@ def do_cloud_run_extraction(driver, chat_id, session):
                 f"🌍 **السيرفرات المسموحة فقط للإنشاء هي:**\n```text\n{result}\n```",
                 parse_mode="Markdown")
             
+            # --- التحسين الجذري لمنع انهيار المتصفح عند فتح التيرمينال ---
             try:
-                bot.send_message(chat_id, "🚀 جاري الانتقال مباشرة إلى Terminal (واجهة سطر الأوامر فقط)...")
+                bot.send_message(chat_id, "🚀 جاري الانتقال مباشرة إلى Terminal (تفريغ الذاكرة أولاً)...")
+                pid = session.get('project_id')
+                # الرابط الذي طلبته بالضبط:
                 shell_url = f"https://shell.cloud.google.com/?enableapi=true&project={pid}&pli=1&show=terminal"
+                
+                # إجبار المتصفح على فتح صفحة بيضاء لتنظيف الرام قبل فتح صفحة التيرمينال الثقيلة
+                try:
+                    driver.get("about:blank")
+                    time.sleep(1.5)
+                    gc.collect()
+                except:
+                    pass
+
                 safe_navigate(driver, shell_url)
+                
+                # إعطاء المتصفح 10 ثواني راحة ليحمل التيرمينال بدون أخذ لقطات شاشة تضغط عليه
+                session['shell_loading_until'] = time.time() + 10
+
             except Exception as e:
                 log.warning(f"Auto-nav to shell failed: {e}")
 
@@ -886,7 +917,7 @@ def update_stream_image(driver, chat_id, session, status, flash):
         reply_markup=panel(session.get('cmd_mode', False))
     )
     
-    # تنظيف الذاكرة (Garbage Collection لتقليل انهيار المتصفح)
+    # تنظيف الذاكرة بشكل مستمر
     bio.close()
     del png 
     return flash
@@ -957,7 +988,10 @@ def stream_loop(chat_id, gen):
 
             # ═══ Step 4: UPDATE SCREENSHOT FIRST ═══
             try:
-                flash = update_stream_image(driver, chat_id, session, status, flash)
+                # إذا لم نكن في فترة انتظار تحميل التيرمينال، التقط شاشة
+                loading_until = session.get('shell_loading_until', 0)
+                if time.time() >= loading_until:
+                    flash = update_stream_image(driver, chat_id, session, status, flash)
                 err_count = 0
                 drv_err = 0
             except Exception as e:
@@ -970,18 +1004,16 @@ def stream_loop(chat_id, gen):
             on_console = ("console.cloud.google.com" in current_url or "myaccount.google.com" in current_url)
             on_shell = is_on_shell_page(driver)
 
-            # 5A: Cloud Run region extraction (المكان الذي تم إصلاحه)
+            # 5A: Cloud Run region extraction
             if session.get('project_id') and not session.get('run_api_checked') and on_console:
                 
-                # ننتظر فقط إذا كان البوت يضغط على شروط الخدمة أو في صفحات الدخول
-                # أي حالة أخرى مثل "مراقبة..." أو "📊 Console" ستجعله ينطلق لفتح Cloud Run.
                 is_handling_popup = status not in ["مراقبة...", "📊 Console", "✅ Terminal ⌨️"]
                 is_on_auth_url = any(k in current_url.lower() for k in ["signin", "challenge", "speedbump", "accounts.google.com"])
                 
                 if is_handling_popup or is_on_auth_url:
                     pass # ننتظر
                 else:
-                    gc.collect() # مسح الذاكرة قبل فتح Cloud Run لتجنب Crash
+                    gc.collect() 
                     done = do_cloud_run_extraction(driver, chat_id, session)
                     if done:
                         session['run_api_checked'] = True
@@ -1005,7 +1037,7 @@ def stream_loop(chat_id, gen):
                             pass
 
             # Memory cleanup
-            if cycle % 10 == 0:
+            if cycle % 8 == 0:
                 gc.collect()
 
         except Exception as e:
@@ -1020,7 +1052,7 @@ def stream_loop(chat_id, gen):
 
             loading_until = session.get('shell_loading_until', 0)
             if time.time() < loading_until:
-                log.info(f"⏳ Shell loading, ignoring: {str(e)[:80]}")
+                # نتجاهل الأخطاء أثناء فترة التحميل المسموح بها لعدم إزعاج المستخدم
                 time.sleep(3)
                 continue
 
@@ -1035,7 +1067,7 @@ def stream_loop(chat_id, gen):
                 drv_err += 1
                 if drv_err >= 3:
                     try:
-                        bot.send_message(chat_id, "⚠️ إعادة تشغيل المتصفح...")
+                        bot.send_message(chat_id, "⚠️ إعادة تشغيل المتصفح (تم تفريغ الذاكرة)...")
                     except Exception:
                         pass
                     try:
@@ -1423,7 +1455,7 @@ if __name__ == '__main__':
     
     threading.Thread(target=start_health_server, daemon=True).start()
     
-    # حل مشكلة التعارض 409: إزالة أي Webhooks قديمة قد تسبب تداخلاً
+    # حل مشكلة التعارض 409
     try:
         bot.remove_webhook()
         time.sleep(1)
@@ -1432,7 +1464,6 @@ if __name__ == '__main__':
 
     while True:
         try:
-            # إضافة skip_pending=True لضمان تجاهل الرسائل القديمة المتراكمة وتجنب الـ Conflict
             bot.polling(non_stop=True, skip_pending=True, timeout=60, long_polling_timeout=60)
         except Exception as e:
             log.error(f"Polling error: {e}")
