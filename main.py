@@ -20,6 +20,7 @@ import subprocess
 import json
 import logging
 import signal
+import base64
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telebot.types import (
@@ -614,14 +615,13 @@ def _focus_terminal(driver):
 
 
 def send_command(driver, command):
-    """إرسال أمر للتيرمنال بصورة ذكية ومباشرة عن طريق اللصق (Paste) لتجنب تجمد المتصفح"""
+    """إرسال أمر للتيرمنال بصورة ذكية ومباشرة عن طريق اللصق (Paste) لتجنب تشوه الرموز"""
     if not driver:
         return False
 
     _focus_terminal(driver)
 
     # 💡 الحل الذكي: حقن النص كاملاً دفعة واحدة كعملية "لصق" (Paste)
-    # هذا يتجاوز كل مشاكل بطء الكتابة وتجمد المتصفح مع النصوص الطويلة والرموز
     js_paste = """
     var text = arguments[0];
     function getXterm() {
@@ -659,17 +659,19 @@ def send_command(driver, command):
         success = driver.execute_script(js_paste, command)
         if success:
             log.info(f"📋 [Paste] ← Injected {len(command)} chars instantly")
-            time.sleep(1) # إعطاء فرصة للتيرمنال ليعالج اللصق
+            time.sleep(1)
             
-            # إذا لم يتم الضغط على Enter تلقائياً بسبب اللصق، نرسلها
-            if not command.endswith('\n'):
+            # 💡 الحل اليقيني: ضغط زر ENTER يدوياً عبر Selenium لضمان تشغيل الكود
+            try:
                 active = driver.switch_to.active_element
                 active.send_keys(Keys.RETURN)
+            except:
+                pass
             return True
     except Exception as e:
         log.debug(f"JS Paste failed: {e}")
 
-    # --- Fallback (في حال فشل اللصق لسبب ما نعود للكتابة السريعة الآمنة) ---
+    # --- Fallback ---
     def inject_keys(el, text):
         lines = text.strip().split('\n')
         for line in lines:
@@ -1003,7 +1005,6 @@ def do_cloud_run_extraction(driver, chat_id, session):
         elif result.startswith("ERROR:"):
             send_safe(chat_id, f"⚠️ خطأ: {result[6:][:200]}")
         else:
-            # ── تم التعديل هنا: تحويل السيرفرات إلى أزرار وإيقاف الانتقال التلقائي ──
             regions = [r.strip() for r in result.split("\n") if r.strip()]
             mk = InlineKeyboardMarkup(row_width=1)
             for r in regions:
@@ -1035,15 +1036,10 @@ def do_cloud_run_extraction(driver, chat_id, session):
 # ╚═══════════════════════════════════════════════════════╝
 
 def _generate_vless_cmd(region, token, chat_id):
-    """توليد سكريبت VLESS وكتابته في ملف .sh مباشرة كما طلب المستخدم تماماً"""
-    script = f"""cat << 'EOF_VLESS' > deploy_vless.sh
-#!/bin/bash
-
-# تحديد المتغيرات
+    """توليد سكريبت VLESS باستخدام Base64 لتفادي مشكلة تشوه الحروف والنصوص عند اللصق"""
+    script = f"""#!/bin/bash
 REGION="{region}"
 SERVICE_NAME="ocx-server-max"
-
-# توليد UUID عشوائي
 UUID=$(cat /proc/sys/kernel/random/uuid)
 
 echo "========================================="
@@ -1052,8 +1048,7 @@ echo "========================================="
 mkdir -p ~/vless-cloudrun-final
 cd ~/vless-cloudrun-final
 
-# إنشاء ملف إعدادات Xray
-cat <<EOC > config.json
+cat << 'EOC' > config.json
 {{
     "inbounds": [
         {{
@@ -1085,15 +1080,13 @@ cat <<EOC > config.json
 }}
 EOC
 
-# إنشاء ملف Dockerfile
-cat <<EOF > Dockerfile
+cat << 'EOD' > Dockerfile
 FROM teddysun/xray:latest
 COPY config.json /etc/xray/config.json
 EXPOSE 8080
 CMD ["xray", "-config", "/etc/xray/config.json"]
-EOF
+EOD
 
-# النشر على Cloud Run باستغلال 16 vCPU المتاحة بالكامل
 echo "========================================="
 echo "⚡ جاري بناء ونشر سيرفر VLESS..."
 echo "⚙️ الإعدادات: 2 vCPU | 2GB RAM | توسع حتى 8 حاويات (المجموع: 16 vCPU)"
@@ -1112,7 +1105,6 @@ gcloud run deploy $SERVICE_NAME \\
     --memory=2Gi \\
     --quiet
 
-# استخراج الرابط
 SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)')
 
 echo "========================================="
@@ -1121,16 +1113,14 @@ echo "🌐 الرابط الخاص بك: $SERVICE_URL"
 echo "🔑 الـ UUID الخاص بك: $UUID"
 echo "========================================="
 
-# إرسال النتيجة إلى محادثة تيليجرام
 curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
     -d chat_id="{chat_id}" \\
     -d text="✅ **اكتمل إنشاء سيرفر VLESS بنجاح!**%0A%0A🌍 **السيرفر:** \\\`$REGION\\\`%0A🌐 **الرابط:** \\\`$SERVICE_URL\\\`%0A🔑 **UUID:** \\\`$UUID\\\`" \\
     -d parse_mode="Markdown"
-EOF_VLESS
-
-bash deploy_vless.sh
 """
-    return script.strip() + "\n"
+    # تحويل السكريبت بأكمله لـ Base64 ثم لصقه لتجنب مشكلة تشوه الحروف في الطرفية
+    b64 = base64.b64encode(script.encode('utf-8')).decode('utf-8')
+    return f"echo {b64} | base64 -d > deploy_vless.sh && bash deploy_vless.sh"
 
 
 # ╔═══════════════════════════════════════════════════════╗
