@@ -200,7 +200,7 @@ for(var p in window){if(/^cdc_/.test(p)){try{delete window[p]}catch(e){}}}
 
 
 # ══════════════════════════════════════════════════════════
-#  Browser Driver
+#  Browser Driver (Optimized for low RAM to prevent Tab Crash)
 # ══════════════════════════════════════════════════════════
 
 def get_driver():
@@ -227,9 +227,16 @@ def get_driver():
     options.add_experimental_option('useAutomationExtension', False)
     options.add_argument(f'--user-agent={ua}')
     options.add_argument('--lang=en-US')
+    
+    # ── Memory Optimization Flags (Crucial for fixing Tab Crashed) ──
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
+    options.add_argument('--disable-features=site-per-process') # يوفر الرام بشكل هائل
+    options.add_argument('--disable-software-rasterizer')
+    options.add_argument('--js-flags="--max-old-space-size=256"') # تحديد استهلاك الجافاسكربت
+    options.add_argument('--disable-notifications')
+    
     options.add_argument('--window-size=1024,768')
     options.add_argument('--no-first-run')
     options.add_argument('--no-default-browser-check')
@@ -261,7 +268,7 @@ def get_driver():
         pass
 
     driver.set_page_load_timeout(45)
-    log.info("✅ المتصفح جاهز")
+    log.info("✅ المتصفح جاهز (محسّن للذاكرة)")
     return driver
 
 
@@ -545,6 +552,7 @@ def take_screenshot(driver):
         png = driver.get_screenshot_as_png()
         bio = io.BytesIO(png)
         bio.name = f'ss_{int(time.time())}_{random.randint(100, 999)}.png'
+        del png # تحرير الذاكرة
         return bio
     except Exception as e:
         log.debug(f"Screenshot failed: {e}")
@@ -564,29 +572,28 @@ def handle_google_pages(driver, session):
 
     body_lower = body.lower()
 
-    # ── Welcome / Terms of Service Popup (النافذة الجديدة) ──
+    # ── Welcome / Terms of Service Popup ──
     if "agree and continue" in body_lower and "terms of service" in body_lower:
         try:
-            # 1. تحديد مربع الموافقة (Checkbox) والضغط عليه باستخدام جافا سكريبت لتجنب أي تداخل
+            # 1. تحديد مربع الموافقة (Checkbox)
             checkboxes = driver.find_elements(By.XPATH, 
                 "//mat-checkbox | //input[@type='checkbox'] | //*[@role='checkbox']")
             for cb in checkboxes:
                 try:
                     driver.execute_script("arguments[0].click();", cb)
-                    time.sleep(1) # ننتظر ثانية ليتفعل الزر
                 except Exception:
                     pass
+            time.sleep(1)
             
             # 2. الضغط على زر Agree and continue
             btns = driver.find_elements(By.XPATH, 
-                "//button[contains(normalize-space(.), 'Agree and continue')] | "
-                "//button[contains(normalize-space(.), 'AGREE AND CONTINUE')]")
+                "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'agree and continue')]")
             for btn in btns:
                 try:
                     if btn.is_displayed() or btn.is_enabled():
                         driver.execute_script("arguments[0].click();", btn)
                         time.sleep(3)
-                        log.info("✅ تم قبول شروط الخدمة (Terms of Service)")
+                        log.info("✅ تم قبول شروط الخدمة")
                         return "✅ Terms Accepted ✔️"
                 except Exception:
                     continue
@@ -607,11 +614,9 @@ def handle_google_pages(driver, session):
                         try:
                             btn.click()
                         except Exception:
-                            driver.execute_script(
-                                "arguments[0].click();", btn)
+                            driver.execute_script("arguments[0].click();", btn)
                         session['auth'] = True
                         time.sleep(2)
-                        log.info("✅ Authorize Cloud Shell clicked")
                         return "✅ Authorize ✔️"
                 except Exception:
                     continue
@@ -620,9 +625,7 @@ def handle_google_pages(driver, session):
         return "🔐 Authorize..."
 
     # ── Cloud Shell Continue popup ──
-    if ("cloud shell" in body_lower
-            and "continue" in body_lower
-            and "free" in body_lower):
+    if ("cloud shell" in body_lower and "continue" in body_lower and "free" in body_lower):
         try:
             btns = driver.find_elements(By.XPATH,
                 "//a[contains(text(),'Continue')]|"
@@ -636,8 +639,7 @@ def handle_google_pages(driver, session):
                         try:
                             btn.click()
                         except Exception:
-                            driver.execute_script(
-                                "arguments[0].click();", btn)
+                            driver.execute_script("arguments[0].click();", btn)
                         time.sleep(3)
                         return "✅ Continue ✔️"
                 except Exception:
@@ -666,7 +668,7 @@ def handle_google_pages(driver, session):
             pass
         return "🔐 Verify..."
 
-    # ── I understand (Updated to catch input/submit buttons) ──
+    # ── I understand ──
     try:
         btns = driver.find_elements(By.XPATH,
             "//*[contains(text(),'I understand')]|"
@@ -730,23 +732,6 @@ def handle_google_pages(driver, session):
         except Exception:
             pass
 
-    # ── Trust project ──
-    if "trust this project" in body_lower or "trust project" in body_lower:
-        try:
-            btns = driver.find_elements(By.XPATH,
-                "//button[contains(.,'Trust')]|"
-                "//button[contains(.,'Confirm')]")
-            for btn in btns:
-                try:
-                    if btn.is_displayed():
-                        btn.click()
-                        time.sleep(2)
-                        return "✅ Trust ✔️"
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
     # ── Status by URL ──
     try:
         url = driver.current_url
@@ -772,25 +757,21 @@ var callback = arguments[arguments.length - 1];
 setTimeout(function() {
     try {
         var regionClicked = false;
-        var dropdowns = document.querySelectorAll(
-            'mat-select, [role="combobox"]');
+        var dropdowns = document.querySelectorAll('mat-select, [role="combobox"]');
         for (var i = 0; i < dropdowns.length; i++) {
             var el = dropdowns[i];
             var aria = (el.getAttribute('aria-label') || '').toLowerCase();
             var id = (el.getAttribute('id') || '').toLowerCase();
-            if (aria.indexOf('region') !== -1 ||
-                id.indexOf('region') !== -1) {
+            if (aria.indexOf('region') !== -1 || id.indexOf('region') !== -1) {
                 el.click();
                 regionClicked = true;
                 break;
             }
         }
         if (!regionClicked) {
-            var labels = document.querySelectorAll(
-                'label, .mat-form-field-label');
+            var labels = document.querySelectorAll('label, .mat-form-field-label');
             for (var j = 0; j < labels.length; j++) {
-                if (labels[j].innerText &&
-                    labels[j].innerText.indexOf('Region') !== -1) {
+                if (labels[j].innerText && labels[j].innerText.indexOf('Region') !== -1) {
                     labels[j].click();
                     regionClicked = true;
                     break;
@@ -802,33 +783,25 @@ setTimeout(function() {
             return;
         }
         setTimeout(function() {
-            var options = document.querySelectorAll(
-                'mat-option, [role="option"]');
+            var options = document.querySelectorAll('mat-option, [role="option"]');
             var regions = [];
             for (var k = 0; k < options.length; k++) {
                 var opt = options[k];
                 var rect = opt.getBoundingClientRect();
                 var style = window.getComputedStyle(opt);
-                var isHidden = rect.width === 0 || rect.height === 0 ||
-                    style.display === 'none' ||
-                    style.visibility === 'hidden';
-                var isDisabled =
-                    opt.classList.contains('mat-option-disabled') ||
-                    opt.getAttribute('aria-disabled') === 'true';
+                var isHidden = rect.width === 0 || rect.height === 0 || style.display === 'none' || style.visibility === 'hidden';
+                var isDisabled = opt.classList.contains('mat-option-disabled') || opt.getAttribute('aria-disabled') === 'true';
                 if (!isHidden && !isDisabled) {
                     var txt = (opt.innerText || '').trim().split('\\n')[0];
-                    if (txt && txt.indexOf('-') !== -1 &&
-                        txt.toLowerCase().indexOf('learn') === -1) {
+                    if (txt && txt.indexOf('-') !== -1 && txt.toLowerCase().indexOf('learn') === -1) {
                         regions.push(txt);
                     }
                 }
             }
-            document.dispatchEvent(
-                new KeyboardEvent('keydown', {'key': 'Escape'}));
+            document.dispatchEvent(new KeyboardEvent('keydown', {'key': 'Escape'}));
             var backdrop = document.querySelector('.cdk-overlay-backdrop');
             if (backdrop) backdrop.click();
-            callback(regions.length > 0
-                     ? regions.join('\\n') : 'NO_REGIONS');
+            callback(regions.length > 0 ? regions.join('\\n') : 'NO_REGIONS');
         }, 1500);
     } catch(e) {
         callback('ERROR:' + e.toString());
@@ -846,57 +819,40 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
     if "run/create" not in current_url:
         try:
-            bot.send_message(chat_id,
-                "⚙️ جاري فتح صفحة Cloud Run "
-                "(مع تفعيل الـ API إن لزم الأمر)...")
-            safe_navigate(driver,
-                f"https://console.cloud.google.com/run/create"
-                f"?enableapi=true&project={pid}")
+            bot.send_message(chat_id, "⚙️ جاري فتح صفحة Cloud Run (مع تفعيل الـ API إن لزم الأمر)...")
+            safe_navigate(driver, f"https://console.cloud.google.com/run/create?enableapi=true&project={pid}")
         except Exception as e:
             log.warning(f"Cloud Run nav: {e}")
         return False
 
     try:
-        bot.send_message(chat_id,
-            "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
+        bot.send_message(chat_id, "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
 
         driver.set_script_timeout(20)
         result = driver.execute_async_script(REGION_JS)
 
         if result is None:
-            bot.send_message(chat_id,
-                "⚠️ لم يتم الحصول على نتيجة من الصفحة.")
+            bot.send_message(chat_id, "⚠️ لم يتم الحصول على نتيجة من الصفحة.")
         elif result == "NO_DROPDOWN":
-            bot.send_message(chat_id,
-                "❌ لم أتمكن من إيجاد قائمة السيرفرات (Region).")
+            bot.send_message(chat_id, "❌ لم أتمكن من إيجاد قائمة السيرفرات (Region).")
         elif result == "NO_REGIONS":
-            bot.send_message(chat_id,
-                "⚠️ فتحت القائمة لكن جميع السيرفرات مقيدة.")
+            bot.send_message(chat_id, "⚠️ فتحت القائمة لكن جميع السيرفرات مقيدة.")
         elif result.startswith("ERROR:"):
-            bot.send_message(chat_id,
-                f"⚠️ خطأ: {result[6:][:200]}")
+            bot.send_message(chat_id, f"⚠️ خطأ: {result[6:][:200]}")
         else:
             bot.send_message(chat_id,
-                f"🌍 **السيرفرات المسموحة فقط للإنشاء هي:**\n"
-                f"```text\n{result}\n```",
+                f"🌍 **السيرفرات المسموحة فقط للإنشاء هي:**\n```text\n{result}\n```",
                 parse_mode="Markdown")
             
-            # انتقال مباشر إلى Cloud Shell بعد جلب السيرفرات (Terminal فقط)
             try:
                 bot.send_message(chat_id, "🚀 جاري الانتقال مباشرة إلى Terminal (واجهة سطر الأوامر فقط)...")
-                pid = session.get('project_id')
-                
-                # الرابط المعدل: تفعيل API + تحديد المشروع + عرض Terminal فقط بدون محرر أو شرح
                 shell_url = f"https://shell.cloud.google.com/?enableapi=true&project={pid}&pli=1&show=terminal"
-                
                 safe_navigate(driver, shell_url)
             except Exception as e:
                 log.warning(f"Auto-nav to shell failed: {e}")
 
     except Exception as e:
-        bot.send_message(chat_id,
-            f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:200]}`",
-            parse_mode="Markdown")
+        bot.send_message(chat_id, f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:200]}`", parse_mode="Markdown")
 
     return True
 
@@ -909,8 +865,7 @@ def update_stream_image(driver, chat_id, session, status, flash):
     flash = not flash
     icon = "🔴" if flash else "⭕"
     now = datetime.now().strftime("%H:%M:%S")
-    proj = (f"📁 {session.get('project_id')}"
-            if session.get('project_id') else "")
+    proj = (f"📁 {session.get('project_id')}" if session.get('project_id') else "")
     t_st = " | ⌨️" if session.get('terminal_ready') else ""
 
     loading_until = session.get('shell_loading_until', 0)
@@ -930,6 +885,10 @@ def update_stream_image(driver, chat_id, session, status, flash):
         message_id=session['msg_id'],
         reply_markup=panel(session.get('cmd_mode', False))
     )
+    
+    # تنظيف الذاكرة (Garbage Collection لتقليل انهيار المتصفح)
+    bio.close()
+    del png 
     return flash
 
 
@@ -998,8 +957,7 @@ def stream_loop(chat_id, gen):
 
             # ═══ Step 4: UPDATE SCREENSHOT FIRST ═══
             try:
-                flash = update_stream_image(
-                    driver, chat_id, session, status, flash)
+                flash = update_stream_image(driver, chat_id, session, status, flash)
                 err_count = 0
                 drv_err = 0
             except Exception as e:
@@ -1009,19 +967,21 @@ def stream_loop(chat_id, gen):
 
             # ═══ Step 5: Background tasks ═══
 
-            on_console = ("console.cloud.google.com" in current_url
-                          or "myaccount.google.com" in current_url)
+            on_console = ("console.cloud.google.com" in current_url or "myaccount.google.com" in current_url)
             on_shell = is_on_shell_page(driver)
 
-            # 5A: Cloud Run region extraction
-            if (session.get('project_id')
-                    and not session.get('run_api_checked')
-                    and on_console):
+            # 5A: Cloud Run region extraction (المكان الذي تم إصلاحه)
+            if session.get('project_id') and not session.get('run_api_checked') and on_console:
                 
-                # الانتظار حتى نتأكد أنه لا توجد أزرار يتم الضغط عليها وأنه ليس في صفحة دخول أو تحدي
-                if (status != "مراقبة..." and status != "📊 Console") or "signin" in current_url.lower() or "challenge" in current_url.lower() or "speedbump" in current_url.lower():
+                # ننتظر فقط إذا كان البوت يضغط على شروط الخدمة أو في صفحات الدخول
+                # أي حالة أخرى مثل "مراقبة..." أو "📊 Console" ستجعله ينطلق لفتح Cloud Run.
+                is_handling_popup = status not in ["مراقبة...", "📊 Console", "✅ Terminal ⌨️"]
+                is_on_auth_url = any(k in current_url.lower() for k in ["signin", "challenge", "speedbump", "accounts.google.com"])
+                
+                if is_handling_popup or is_on_auth_url:
                     pass # ننتظر
                 else:
+                    gc.collect() # مسح الذاكرة قبل فتح Cloud Run لتجنب Crash
                     done = do_cloud_run_extraction(driver, chat_id, session)
                     if done:
                         session['run_api_checked'] = True
@@ -1037,16 +997,15 @@ def stream_loop(chat_id, gen):
                             bot.send_message(chat_id,
                                 "🖥️ **Terminal جاهز تماماً للاستخدام!** ✅\n\n"
                                 "تم تفعيل **⌨️ وضع الأوامر** تلقائياً.\n"
-                                "يمكنك الآن إرسال أوامرك مباشرة كرسالة عادية (مثل `ls -la`).",
+                                "يمكنك الآن إرسال أوامرك مباشرة كرسالة عادية.",
                                 parse_mode="Markdown")
                             
-                            # تحديث اللوحة فوراً لتوضيح أننا في وضع الأوامر
                             update_stream_image(driver, chat_id, session, "✅ Terminal Ready", flash)
                         except Exception:
                             pass
 
             # Memory cleanup
-            if cycle % 15 == 0:
+            if cycle % 10 == 0:
                 gc.collect()
 
         except Exception as e:
@@ -1059,7 +1018,6 @@ def stream_loop(chat_id, gen):
                 time.sleep(2)
                 continue
 
-            # Grace period during Cloud Shell loading
             loading_until = session.get('shell_loading_until', 0)
             if time.time() < loading_until:
                 log.info(f"⏳ Shell loading, ignoring: {str(e)[:80]}")
@@ -1077,8 +1035,7 @@ def stream_loop(chat_id, gen):
                 drv_err += 1
                 if drv_err >= 3:
                     try:
-                        bot.send_message(chat_id,
-                            "⚠️ إعادة تشغيل المتصفح...")
+                        bot.send_message(chat_id, "⚠️ إعادة تشغيل المتصفح...")
                     except Exception:
                         pass
                     try:
@@ -1182,6 +1139,8 @@ def start_stream(chat_id, url):
         bio.name = f's_{int(time.time())}.png'
         msg = bot.send_photo(chat_id, bio,
             caption="🔴 بث 🕶️\n📌 بدء...", reply_markup=panel())
+        bio.close()
+        del png
 
         with sessions_lock:
             session['msg_id'] = msg.message_id
@@ -1245,15 +1204,11 @@ def execute_command(chat_id, command):
         if text_after and text_after != text_before:
             if len(text_after) > len(text_before):
                 new_part = text_after[len(text_before):].strip()
-                output_text = (
-                    new_part if new_part
-                    else extract_command_result(text_after, command) or "")
+                output_text = (new_part if new_part else extract_command_result(text_after, command) or "")
             else:
-                output_text = (
-                    extract_command_result(text_after, command) or "")
+                output_text = (extract_command_result(text_after, command) or "")
         elif text_after:
-            output_text = (
-                extract_command_result(text_after, command) or "")
+            output_text = (extract_command_result(text_after, command) or "")
 
         if output_text:
             lines = output_text.split('\n')
@@ -1270,8 +1225,7 @@ def execute_command(chat_id, command):
 
         if output_text:
             if len(output_text) > 3900:
-                output_text = (
-                    output_text[:3900] + "\n... (تم اقتطاع النص)")
+                output_text = (output_text[:3900] + "\n... (تم اقتطاع النص)")
             try:
                 bot.send_message(chat_id,
                     f"✅ **الأمر:**\n`{command}`\n\n"
@@ -1300,9 +1254,9 @@ def execute_command(chat_id, command):
                     reply_markup=panel(cmd_mode=True))
             except Exception:
                 pass
+            bio.close()
     else:
-        bot.send_message(chat_id,
-            "⚠️ فشل الإرسال.\n🔄 تحديث ثم أعد")
+        bot.send_message(chat_id, "⚠️ فشل الإرسال.\n🔄 تحديث ثم أعد")
 
     try:
         bot.delete_message(chat_id, status_msg.message_id)
@@ -1348,6 +1302,7 @@ def cmd_ss(message):
     bio = take_screenshot(driver)
     if bio:
         bot.send_photo(cid, bio, caption="📸")
+        bio.close()
     else:
         bot.reply_to(message, "❌")
 
@@ -1433,6 +1388,7 @@ def on_cb(call):
                 if bio:
                     bot.send_photo(cid, bio, caption="📸",
                         reply_markup=panel(s.get('cmd_mode', False)))
+                    bio.close()
 
         elif call.data == "cmd_mode":
             s['cmd_mode'] = True
@@ -1461,14 +1417,23 @@ def on_cb(call):
 
 if __name__ == '__main__':
     print("=" * 50)
-    print("🚂 Terminal Control + Output Reading")
+    print("🚂 Terminal Control + Output Reading (RAM Optimized & Conflict Fixed)")
     print(f"🌐 Port: {os.environ.get('PORT', 8080)}")
     print("=" * 50)
+    
     threading.Thread(target=start_health_server, daemon=True).start()
+    
+    # حل مشكلة التعارض 409: إزالة أي Webhooks قديمة قد تسبب تداخلاً
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except Exception as e:
+        log.warning(f"Webhook removal failed: {e}")
+
     while True:
         try:
-            bot.polling(non_stop=True, timeout=60,
-                        long_polling_timeout=60)
+            # إضافة skip_pending=True لضمان تجاهل الرسائل القديمة المتراكمة وتجنب الـ Conflict
+            bot.polling(non_stop=True, skip_pending=True, timeout=60, long_polling_timeout=60)
         except Exception as e:
             log.error(f"Polling error: {e}")
             time.sleep(5)
