@@ -615,93 +615,77 @@ def _focus_terminal(driver):
 
 
 def send_command(driver, command):
-    """إرسال أمر للتيرمنال بضخ سريع وموثوق يضمن ضغط زر الإدخال (Enter)"""
+    """إرسال أمر للتيرمنال بصورة ذكية ومباشرة عن طريق اللصق وضغط ENTER"""
     if not driver:
         return False
 
     _focus_terminal(driver)
+    
+    # 1. إزالة مسافة الإدخال الافتراضية من النهاية لمنع التعارض في اللصق
+    command_clean = command.rstrip('\n')
 
-    def inject_keys(el, text):
-        text = text.strip()
-        # ضخ الكود (كالـ Base64) على أجزاء سريعة جداً حتى لا يتجمد المتصفح
-        chunk_size = 200
-        for i in range(0, len(text), chunk_size):
-            el.send_keys(text[i:i+chunk_size])
-            time.sleep(0.01)
-        # الضغط المضمون على ENTER
-        el.send_keys(Keys.RETURN)
-
-    # ── الطريقة 1: textarea عبر JS ──
+    # 💡 الحل الذكي: حقن النص (اللصق) داخل المتصفح ليكون فورياً
+    js_paste = """
+    var text = arguments[0];
+    function getTa() {
+        var ta = document.querySelector('.xterm-helper-textarea');
+        if (ta) return ta;
+        var frames = document.querySelectorAll('iframe');
+        for (var i=0; i<frames.length; i++) {
+            try { ta = frames[i].contentDocument.querySelector('.xterm-helper-textarea'); if (ta) return ta; } catch(e) {}
+        }
+        return null;
+    }
+    var ta = getTa();
+    if (ta) {
+        ta.focus();
+        var dt = new DataTransfer();
+        dt.setData('text/plain', text);
+        var ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true });
+        ta.dispatchEvent(ev);
+        return true;
+    }
+    return false;
+    """
+    
     try:
-        found = driver.execute_script("""
-            function f(doc){
-                var ta=doc.querySelector('.xterm-helper-textarea');
-                if(ta) return ta;
-                var all=doc.querySelectorAll('textarea');
-                for(var i=0;i<all.length;i++){
-                    if(all[i].className.indexOf('xterm')!==-1
-                       || all[i].closest('.xterm')
-                       || all[i].closest('.terminal')) return all[i];
-                }
-                return null;
-            }
-            var ta=f(document);
-            if(!ta){
-                var fr=document.querySelectorAll('iframe');
-                for(var i=0;i<fr.length;i++){
-                    try{ta=f(fr[i].contentDocument);if(ta)break;}catch(e){}
-                }
-            }
-            if(ta){ta.focus();return ta;}
-            return null;
-        """)
-        if found:
-            time.sleep(0.2)
-            inject_keys(found, command)
-            log.info(f"⌨️ [textarea] ← sent {len(command)} chars")
+        success = driver.execute_script(js_paste, command_clean)
+        if success:
+            time.sleep(0.5) # وقت قصير لضمان ظهور النص
+            # 2. نضغط ENTER بشكل منفصل وحقيقي لضمان التنفيذ (حل مشكلة عدم الضغط)
+            ActionChains(driver).send_keys(Keys.RETURN).perform()
+            log.info(f"📋 [Paste + Enter] ← Injected {len(command_clean)} chars")
             return True
     except Exception as e:
-        log.debug(f"M1: {e}")
+        log.debug(f"JS Paste failed: {e}")
 
-    # ── الطريقة 2: نقر على عنصر xterm ──
-    try:
-        els = driver.find_elements(
-            By.CSS_SELECTOR,
-            ".xterm-screen, .xterm-rows, canvas.xterm-link-layer, "
-            ".xterm, [class*='xterm']",
-        )
-        for el in els:
-            try:
-                if el.is_displayed() and el.size["width"] > 100:
-                    ActionChains(driver).move_to_element(el).click().perform()
-                    time.sleep(0.3)
-                    active = driver.switch_to.active_element
-                    inject_keys(active, command)
-                    log.info(f"⌨️ [click] ← sent {len(command)} chars")
-                    return True
-            except Exception:
+    # --- Fallback في حال فشل اللصق ---
+    def inject_keys(el, text):
+        lines = text.strip().split('\n')
+        for line in lines:
+            if not line:
+                ActionChains(driver).send_keys(Keys.RETURN).perform()
                 continue
-    except Exception as e:
-        log.debug(f"M2: {e}")
+            chunk_size = 50
+            for j in range(0, len(line), chunk_size):
+                ActionChains(driver).send_keys(line[j:j+chunk_size]).perform()
+                time.sleep(0.01)
+            ActionChains(driver).send_keys(Keys.RETURN).perform()
+            time.sleep(0.02)
 
-    # ── الطريقة 3: active element ──
     try:
         driver.execute_script("""
-            var el = document.querySelector('.xterm-helper-textarea')
-                  || document.querySelector('.xterm-screen')
-                  || document.querySelector('.xterm');
+            var el = document.querySelector('.xterm-helper-textarea') || document.querySelector('.xterm-screen');
             if(el) el.focus();
         """)
         time.sleep(0.2)
         active = driver.switch_to.active_element
         inject_keys(active, command)
-        log.info(f"⌨️ [active] ← sent {len(command)} chars")
+        log.info(f"⌨️ [Fallback keys] ← sent {len(command)} chars")
         return True
     except Exception as e:
-        log.debug(f"M3: {e}")
-
-    log.warning(f"❌ فشل إرسال الأمر: {command[:60]}")
-    return False
+        log.error(f"Fallback send keys failed: {e}")
+        return False
 
 
 def read_terminal(driver):
@@ -1041,7 +1025,9 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
 def _generate_vless_cmd(region, token, chat_id):
     """توليد السكريبت بترميز Base64 لمنع تجمد التيرمنال، 
-    واستخدام HTML tags في أوامر Curl لمنع تعطل Bash عن إرسال الرسالة!"""
+    واستخدام المتغيرات الصحيحة في رسالة التليجرام عبر وسوم HTML لتفادي أخطاء Bash!"""
+    
+    # 💡 استخدمنا رسالة داخل متغير في Bash لضمان عدم حدوث خطأ command not found
     script = f"""#!/bin/bash
 REGION="{region}"
 SERVICE_NAME="ocx-server-max"
@@ -1053,7 +1039,7 @@ echo "========================================="
 mkdir -p ~/vless-cloudrun-final
 cd ~/vless-cloudrun-final
 
-cat << EOC > config.json
+cat << 'EOC' > config.json
 {{
     "inbounds": [
         {{
@@ -1085,7 +1071,7 @@ cat << EOC > config.json
 }}
 EOC
 
-cat << EOF > Dockerfile
+cat << 'EOF' > Dockerfile
 FROM teddysun/xray:latest
 COPY config.json /etc/xray/config.json
 EXPOSE 8080
@@ -1118,18 +1104,20 @@ echo "🌐 الرابط الخاص بك: $SERVICE_URL"
 echo "🔑 الـ UUID الخاص بك: $UUID"
 echo "========================================="
 
-curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
-    -d chat_id="{chat_id}" \\
-    -d parse_mode="HTML" \\
-    --data-urlencode text="✅ <b>اكتمل إنشاء سيرفر VLESS بنجاح!</b>
+MSG="✅ <b>اكتمل إنشاء سيرفر VLESS بنجاح!</b>
 
 🌍 <b>السيرفر:</b> <code>$REGION</code>
 🌐 <b>الرابط:</b> <code>$SERVICE_URL</code>
 🔑 <b>UUID:</b> <code>$UUID</code>"
+
+curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
+    -d chat_id="{chat_id}" \\
+    -d parse_mode="HTML" \\
+    -d text="$MSG"
 """
-    # تحويل السكريبت إلى Base64 وتمريره مباشرة إلى Bash
+    # تحويل السكريبت إلى Base64 وتمريره مباشرة إلى Bash وحفظه في ملف لضمان تشغيله بشكل نظيف
     b64 = base64.b64encode(script.encode('utf-8')).decode('utf-8')
-    return f"echo {b64} | base64 -d | bash\n"
+    return f"echo {b64} | base64 -d > deploy_vless.sh && bash deploy_vless.sh"
 
 
 # ╔═══════════════════════════════════════════════════════╗
