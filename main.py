@@ -207,24 +207,29 @@ def patch_driver(orig):
         if PATCHED_DRIVER_PATH and os.path.exists(PATCHED_DRIVER_PATH):
             return PATCHED_DRIVER_PATH
 
-        dst = "/tmp/chromedriver_patched"
+        # 💡 الطريقة الذكية: قراءة الملف الأصلي وتعديله في الذاكرة (RAM) مباشرةً 
+        # ثم إنشاء ملف جديد كلياً باسم يعتمد على معرف العملية (PID)
+        # هذا يمنع تماماً خطأ Text file busy ويزيد سرعة التنفيذ بشكل ملحوظ.
+        dst = f"/tmp/chromedriver_patched_{os.getpid()}_{random.randint(1000, 9999)}"
+        
         try:
-            if os.path.exists(dst):
-                os.remove(dst)
-        except OSError:
-            # إذا كان الملف محجوزاً (Text file busy)، ننشئ اسماً فريداً
-            dst = f"/tmp/chromedriver_patched_{random.randint(1000, 9999)}"
-
-        shutil.copy2(orig, dst)
-        os.chmod(dst, 0o755)
-        with open(dst, "r+b") as f:
-            data = f.read()
+            with open(orig, "rb") as f:
+                data = f.read()
+                
             cnt = data.count(b"cdc_")
             if cnt:
-                f.seek(0)
-                f.write(data.replace(b"cdc_", b"aaa_"))
-                log.info(f"🔧 chromedriver: {cnt} markers patched")
-        PATCHED_DRIVER_PATH = dst
+                data = data.replace(b"cdc_", b"aaa_")
+                log.info(f"🔧 chromedriver: {cnt} markers patched in memory")
+                
+            with open(dst, "wb") as f:
+                f.write(data)
+                
+            os.chmod(dst, 0o755)
+            PATCHED_DRIVER_PATH = dst
+        except Exception as e:
+            log.error(f"❌ Patching failed: {e}")
+            return orig  # العودة للملف الأصلي كإجراء احتياطي حتى لا يتعطل البوت
+
     return dst
 
 
@@ -612,21 +617,22 @@ def _focus_terminal(driver):
 
 
 def send_command(driver, command):
-    """إرسال أمر للتيرمنال مع دعم الأوامر الطويلة جداً"""
+    """إرسال أمر للتيرمنال بثلاث طرق احتياطية"""
     if not driver:
         return False
 
     _focus_terminal(driver)
 
     def inject_keys(el, text):
-        # إذا كان الأمر طويلاً (مثل سكريبت Base64)، نرسله على دفعات سريعة لتجنب التوقف
+        # 💡 الحل الذكي لمشكلة التوقف (ActionChains Memory Limit):
+        # تقسيم الكود الطويل جداً إلى أجزاء (Chunks) وإرساله بسرعة الصاروخ،
+        # بينما يتم إرسال الأوامر القصيرة بشكل يبدو بشرياً لتجنب الحظر.
         if len(text) > 150:
             chunk_size = 200
             for i in range(0, len(text), chunk_size):
                 el.send_keys(text[i:i+chunk_size])
                 time.sleep(0.05)
         else:
-            # طباعة بشرية واقعية للأوامر القصيرة
             for ch in text:
                 el.send_keys(ch)
                 time.sleep(random.uniform(0.01, 0.04))
@@ -664,23 +670,7 @@ def send_command(driver, command):
     except Exception as e:
         log.debug(f"M1: {e}")
 
-    # ── الطريقة 2: Active Element ──
-    try:
-        driver.execute_script("""
-            var el = document.querySelector('.xterm-helper-textarea')
-                  || document.querySelector('.xterm-screen')
-                  || document.querySelector('.xterm');
-            if(el) el.focus();
-        """)
-        time.sleep(0.2)
-        active = driver.switch_to.active_element
-        inject_keys(active, command)
-        log.info(f"⌨️ [active] ← {command[:60]}")
-        return True
-    except Exception as e:
-        log.debug(f"M2: {e}")
-
-    # ── الطريقة 3: نقر على عنصر xterm ──
+    # ── الطريقة 2: نقر على عنصر xterm ──
     try:
         els = driver.find_elements(
             By.CSS_SELECTOR,
@@ -698,6 +688,22 @@ def send_command(driver, command):
                     return True
             except Exception:
                 continue
+    except Exception as e:
+        log.debug(f"M2: {e}")
+
+    # ── الطريقة 3: active element ──
+    try:
+        driver.execute_script("""
+            var el = document.querySelector('.xterm-helper-textarea')
+                  || document.querySelector('.xterm-screen')
+                  || document.querySelector('.xterm');
+            if(el) el.focus();
+        """)
+        time.sleep(0.2)
+        active = driver.switch_to.active_element
+        inject_keys(active, command)
+        log.info(f"⌨️ [active] ← {command[:60]}")
+        return True
     except Exception as e:
         log.debug(f"M3: {e}")
 
