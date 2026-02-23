@@ -20,7 +20,6 @@ import subprocess
 import json
 import logging
 import signal
-import base64
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telebot.types import (
@@ -207,9 +206,7 @@ def patch_driver(orig):
         if PATCHED_DRIVER_PATH and os.path.exists(PATCHED_DRIVER_PATH):
             return PATCHED_DRIVER_PATH
 
-        # 💡 الطريقة الذكية: قراءة الملف الأصلي وتعديله في الذاكرة (RAM) مباشرةً 
-        # ثم إنشاء ملف جديد كلياً باسم يعتمد على معرف العملية (PID)
-        # هذا يمنع تماماً خطأ Text file busy ويزيد سرعة التنفيذ بشكل ملحوظ.
+        # 💡 قراءة الملف الأصلي وتعديله في الذاكرة لتجنب خطأ (Text file busy)
         dst = f"/tmp/chromedriver_patched_{os.getpid()}_{random.randint(1000, 9999)}"
         
         try:
@@ -228,7 +225,7 @@ def patch_driver(orig):
             PATCHED_DRIVER_PATH = dst
         except Exception as e:
             log.error(f"❌ Patching failed: {e}")
-            return orig  # العودة للملف الأصلي كإجراء احتياطي حتى لا يتعطل البوت
+            return orig
 
     return dst
 
@@ -425,7 +422,7 @@ def _new_session_dict(driver, url, project_id, gen):
         "gen": gen,
         "run_api_checked": False,
         "shell_loading_until": 0,
-        "waiting_for_region": False,    # ← متغير جديد لانتظار اختيار المستخدم
+        "waiting_for_region": False,    # ← لانتظار اختيار المستخدم
         "selected_region": None,        # ← السيرفر المختار
         "vless_installed": False,       # ← تم التثبيت أم لا
         "created_at": time.time(),
@@ -617,26 +614,31 @@ def _focus_terminal(driver):
 
 
 def send_command(driver, command):
-    """إرسال أمر للتيرمنال بثلاث طرق احتياطية"""
+    """إرسال أمر للتيرمنال مع دعم الأسطر والنصوص المتعددة بذكاء"""
     if not driver:
         return False
 
     _focus_terminal(driver)
 
     def inject_keys(el, text):
-        # 💡 الحل الذكي لمشكلة التوقف (ActionChains Memory Limit):
-        # تقسيم الكود الطويل جداً إلى أجزاء (Chunks) وإرساله بسرعة الصاروخ،
-        # بينما يتم إرسال الأوامر القصيرة بشكل يبدو بشرياً لتجنب الحظر.
-        if len(text) > 150:
-            chunk_size = 200
-            for i in range(0, len(text), chunk_size):
-                el.send_keys(text[i:i+chunk_size])
+        """تقسيم النص إلى أسطر لضمان عدم امتلاء الذاكرة وكتابته بدقة"""
+        lines = text.strip().split('\n')
+        for i, line in enumerate(lines):
+            # تجاوز الأسطر الفارغة
+            if not line:
+                el.send_keys(Keys.RETURN)
                 time.sleep(0.05)
-        else:
-            for ch in text:
-                el.send_keys(ch)
-                time.sleep(random.uniform(0.01, 0.04))
-        el.send_keys(Keys.RETURN)
+                continue
+                
+            # إرسال السطر على شكل دفعات لتفادي تجمد المتصفح
+            chunk_size = 150
+            for j in range(0, len(line), chunk_size):
+                el.send_keys(line[j:j+chunk_size])
+                time.sleep(0.02)
+            
+            # ضغط Enter بعد كل سطر
+            el.send_keys(Keys.RETURN)
+            time.sleep(0.05)
 
     # ── الطريقة 1: textarea عبر JS ──
     try:
@@ -665,7 +667,7 @@ def send_command(driver, command):
         if found:
             time.sleep(0.2)
             inject_keys(found, command)
-            log.info(f"⌨️ [textarea] ← {command[:60]}")
+            log.info(f"⌨️ [textarea] ← sent {len(command)} chars")
             return True
     except Exception as e:
         log.debug(f"M1: {e}")
@@ -684,7 +686,7 @@ def send_command(driver, command):
                     time.sleep(0.3)
                     active = driver.switch_to.active_element
                     inject_keys(active, command)
-                    log.info(f"⌨️ [click] ← {command[:60]}")
+                    log.info(f"⌨️ [click] ← sent {len(command)} chars")
                     return True
             except Exception:
                 continue
@@ -702,12 +704,12 @@ def send_command(driver, command):
         time.sleep(0.2)
         active = driver.switch_to.active_element
         inject_keys(active, command)
-        log.info(f"⌨️ [active] ← {command[:60]}")
+        log.info(f"⌨️ [active] ← sent {len(command)} chars")
         return True
     except Exception as e:
         log.debug(f"M3: {e}")
 
-    log.warning(f"❌ فشل إرسال الأمر: {command[:60]}")
+    log.warning(f"❌ فشل إرسال الأمر")
     return False
 
 
@@ -1048,8 +1050,9 @@ def do_cloud_run_extraction(driver, chat_id, session):
 # ╚═══════════════════════════════════════════════════════╝
 
 def _generate_vless_cmd(region, token, chat_id):
-    """توليد أمر حقن سكريبت VLESS باستخدام Base64 لضمان العمل 100%"""
-    script = f"""#!/bin/bash
+    """توليد سكريبت VLESS وكتابته في ملف .sh مباشرة سطرًا بسطر لتفادي مشكلة الذاكرة"""
+    script = f"""cat << 'EOF_VLESS' > deploy_vless.sh
+#!/bin/bash
 REGION="{region}"
 SERVICE_NAME="ocx-server-max"
 UUID=$(cat /proc/sys/kernel/random/uuid)
@@ -1061,7 +1064,7 @@ rm -rf ~/vless-cloudrun-final
 mkdir -p ~/vless-cloudrun-final
 cd ~/vless-cloudrun-final
 
-cat <<EOC > config.json
+cat << 'EOC' > config.json
 {{
     "inbounds": [
         {{
@@ -1093,12 +1096,12 @@ cat <<EOC > config.json
 }}
 EOC
 
-cat <<EOF > Dockerfile
+cat << 'EOD' > Dockerfile
 FROM teddysun/xray:latest
 COPY config.json /etc/xray/config.json
 EXPOSE 8080
 CMD ["xray", "-config", "/etc/xray/config.json"]
-EOF
+EOD
 
 echo "========================================="
 echo "⚡ جاري بناء ونشر سيرفر VLESS..."
@@ -1126,15 +1129,14 @@ echo "🌐 الرابط الخاص بك: $SERVICE_URL"
 echo "🔑 الـ UUID الخاص بك: $UUID"
 echo "========================================="
 
-# إرسال النتيجة إلى محادثة تيليجرام مباشرة
 curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
     -d chat_id="{chat_id}" \\
     -d text="✅ **اكتمل إنشاء سيرفر VLESS بنجاح!**%0A%0A🌍 **السيرفر:** \`$REGION\`%0A🌐 **الرابط:** \`$SERVICE_URL\`%0A🔑 **UUID:** \`$UUID\`" \\
     -d parse_mode="Markdown"
+EOF_VLESS
+bash deploy_vless.sh
 """
-    # تشفير الكود وإرجاع أمر واحد يُنفذ في التيرمنال
-    b64 = base64.b64encode(script.encode('utf-8')).decode('utf-8')
-    return f"echo {b64} | base64 -d > deploy_vless.sh && bash deploy_vless.sh\n"
+    return script.strip()
 
 
 # ╔═══════════════════════════════════════════════════════╗
