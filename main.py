@@ -1025,9 +1025,8 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
 def _generate_vless_cmd(region, token, chat_id):
     """توليد السكريبت بترميز Base64 لمنع تجمد التيرمنال، 
-    واستخدام المتغيرات الصحيحة في رسالة التليجرام عبر وسوم HTML لتفادي أخطاء Bash!"""
+    واستخدام المتغيرات الصحيحة في رسالة التليجرام لإنشاء رابط VLESS جاهز!"""
     
-    # 💡 استخدمنا رسالة داخل متغير في Bash لضمان عدم حدوث خطأ command not found
     script = f"""#!/bin/bash
 REGION="{region}"
 SERVICE_NAME="ocx-server-max"
@@ -1039,6 +1038,7 @@ echo "========================================="
 mkdir -p ~/vless-cloudrun-final
 cd ~/vless-cloudrun-final
 
+# تم تعديل المسار هنا ليكون /@O_C_X7 بناءً على طلبك
 cat << 'EOC' > config.json
 {{
     "inbounds": [
@@ -1057,7 +1057,7 @@ cat << 'EOC' > config.json
             "streamSettings": {{
                 "network": "ws",
                 "wsSettings": {{
-                    "path": "/vless"
+                    "path": "/@O_C_X7"
                 }}
             }}
         }}
@@ -1098,6 +1098,12 @@ gcloud run deploy $SERVICE_NAME \\
 
 SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)')
 
+# استخراج الهوست النظيف بدون https://
+CLEAN_HOST=${{SERVICE_URL#https://}}
+
+# بناء رابط VLESS المباشر بالخصائص التي طلبتها
+VLESS_LINK="vless://${{UUID}}@googlevideo.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${{CLEAN_HOST}}&type=ws&sni=googlevideo.com#𝗢 𝗖 𝗫 ⚡"
+
 echo "========================================="
 echo "✅ تم إنشاء السيرفر بنجاح!"
 echo "🌐 الرابط الخاص بك: $SERVICE_URL"
@@ -1107,13 +1113,14 @@ echo "========================================="
 MSG="✅ <b>اكتمل إنشاء سيرفر VLESS بنجاح!</b>
 
 🌍 <b>السيرفر:</b> <code>$REGION</code>
-🌐 <b>الرابط:</b> <code>$SERVICE_URL</code>
-🔑 <b>UUID:</b> <code>$UUID</code>"
+
+🚀 <b>رابط VLESS المباشر (اضغط للنسخ):</b>
+<code>$VLESS_LINK</code>"
 
 curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
     -d chat_id="{chat_id}" \\
     -d parse_mode="HTML" \\
-    -d text="$MSG"
+    --data-urlencode text="$MSG"
 """
     # تحويل السكريبت إلى Base64 وتمريره مباشرة إلى Bash وحفظه في ملف لضمان تشغيله بشكل نظيف
     b64 = base64.b64encode(script.encode('utf-8')).decode('utf-8')
