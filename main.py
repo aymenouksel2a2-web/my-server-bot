@@ -199,9 +199,22 @@ def browser_version(path):
         return "120"
 
 
+PATCHED_DRIVER_PATH = None
+
 def patch_driver(orig):
+    global PATCHED_DRIVER_PATH
     with chromedriver_lock:
+        if PATCHED_DRIVER_PATH and os.path.exists(PATCHED_DRIVER_PATH):
+            return PATCHED_DRIVER_PATH
+
         dst = "/tmp/chromedriver_patched"
+        try:
+            if os.path.exists(dst):
+                os.remove(dst)
+        except OSError:
+            # إذا كان الملف محجوزاً (Text file busy)، ننشئ اسماً فريداً
+            dst = f"/tmp/chromedriver_patched_{random.randint(1000, 9999)}"
+
         shutil.copy2(orig, dst)
         os.chmod(dst, 0o755)
         with open(dst, "r+b") as f:
@@ -211,6 +224,7 @@ def patch_driver(orig):
                 f.seek(0)
                 f.write(data.replace(b"cdc_", b"aaa_"))
                 log.info(f"🔧 chromedriver: {cnt} markers patched")
+        PATCHED_DRIVER_PATH = dst
     return dst
 
 
@@ -597,20 +611,26 @@ def _focus_terminal(driver):
         pass
 
 
-def _type_human(actions, text):
-    """طباعة بشرية مع تأخير عشوائي"""
-    for ch in text:
-        actions.send_keys(ch)
-        actions.pause(random.uniform(0.02, 0.06))
-    actions.send_keys(Keys.RETURN)
-
-
 def send_command(driver, command):
-    """إرسال أمر للتيرمنال بثلاث طرق احتياطية"""
+    """إرسال أمر للتيرمنال مع دعم الأوامر الطويلة جداً"""
     if not driver:
         return False
 
     _focus_terminal(driver)
+
+    def inject_keys(el, text):
+        # إذا كان الأمر طويلاً (مثل سكريبت Base64)، نرسله على دفعات سريعة لتجنب التوقف
+        if len(text) > 150:
+            chunk_size = 200
+            for i in range(0, len(text), chunk_size):
+                el.send_keys(text[i:i+chunk_size])
+                time.sleep(0.05)
+        else:
+            # طباعة بشرية واقعية للأوامر القصيرة
+            for ch in text:
+                el.send_keys(ch)
+                time.sleep(random.uniform(0.01, 0.04))
+        el.send_keys(Keys.RETURN)
 
     # ── الطريقة 1: textarea عبر JS ──
     try:
@@ -633,20 +653,34 @@ def send_command(driver, command):
                     try{ta=f(fr[i].contentDocument);if(ta)break;}catch(e){}
                 }
             }
-            if(ta){ta.focus();return true;}
-            return false;
+            if(ta){ta.focus();return ta;}
+            return null;
         """)
         if found:
             time.sleep(0.2)
-            act = ActionChains(driver)
-            _type_human(act, command)
-            act.perform()
+            inject_keys(found, command)
             log.info(f"⌨️ [textarea] ← {command[:60]}")
             return True
     except Exception as e:
         log.debug(f"M1: {e}")
 
-    # ── الطريقة 2: نقر على عنصر xterm ──
+    # ── الطريقة 2: Active Element ──
+    try:
+        driver.execute_script("""
+            var el = document.querySelector('.xterm-helper-textarea')
+                  || document.querySelector('.xterm-screen')
+                  || document.querySelector('.xterm');
+            if(el) el.focus();
+        """)
+        time.sleep(0.2)
+        active = driver.switch_to.active_element
+        inject_keys(active, command)
+        log.info(f"⌨️ [active] ← {command[:60]}")
+        return True
+    except Exception as e:
+        log.debug(f"M2: {e}")
+
+    # ── الطريقة 3: نقر على عنصر xterm ──
     try:
         els = driver.find_elements(
             By.CSS_SELECTOR,
@@ -658,32 +692,12 @@ def send_command(driver, command):
                 if el.is_displayed() and el.size["width"] > 100:
                     ActionChains(driver).move_to_element(el).click().perform()
                     time.sleep(0.3)
-                    act = ActionChains(driver)
-                    _type_human(act, command)
-                    act.perform()
+                    active = driver.switch_to.active_element
+                    inject_keys(active, command)
                     log.info(f"⌨️ [click] ← {command[:60]}")
                     return True
             except Exception:
                 continue
-    except Exception as e:
-        log.debug(f"M2: {e}")
-
-    # ── الطريقة 3: active element ──
-    try:
-        driver.execute_script("""
-            var el = document.querySelector('.xterm-helper-textarea')
-                  || document.querySelector('.xterm-screen')
-                  || document.querySelector('.xterm');
-            if(el) el.focus();
-        """)
-        time.sleep(0.2)
-        active = driver.switch_to.active_element
-        for ch in command:
-            active.send_keys(ch)
-            time.sleep(random.uniform(0.01, 0.04))
-        active.send_keys(Keys.RETURN)
-        log.info(f"⌨️ [active] ← {command[:60]}")
-        return True
     except Exception as e:
         log.debug(f"M3: {e}")
 
