@@ -1,7 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════╗
 ║  🤖 Google Cloud Shell — Telegram Bot                    ║
-║  📌 Premium Edition v2.0                                 ║
+║  📌 Premium Edition v2.0 (With VLESS Auto Deploy)        ║
 ║  🔧 Railway Optimized · Low RAM · Anti-Detection         ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -20,6 +20,7 @@ import subprocess
 import json
 import logging
 import signal
+import base64
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telebot.types import (
@@ -47,7 +48,7 @@ class Config:
 
     TOKEN = os.environ.get("BOT_TOKEN")
     PORT = int(os.environ.get("PORT", 8080))
-    VERSION = "2.0"
+    VERSION = "2.0-VLESS"
 
     # ── المتصفح ──
     PAGE_LOAD_TIMEOUT = 45
@@ -405,8 +406,11 @@ def _new_session_dict(driver, url, project_id, gen):
         "gen": gen,
         "run_api_checked": False,
         "shell_loading_until": 0,
+        "waiting_for_region": False,    # ← متغير جديد لانتظار اختيار المستخدم
+        "selected_region": None,        # ← السيرفر المختار
+        "vless_installed": False,       # ← تم التثبيت أم لا
         "created_at": time.time(),
-        "cmd_history": [],        # ← جديد: سجل الأوامر
+        "cmd_history": [],
         "last_activity": time.time(),
     }
 
@@ -992,28 +996,23 @@ def do_cloud_run_extraction(driver, chat_id, session):
         elif result.startswith("ERROR:"):
             send_safe(chat_id, f"⚠️ خطأ: {result[6:][:200]}")
         else:
+            # ── تم التعديل هنا: تحويل السيرفرات إلى أزرار وإيقاف الانتقال التلقائي ──
+            regions = [r.strip() for r in result.split("\n") if r.strip()]
+            mk = InlineKeyboardMarkup(row_width=1)
+            for r in regions:
+                region_code = r.split()[0]  # يستخرج us-east1 من (us-east1 (South Carolina
+                mk.add(InlineKeyboardButton(r, callback_data=f"setreg_{region_code}"))
+
             send_safe(
                 chat_id,
-                f"🌍 **السيرفرات المسموحة للإنشاء:**\n"
-                f"```\n{result}\n```",
+                "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:",
+                reply_markup=mk,
                 parse_mode="Markdown",
             )
-
-            # ── الانتقال التلقائي لـ Terminal ──
-            send_safe(chat_id, "🚀 جاري الانتقال إلى Terminal...")
-            try:
-                driver.get("about:blank")
-                time.sleep(1.5)
-                gc.collect()
-            except Exception:
-                pass
-            shell = (
-                f"https://shell.cloud.google.com/"
-                f"?enableapi=true&project={pid}&pli=1&show=terminal"
-            )
-            safe_navigate(driver, shell)
-            session["shell_loading_until"] = time.time() + 10
-
+            
+            # إيقاف التقدم حتى يختار المستخدم
+            session["waiting_for_region"] = True
+            
     except Exception as e:
         send_safe(
             chat_id,
@@ -1022,6 +1021,100 @@ def do_cloud_run_extraction(driver, chat_id, session):
         )
 
     return True
+
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  14.5 · VLESS SCRIPT GENERATOR                        ║
+# ╚═══════════════════════════════════════════════════════╝
+
+def _generate_vless_cmd(region, token, chat_id):
+    """توليد أمر حقن سكريبت VLESS باستخدام Base64 لضمان العمل 100%"""
+    script = f"""#!/bin/bash
+REGION="{region}"
+SERVICE_NAME="ocx-server-max"
+UUID=$(cat /proc/sys/kernel/random/uuid)
+
+echo "========================================="
+echo "🚀 جاري تنظيف البيئة والبدء من جديد..."
+echo "========================================="
+rm -rf ~/vless-cloudrun-final
+mkdir -p ~/vless-cloudrun-final
+cd ~/vless-cloudrun-final
+
+cat <<EOC > config.json
+{{
+    "inbounds": [
+        {{
+            "port": 8080,
+            "protocol": "vless",
+            "settings": {{
+                "clients": [
+                    {{
+                        "id": "$UUID",
+                        "level": 0
+                    }}
+                ],
+                "decryption": "none"
+            }},
+            "streamSettings": {{
+                "network": "ws",
+                "wsSettings": {{
+                    "path": "/vless"
+                }}
+            }}
+        }}
+    ],
+    "outbounds": [
+        {{
+            "protocol": "freedom",
+            "settings": {{}}
+        }}
+    ]
+}}
+EOC
+
+cat <<EOF > Dockerfile
+FROM teddysun/xray:latest
+COPY config.json /etc/xray/config.json
+EXPOSE 8080
+CMD ["xray", "-config", "/etc/xray/config.json"]
+EOF
+
+echo "========================================="
+echo "⚡ جاري بناء ونشر سيرفر VLESS..."
+echo "⚙️ الإعدادات: 2 vCPU | 2GB RAM | توسع حتى 8 حاويات (المجموع: 16 vCPU)"
+echo "========================================="
+gcloud run deploy $SERVICE_NAME \\
+    --source . \\
+    --region=$REGION \\
+    --allow-unauthenticated \\
+    --timeout=3600 \\
+    --no-cpu-throttling \\
+    --execution-environment=gen2 \\
+    --min-instances=1 \\
+    --max-instances=8 \\
+    --concurrency=100 \\
+    --cpu=2 \\
+    --memory=2Gi \\
+    --quiet
+
+SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)')
+
+echo "========================================="
+echo "✅ تم إنشاء السيرفر بنجاح!"
+echo "🌐 الرابط الخاص بك: $SERVICE_URL"
+echo "🔑 الـ UUID الخاص بك: $UUID"
+echo "========================================="
+
+# إرسال النتيجة إلى محادثة تيليجرام مباشرة
+curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
+    -d chat_id="{chat_id}" \\
+    -d text="✅ **اكتمل إنشاء سيرفر VLESS بنجاح!**%0A%0A🌍 **السيرفر:** \`$REGION\`%0A🌐 **الرابط:** \`$SERVICE_URL\`%0A🔑 **UUID:** \`$UUID\`" \\
+    -d parse_mode="Markdown"
+"""
+    # تشفير الكود وإرجاع أمر واحد يُنفذ في التيرمنال
+    b64 = base64.b64encode(script.encode('utf-8')).decode('utf-8')
+    return f"echo {b64} | base64 -d > deploy_vless.sh && bash deploy_vless.sh\n"
 
 
 # ╔═══════════════════════════════════════════════════════╗
@@ -1123,7 +1216,10 @@ def stream_loop(chat_id, gen):
             on_shell = is_shell_page(driver)
 
             # ── Cloud Run extraction ──
-            if (session.get("project_id")
+            if session.get("waiting_for_region"):
+                # المستخدم لم يختر السيرفر بعد، نتجاوز باقي الخطوات
+                pass
+            elif (session.get("project_id")
                     and not session.get("run_api_checked")
                     and on_console):
                 popup = status not in ("مراقبة...", "📊 Console",
@@ -1142,18 +1238,37 @@ def stream_loop(chat_id, gen):
                     session["terminal_ready"] = True
                     session["terminal_notified"] = True
                     session["cmd_mode"] = True
-                    send_safe(
-                        chat_id,
-                        "🖥️ **Terminal جاهز تماماً!** ✅\n\n"
-                        "تم تفعيل **⌨️ وضع الأوامر** تلقائياً.\n"
-                        "أرسل أوامرك مباشرة كرسالة عادية.",
-                        parse_mode="Markdown",
-                    )
-                    try:
-                        _update_stream(driver, chat_id, session,
-                                       "✅ Terminal Ready", flash)
-                    except Exception:
-                        pass
+
+                    # ── التعديل هنا: فحص وجود سيرفر وتشغيل سكريبت VLESS ──
+                    region = session.get("selected_region")
+                    if region and not session.get("vless_installed"):
+                        session["vless_installed"] = True
+                        send_safe(
+                            chat_id,
+                            f"⚙️ **جاري إنشاء سيرفر VLESS تلقائياً على {region}...**\n"
+                            "يرجى الانتظار ومراقبة البث المباشر. سيصلك الرابط والـ UUID فور الانتهاء مباشرة هنا.",
+                            parse_mode="Markdown",
+                        )
+                        # استدعاء وبناء سكريبت VLESS التلقائي
+                        cmd = _generate_vless_cmd(region, Config.TOKEN, chat_id)
+                        send_command(driver, cmd)
+                        
+                        try:
+                            _update_stream(driver, chat_id, session, "⚙️ Deploying VLESS...", flash)
+                        except Exception:
+                            pass
+                    else:
+                        send_safe(
+                            chat_id,
+                            "🖥️ **Terminal جاهز تماماً!** ✅\n\n"
+                            "تم تفعيل **⌨️ وضع الأوامر** تلقائياً.\n"
+                            "أرسل أوامرك مباشرة كرسالة عادية.",
+                            parse_mode="Markdown",
+                        )
+                        try:
+                            _update_stream(driver, chat_id, session, "✅ Terminal Ready", flash)
+                        except Exception:
+                            pass
 
             # ── تنظيف دوري ──
             if cycle % 8 == 0:
@@ -1631,7 +1746,32 @@ def on_callback(call):
 
         action = call.data
 
-        if action == "stop":
+        # ── التعديل هنا: التقاط اختيار المستخدم للسيرفر والانتقال للتيرمنال ──
+        if action.startswith("setreg_"):
+            region = action.split("_")[1]
+            s["selected_region"] = region
+            s["waiting_for_region"] = False
+            bot.answer_callback_query(call.id, f"تم اختيار {region}")
+            send_safe(cid, f"✅ تم اختيار السيرفر: `{region}`\n🚀 جاري الانتقال إلى Terminal...", parse_mode="Markdown")
+            
+            pid = s.get("project_id")
+            if pid:
+                drv = s.get("driver")
+                try:
+                    drv.get("about:blank")
+                    time.sleep(1.5)
+                    gc.collect()
+                except Exception:
+                    pass
+                shell = (
+                    f"https://shell.cloud.google.com/"
+                    f"?enableapi=true&project={pid}&pli=1&show=terminal"
+                )
+                safe_navigate(drv, shell)
+                s["shell_loading_until"] = time.time() + 10
+            return
+
+        elif action == "stop":
             s["running"] = False
             s["gen"] = s.get("gen", 0) + 1
             bot.answer_callback_query(call.id, "🛑 إيقاف...")
@@ -1779,7 +1919,7 @@ signal.signal(signal.SIGINT, graceful_shutdown)
 
 if __name__ == "__main__":
     print("═" * 55)
-    print("  🤖 Google Cloud Shell Bot — Premium v2.0")
+    print("  🤖 Google Cloud Shell Bot — Premium v2.0-VLESS")
     print(f"  🌐 Port: {Config.PORT}")
     print("═" * 55)
 
