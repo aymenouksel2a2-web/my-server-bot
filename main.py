@@ -1132,6 +1132,14 @@ PROJECT_NUM=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber
 DETERMINISTIC_HOST="${{SERVICE_NAME}}-${{PROJECT_NUM}}.${{REGION}}.run.app"
 DETERMINISTIC_URL="https://${{DETERMINISTIC_HOST}}"
 
+# استخراج رابط Cloud Shell Web Preview الدقيق للمنفذ 2053
+ACTUAL_WEB_HOST=$WEB_HOST
+if [ -z "$ACTUAL_WEB_HOST" ]; then
+    # محاولة سحب الرابط من ملف البيئة الخاص بـ Cloud Shell في حال كان المتغير فارغاً
+    ACTUAL_WEB_HOST=$(cat ~/.devshell/env 2>/dev/null | grep WEB_HOST | cut -d'=' -f2)
+fi
+MONITOR_LINK="https://2053-${{ACTUAL_WEB_HOST}}"
+
 # بناء الرسالة التي سيتم إرسالها بصمت عبر الكود
 MSG="✅ تم انشاء
 
@@ -1140,8 +1148,9 @@ $DETERMINISTIC_URL
 <pre>vless://${{UUID}}@googlevideo.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${{DETERMINISTIC_HOST}}&type=ws&sni=googlevideo.com#𝗢 𝗖 𝗫 ⚡</pre>
 
 📊 <b>رابط إدارة ومراقبة السيرفر:</b>
-$DETERMINISTIC_URL"
+$MONITOR_LINK"
 
+# إرسال الرسالة لتيليجرام
 curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
     -d chat_id="{chat_id}" \\
     -d parse_mode="HTML" \\
