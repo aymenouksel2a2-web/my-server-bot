@@ -834,7 +834,7 @@ def _click_if_visible(driver, xpath_list, delay_before=0.5, delay_after=2):
     return False
 
 
-def handle_google_pages(driver, session):
+def handle_google_pages(driver, session, chat_id):
     status = "مراقبة..."
     try:
         body = driver.find_element(By.TAG_NAME, "body").text[:5000]
@@ -842,6 +842,32 @@ def handle_google_pages(driver, session):
         return status
 
     bl = body.lower()
+
+    # 💡 تسجيل الدخول التفاعلي (Interactive Login) - اسم المستخدم وكلمة المرور
+    try:
+        # التحقق من وجود حقل البريد الإلكتروني (اسم المستخدم)
+        email_inputs = driver.find_elements(By.XPATH, "//input[@type='email']")
+        if email_inputs and any(el.is_displayed() for el in email_inputs):
+            if session.get("waiting_for_input") != "email":
+                session["waiting_for_input"] = "email"
+                send_safe(chat_id, "⚠️ **تسجيل الدخول مطلوب!**\n\nلم يتم تسجيل الدخول تلقائياً بالرابط.\n👉 يرجى نسخ **اسم المستخدم (Username)** من صفحة المختبر وإرساله هنا كرسالة نصية:")
+            return "🔐 بانتظار إرسال اسم المستخدم..."
+    except Exception:
+        pass
+
+    try:
+        # التحقق من وجود حقل كلمة المرور
+        pass_inputs = driver.find_elements(By.XPATH, "//input[@type='password']")
+        if pass_inputs and any(el.is_displayed() for el in pass_inputs):
+            # التأكد من أننا لا نطلب كلمة المرور ونحن لا نزال ننتظر الإيميل (تجنب التداخل)
+            if session.get("waiting_for_input") != "email":
+                if session.get("waiting_for_input") != "password":
+                    session["waiting_for_input"] = "password"
+                    send_safe(chat_id, "🔐 **الخطوة التالية:**\n\n👉 يرجى نسخ **كلمة المرور (Password)** من صفحة المختبر وإرسالها هنا كرسالة نصية:")
+                return "🔐 بانتظار إرسال كلمة المرور..."
+    except Exception:
+        pass
+
 
     if "agree and continue" in bl and "terms of service" in bl:
         try:
@@ -860,6 +886,17 @@ def handle_google_pages(driver, session):
         ], 0.5, 3):
             log.info("✅ Terms accepted")
             return "✅ تم قبول الشروط"
+
+    # قبول شروط الحساب الجديد (I understand)
+    if "welcome to your new account" in bl or "i understand" in bl:
+        if _click_if_visible(driver, [
+            "//span[text()='I understand']",
+            "//button[contains(.,'I understand')]",
+            "//*[contains(text(),'I understand')]",
+            "//input[@value='I understand']",
+            "//input[@id='confirm']",
+        ], 1, 4):
+            return "✅ Welcome terms accepted"
 
     if "authorize cloud shell" in bl:
         if _click_if_visible(driver, [
@@ -888,13 +925,6 @@ def handle_google_pages(driver, session):
         ]):
             return "✅ Verify"
         return "🔐 تحقق..."
-
-    if _click_if_visible(driver, [
-        "//*[contains(text(),'I understand')]",
-        "//input[@value='I understand']",
-        "//input[@id='confirm']",
-    ], 1, 4):
-        return "✅ I understand"
 
     if "couldn't sign you in" in bl:
         try:
@@ -1132,13 +1162,8 @@ PROJECT_NUM=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber
 DETERMINISTIC_HOST="${{SERVICE_NAME}}-${{PROJECT_NUM}}.${{REGION}}.run.app"
 DETERMINISTIC_URL="https://${{DETERMINISTIC_HOST}}"
 
-# استخراج رابط Cloud Shell Web Preview الدقيق للمنفذ 2053
-ACTUAL_WEB_HOST=$WEB_HOST
-if [ -z "$ACTUAL_WEB_HOST" ]; then
-    # محاولة سحب الرابط من ملف البيئة الخاص بـ Cloud Shell في حال كان المتغير فارغاً
-    ACTUAL_WEB_HOST=$(cat ~/.devshell/env 2>/dev/null | grep WEB_HOST | cut -d'=' -f2)
-fi
-MONITOR_LINK="https://2053-${{ACTUAL_WEB_HOST}}"
+# استخراج رابط المراقبة الدقيق للمنفذ 2053 باستخدام أداة cloudshell المدمجة للحصول على نفس صيغة الصورة تماماً
+MONITOR_LINK=$(cloudshell get-web-preview-url --port 2053)
 
 # بناء الرسالة التي سيتم إرسالها بصمت عبر الكود
 MSG="✅ تم انشاء
@@ -1267,7 +1292,7 @@ def stream_loop(chat_id, gen):
 
         try:
             _focus_terminal(driver)
-            status = handle_google_pages(driver, session)
+            status = handle_google_pages(driver, session, chat_id)
             cur = current_url(driver)
 
             try:
@@ -1835,6 +1860,36 @@ def handle_text(msg):
     if not s:
         return
 
+    # 💡 التعامل مع استلام الإيميل أو كلمة المرور التفاعلي
+    waiting = s.get("waiting_for_input")
+    if waiting in ["email", "password"]:
+        try:
+            drv = s.get("driver")
+            if waiting == "email":
+                els = drv.find_elements(By.XPATH, "//input[@type='email']")
+                if els:
+                    els[0].clear()
+                    els[0].send_keys(msg.text)
+                    els[0].send_keys(Keys.RETURN)
+                    s["waiting_for_input"] = None
+                    send_safe(cid, "✅ تم إدخال اسم المستخدم، يرجى الانتظار...")
+                else:
+                    send_safe(cid, "❌ حقل إدخال البريد الإلكتروني لم يعد متاحاً على الشاشة.")
+            elif waiting == "password":
+                els = drv.find_elements(By.XPATH, "//input[@type='password']")
+                if els:
+                    els[0].clear()
+                    els[0].send_keys(msg.text)
+                    els[0].send_keys(Keys.RETURN)
+                    s["waiting_for_input"] = None
+                    send_safe(cid, "✅ تم إدخال كلمة المرور بنجاح، يرجى الانتظار...")
+                else:
+                    send_safe(cid, "❌ حقل إدخال كلمة المرور لم يعد متاحاً على الشاشة.")
+        except Exception as e:
+            send_safe(cid, f"❌ حدث خطأ أثناء إدخال البيانات: {e}")
+        return
+
+    # 💡 أوامر التيرمنال العادية
     if s.get("cmd_mode"):
         threading.Thread(
             target=execute_command,
