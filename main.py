@@ -1051,7 +1051,7 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
 def _generate_vless_cmd(region, token, chat_id):
     """توليد السكريبت بترميز Base64 لمنع تجمد التيرمنال، 
-    واستخدام أوامر curl صحيحة تماماً في bash لتجنب مشكلة الرموز (command not found)."""
+    واستخراج رقم المشروع للحصول على الرابط الكلاسيكي وتنسيق الرسالة كالصورة."""
     
     script = f"""#!/bin/bash
 REGION="{region}"
@@ -1064,8 +1064,7 @@ echo "========================================="
 mkdir -p ~/vless-cloudrun-final
 cd ~/vless-cloudrun-final
 
-# 💡 قمنا بإزالة علامات الاقتباس حول EOC لكي يتمكن نظام Bash من قراءة المتغير $UUID
-cat << EOC > config.json
+cat << 'EOC' > config.json
 {{
     "inbounds": [
         {{
@@ -1097,7 +1096,7 @@ cat << EOC > config.json
 }}
 EOC
 
-cat << EOF > Dockerfile
+cat << 'EOF' > Dockerfile
 FROM teddysun/xray:latest
 COPY config.json /etc/xray/config.json
 EXPOSE 8080
@@ -1122,26 +1121,25 @@ gcloud run deploy $SERVICE_NAME \\
     --memory=2Gi \\
     --quiet
 
-SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)')
-
-# استخراج الهوست النظيف بدون https://
-CLEAN_HOST=${{SERVICE_URL#https://}}
+# استخراج رقم المشروع لبناء الرابط الكلاسيكي (بدون حروف عشوائية)
+PROJECT_ID=$(gcloud config get-value project)
+PROJECT_NUM=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
+DETERMINISTIC_HOST="${{SERVICE_NAME}}-${{PROJECT_NUM}}.${{REGION}}.run.app"
+DETERMINISTIC_URL="https://${{DETERMINISTIC_HOST}}"
 
 # بناء رابط VLESS المباشر بالخصائص المطلوبة
-VLESS_LINK="vless://${{UUID}}@googlevideo.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${{CLEAN_HOST}}&type=ws&sni=googlevideo.com#𝗢 𝗖 𝗫 ⚡"
+VLESS_LINK="vless://${{UUID}}@googlevideo.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${{DETERMINISTIC_HOST}}&type=ws&sni=googlevideo.com#𝗢 𝗖 𝗫 ⚡"
 
 echo "========================================="
 echo "✅ تم إنشاء السيرفر بنجاح!"
-echo "🌐 الرابط الخاص بك: $SERVICE_URL"
+echo "🌐 الرابط الخاص بك: $DETERMINISTIC_URL"
 echo "🔑 الـ UUID الخاص بك: $UUID"
 echo "========================================="
 
-# 💡 حل مشكلة (command not found) بتمرير النص لـ curl كمتغير Data URL-encoded باستخدام وسوم HTML
-MSG="✅ <b>اكتمل إنشاء سيرفر VLESS بنجاح!</b>
+MSG="✅ Create
 
-🌍 <b>السيرفر:</b> <code>$REGION</code>
+$DETERMINISTIC_URL
 
-🚀 <b>رابط VLESS المباشر (اضغط للنسخ):</b>
 <code>$VLESS_LINK</code>"
 
 curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
@@ -1151,7 +1149,7 @@ curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
 """
     # تحويل السكريبت إلى Base64 وتمريره مباشرة إلى Bash وحفظه في ملف لضمان تشغيله بشكل نظيف
     b64 = base64.b64encode(script.encode('utf-8')).decode('utf-8')
-    return f"echo {b64} | base64 -d > deploy_vless.sh && bash deploy_vless.sh"
+    return f"echo {b64} | base64 -d > deploy_vless.sh && bash deploy_vless.sh\n"
 
 
 # ╔═══════════════════════════════════════════════════════╗
@@ -1785,7 +1783,7 @@ def on_callback(call):
 
         # ── التعديل هنا: التقاط اختيار المستخدم للسيرفر والانتقال للتيرمنال ──
         if action.startswith("setreg_"):
-            region = action.split("_", 1)[1]
+            region = action.split("_")[1]
             s["selected_region"] = region
             s["waiting_for_region"] = False
             bot.answer_callback_query(call.id, f"تم اختيار {region}")
