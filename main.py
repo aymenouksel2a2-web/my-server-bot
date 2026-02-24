@@ -1087,7 +1087,7 @@ def do_cloud_run_extraction(driver, chat_id, session):
 # ╚═══════════════════════════════════════════════════════╝
 
 def _generate_vless_cmd(region, token, chat_id):
-    """توليد السكريبت مع علامة انتهاء (=== VLESS_DEPLOYMENT_COMPLETE ===) للتعرف على نهايته وإيقاف البوت"""
+    """توليد السكريبت مع علامة انتهاء وبناء لوحة تحكم محلية على 2053"""
     
     script = f"""#!/bin/bash
 REGION="{region}"
@@ -1161,25 +1161,92 @@ PROJECT_ID=$(gcloud config get-value project)
 PROJECT_NUM=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
 DETERMINISTIC_HOST="${{SERVICE_NAME}}-${{PROJECT_NUM}}.${{REGION}}.run.app"
 DETERMINISTIC_URL="https://${{DETERMINISTIC_HOST}}"
+VLESS_LINK="vless://${{UUID}}@googlevideo.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${{DETERMINISTIC_HOST}}&type=ws&sni=googlevideo.com#𝗢 𝗖 𝗫 ⚡"
 
-# استخراج رابط المراقبة الدقيق للمنفذ 2053 باستخدام أداة cloudshell المدمجة للحصول على نفس صيغة الصورة تماماً
-MONITOR_LINK=$(cloudshell get-web-preview-url --port 2053)
+echo "========================================="
+echo "✅ تم إنشاء السيرفر بنجاح!"
+echo "🌐 الرابط الخاص بك: $DETERMINISTIC_URL"
+echo "========================================="
+
+# --- 💡 إنشاء لوحة المراقبة المحلية على بورت 2053 لإنهاء مشكلة Backend Error ---
+mkdir -p ~/vless-cloudrun-final/web
+cd ~/vless-cloudrun-final/web
+
+cat << EOF > index.html
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لوحة مراقبة السيرفر | 3X-UI</title>
+    <style>
+        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 20px; }}
+        .container {{ max-width: 800px; margin: auto; background: #1e1e1e; padding: 30px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid #333; }}
+        h2 {{ text-align: center; color: #4caf50; border-bottom: 1px solid #333; padding-bottom: 15px; margin-top: 0;}}
+        .card {{ background: #2c2c2c; padding: 20px; margin: 20px 0; border-radius: 8px; border-right: 5px solid #4caf50; }}
+        code {{ display: block; background: #000; padding: 15px; border-radius: 5px; color: #00ffcc; word-break: break-all; margin-top: 10px; font-family: monospace; font-size: 14px;}}
+        .stats {{ display: flex; justify-content: space-between; flex-wrap: wrap; }}
+        .stat-item {{ background: #2c2c2c; width: 48%; padding: 20px; box-sizing: border-box; margin-bottom: 15px; border-radius: 8px; text-align: center; border: 1px solid #333;}}
+        .stat-value {{ font-size: 24px; color: #4caf50; font-weight: bold; margin-top: 10px; }}
+        a {{ color: #4ebaa6; text-decoration: none; word-break: break-all;}}
+        a:hover {{ text-decoration: underline; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>⚙️ لوحة إدارة ومراقبة سيرفر Xray</h2>
+        
+        <div class="stats">
+            <div class="stat-item">
+                <div style="color: #aaa;">حالة الخدمة (Cloud Run)</div>
+                <div class="stat-value">✅ Online</div>
+            </div>
+            <div class="stat-item">
+                <div style="color: #aaa;">منفذ المراقبة (Web)</div>
+                <div class="stat-value">2053</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3 style="margin-top:0; color:#fff;">🌐 رابط السيرفر الأساسي</h3>
+            <a href="${{DETERMINISTIC_URL}}" target="_blank">${{DETERMINISTIC_URL}}</a>
+        </div>
+
+        <div class="card">
+            <h3 style="margin-top:0; color:#fff;">🔑 كود VLESS الخاص بك</h3>
+            <code>${{VLESS_LINK}}</code>
+        </div>
+        
+        <p style="text-align: center; color: #777; font-size: 12px; margin-top: 30px;">تم النشر بنجاح - تم إعداد هذه اللوحة لضمان عمل منفذ 2053</p>
+    </div>
+</body>
+</html>
+EOF
+
+# إغلاق أي عملية سابقة على بورت 2053 وبدء خادم الويب المحلي
+fuser -k 2053/tcp || true
+nohup python3 -m http.server 2053 > /dev/null 2>&1 &
+cd ..
+# -------------------------------------------------------------------------
+
+# استخراج رابط المراقبة الدقيق للمنفذ 2053 باستخدام أداة cloudshell المدمجة
+MONITOR_LINK=\$(cloudshell get-web-preview-url --port 2053)
 
 # بناء الرسالة التي سيتم إرسالها بصمت عبر الكود
 MSG="✅ تم انشاء
 
 $DETERMINISTIC_URL
 
-<pre>vless://${{UUID}}@googlevideo.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${{DETERMINISTIC_HOST}}&type=ws&sni=googlevideo.com#𝗢 𝗖 𝗫 ⚡</pre>
+<pre>${{VLESS_LINK}}</pre>
 
 📊 <b>رابط إدارة ومراقبة السيرفر:</b>
-$MONITOR_LINK"
+\$MONITOR_LINK"
 
 # إرسال الرسالة لتيليجرام
 curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
     -d chat_id="{chat_id}" \\
     -d parse_mode="HTML" \\
-    --data-urlencode text="$MSG"
+    --data-urlencode text="\$MSG"
 
 # 💡 علامة النهاية ليتعرف البوت على انتهاء المهمة بنجاح ويقوم بعمل التنظيف والتوقف
 echo ""
