@@ -21,6 +21,7 @@ import json
 import logging
 import signal
 import base64
+import certifi  # 💡 تم إضافة مكتبة certifi لحل مشكلة SSL/TLS مع MongoDB
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telebot.types import (
@@ -88,7 +89,8 @@ class Config:
 
 # ── إعداد قاعدة البيانات ──
 try:
-    mongo_client = MongoClient(Config.MONGO_URI, serverSelectionTimeoutMS=5000)
+    # 💡 تم تمرير tlsCAFile=certifi.where() لضمان نجاح الـ SSL Handshake بدون أخطاء
+    mongo_client = MongoClient(Config.MONGO_URI, serverSelectionTimeoutMS=5000, tlsCAFile=certifi.where())
     db = mongo_client["cloudshell_bot"]
     queue_col = db["deployment_queue"]
     cooldown_col = db["cooldowns"]
@@ -1031,7 +1033,9 @@ def do_cloud_run_extraction(driver, chat_id, session):
     pid = session.get("project_id")
     if not pid: return True
 
-    if "run/create" not in current_url(driver):
+    cur = current_url(driver)
+
+    if "run/create" not in cur:
         if not session.get("status_msg_id"):
             msg = send_safe(chat_id, "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...", session)
             if msg: session["status_msg_id"] = msg.message_id
@@ -1629,7 +1633,7 @@ def handle_url_msg(msg):
 
     # 1. التحقق من الانتظار (Cooldown)
     if is_user_in_cooldown(cid):
-        bot.reply_to(msg, "⏳ **عذراً!** لقد قمت بإنشاء سيرفر مؤخراً.\nيرجى الانتظار لبعض الوقت (حتى انتهاء صلاحية سيرفرك الحالي) لإفساح المجال للآخرين.", parse_mode="Markdown")
+        bot.reply_to(msg, "⏳ **عذراً!** لقد قمت بإنشاء سيرفر مؤخراً.\nيرجى الانتظار لبعض الوقت لإفساح المجال للآخرين.", parse_mode="Markdown")
         return
 
     # 2. التحقق من الجلسات الحالية والطابور
