@@ -1051,7 +1051,8 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
 def _generate_vless_cmd(region, token, chat_id):
     """توليد السكريبت بترميز Base64 لمنع تجمد التيرمنال، 
-    واستخراج رقم المشروع للحصول على الرابط الكلاسيكي وتنسيق الرسالة كالصورة."""
+    مع إزالة علامات التنصيص حول EOC لضمان كتابة الـ UUID الصحيح،
+    وتنسيق الرسالة كالصورة المطلوبة تماماً بـ Monospace (code)."""
     
     script = f"""#!/bin/bash
 REGION="{region}"
@@ -1064,7 +1065,8 @@ echo "========================================="
 mkdir -p ~/vless-cloudrun-final
 cd ~/vless-cloudrun-final
 
-cat << 'EOC' > config.json
+# 💡 قمنا بإزالة علامات الاقتباس حول EOC لكي يتمكن نظام Bash من قراءة المتغير $UUID بشكل صحيح
+cat << EOC > config.json
 {{
     "inbounds": [
         {{
@@ -1096,7 +1098,7 @@ cat << 'EOC' > config.json
 }}
 EOC
 
-cat << 'EOF' > Dockerfile
+cat << EOF > Dockerfile
 FROM teddysun/xray:latest
 COPY config.json /etc/xray/config.json
 EXPOSE 8080
@@ -1136,6 +1138,7 @@ echo "🌐 الرابط الخاص بك: $DETERMINISTIC_URL"
 echo "🔑 الـ UUID الخاص بك: $UUID"
 echo "========================================="
 
+# 💡 حل مشكلة (command not found) وتنسيق الرسالة بصندوق Monospace مطابق للصورة
 MSG="✅ Create
 
 $DETERMINISTIC_URL
