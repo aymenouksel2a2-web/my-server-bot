@@ -1708,3 +1708,286 @@ def cmd_ss(msg):
         now = datetime.now().strftime("%H:%M:%S")
         bot.send_photo(
             cid, bio,
+            caption=f"📸 لقطة شاشة — {now}",
+            reply_markup=build_panel(s.get("cmd_mode", False)),
+        )
+        bio.close()
+    else:
+        bot.reply_to(msg, "❌ فشل التقاط الشاشة.")
+
+
+# ── معالج الروابط ──
+
+@bot.message_handler(func=lambda m: (
+    m.text and m.text.startswith("https://www.skills.google/google_sso")
+))
+def handle_url_msg(msg):
+    threading.Thread(
+        target=start_stream,
+        args=(msg.chat.id, msg.text.strip()),
+        daemon=True,
+    ).start()
+
+
+@bot.message_handler(func=lambda m: m.text and m.text.startswith("http"))
+def handle_bad_url(msg):
+    bot.reply_to(
+        msg,
+        "❌ الرابط غير صحيح.\n\n"
+        "يجب أن يبدأ بـ:\n"
+        "`https://www.skills.google/google_sso`",
+        parse_mode="Markdown",
+    )
+
+
+# ── معالج النصوص (الأوامر المباشرة) ──
+
+@bot.message_handler(func=lambda m: (
+    m.text
+    and not m.text.startswith("/")
+    and not m.text.startswith("http")
+))
+def handle_text(msg):
+    cid = msg.chat.id
+    s = get_session(cid)
+    if not s:
+        return
+
+    if s.get("cmd_mode"):
+        threading.Thread(
+            target=execute_command,
+            args=(cid, msg.text),
+            daemon=True,
+        ).start()
+    elif is_shell_page(s.get("driver")):
+        bot.reply_to(
+            msg,
+            "💡 اضغط **⌨️ وضع الأوامر** أولاً\n"
+            f"أو أرسل: `/cmd {msg.text}`",
+            parse_mode="Markdown",
+        )
+
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  19 · CALLBACK HANDLER                                ║
+# ╚═══════════════════════════════════════════════════════╝
+
+@bot.callback_query_handler(func=lambda call: True)
+def on_callback(call):
+    cid = call.message.chat.id
+    try:
+        s = get_session(cid)
+        if not s:
+            bot.answer_callback_query(call.id, "لا توجد جلسة نشطة.")
+            return
+
+        action = call.data
+
+        # ── التعديل هنا: التقاط اختيار المستخدم للسيرفر والانتقال للتيرمنال ──
+        if action.startswith("setreg_"):
+            region = action.split("_", 1)[1]
+            s["selected_region"] = region
+            s["waiting_for_region"] = False
+            bot.answer_callback_query(call.id, f"تم اختيار {region}")
+            send_safe(cid, f"✅ تم اختيار السيرفر: `{region}`\n🚀 جاري الانتقال إلى Terminal...", parse_mode="Markdown")
+            
+            pid = s.get("project_id")
+            if pid:
+                drv = s.get("driver")
+                try:
+                    drv.get("about:blank")
+                    time.sleep(1.5)
+                    gc.collect()
+                except Exception:
+                    pass
+                shell = (
+                    f"https://shell.cloud.google.com/"
+                    f"?enableapi=true&project={pid}&pli=1&show=terminal"
+                )
+                safe_navigate(drv, shell)
+                s["shell_loading_until"] = time.time() + 10
+            return
+
+        elif action == "stop":
+            s["running"] = False
+            s["gen"] = s.get("gen", 0) + 1
+            bot.answer_callback_query(call.id, "🛑 إيقاف...")
+            try:
+                bot.edit_message_caption(
+                    "🛑 تم الإيقاف",
+                    chat_id=cid, message_id=s.get("msg_id"),
+                )
+            except Exception:
+                pass
+            safe_quit(s.get("driver"))
+            with sessions_lock:
+                user_sessions.pop(cid, None)
+
+        elif action == "refresh":
+            bot.answer_callback_query(call.id, "🔄 تحديث...")
+            drv = s.get("driver")
+            if drv:
+                try:
+                    drv.refresh()
+                except Exception:
+                    pass
+
+        elif action == "screenshot":
+            bot.answer_callback_query(call.id, "📸 جاري التقاط...")
+            drv = s.get("driver")
+            if drv:
+                bio = take_screenshot(drv)
+                if bio:
+                    now = datetime.now().strftime("%H:%M:%S")
+                    bot.send_photo(
+                        cid, bio,
+                        caption=f"📸 {now}",
+                        reply_markup=build_panel(s.get("cmd_mode", False)),
+                    )
+                    bio.close()
+
+        elif action == "cmd_mode":
+            s["cmd_mode"] = True
+            drv = s.get("driver")
+            if drv and is_shell_page(drv):
+                s["terminal_ready"] = True
+            bot.answer_callback_query(call.id, "⌨️ وضع الأوامر")
+            send_safe(
+                cid,
+                "⌨️ **وضع الأوامر مُفعّل!**\n\n"
+                "أرسل أي أمر مباشرة كرسالة:\n"
+                "• `ls -la`\n"
+                "• `gcloud config list`\n"
+                "• `cat file.txt`\n\n"
+                "🔙 للرجوع للبث اضغط الزر",
+                parse_mode="Markdown",
+            )
+
+        elif action == "watch_mode":
+            s["cmd_mode"] = False
+            bot.answer_callback_query(call.id, "👁️ وضع البث")
+            send_safe(cid, "👁️ تم الرجوع لوضع البث المباشر.")
+
+        elif action == "info":
+            bot.answer_callback_query(call.id, "ℹ️")
+            uptime = fmt_duration(
+                time.time() - s.get("created_at", time.time())
+            )
+            drv = s.get("driver")
+            u = current_url(drv)[:60] if drv else "—"
+            text = (
+                f"ℹ️ **الحالة:**\n"
+                f"📁 `{s.get('project_id', '—')}`\n"
+                f"⌨️ Terminal: {'✅' if s.get('terminal_ready') else '⏳'}\n"
+                f"⏱️ {uptime}\n"
+                f"🌐 `{u}`"
+            )
+            send_safe(cid, text, parse_mode="Markdown")
+
+        elif action == "restart_browser":
+            bot.answer_callback_query(call.id, "🔁 إعادة تشغيل...")
+            threading.Thread(
+                target=_restart_driver, args=(cid, s), daemon=True
+            ).start()
+
+    except Exception as e:
+        log.debug(f"Callback error: {e}")
+
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  20 · BOOT CHECK & GRACEFUL SHUTDOWN                  ║
+# ╚═══════════════════════════════════════════════════════╝
+
+def boot_check():
+    """فحص التبعيات عند بدء التشغيل"""
+    log.info("🔍 فحص التبعيات...")
+
+    browser = find_path(
+        ["chromium", "chromium-browser"],
+        ["/usr/bin/chromium", "/usr/bin/chromium-browser"],
+    )
+    drv = find_path(
+        ["chromedriver"],
+        ["/usr/bin/chromedriver", "/usr/lib/chromium/chromedriver"],
+    )
+
+    if not browser:
+        log.critical("❌ Chromium غير موجود!")
+        sys.exit(1)
+    log.info(f"  ✅ Browser: {browser}")
+
+    if not drv:
+        log.critical("❌ ChromeDriver غير موجود!")
+        sys.exit(1)
+    log.info(f"  ✅ Driver:  {drv}")
+
+    ver = browser_version(browser)
+    log.info(f"  ✅ Version: {ver}")
+    log.info(f"  ✅ Display: {'Active' if display else 'None'}")
+    log.info("✅ جميع التبعيات متوفرة!")
+
+
+def graceful_shutdown(signum, frame):
+    """إنهاء نظيف عند إيقاف التطبيق"""
+    log.info("🛑 إيقاف نظيف...")
+    shutdown_event.set()
+
+    with sessions_lock:
+        for cid in list(user_sessions):
+            try:
+                s = user_sessions[cid]
+                s["running"] = False
+                safe_quit(s.get("driver"))
+            except Exception:
+                pass
+        user_sessions.clear()
+
+    log.info("👋 تم الإنهاء.")
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, graceful_shutdown)
+signal.signal(signal.SIGINT, graceful_shutdown)
+
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  21 · MAIN ENTRY POINT                                ║
+# ╚═══════════════════════════════════════════════════════╝
+
+if __name__ == "__main__":
+    print("═" * 55)
+    print("  🤖 Google Cloud Shell Bot — Premium v2.0-VLESS")
+    print(f"  🌐 Port: {Config.PORT}")
+    print("═" * 55)
+
+    # فحص التبعيات
+    boot_check()
+
+    # خادم الصحة
+    threading.Thread(target=_health_server, daemon=True).start()
+
+    # تنظيف تلقائي
+    threading.Thread(target=_auto_cleanup_loop, daemon=True).start()
+
+    # حل مشكلة التعارض 409
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except Exception as e:
+        log.warning(f"Webhook removal: {e}")
+
+    log.info("🚀 البوت يعمل الآن!")
+
+    while not shutdown_event.is_set():
+        try:
+            bot.polling(
+                non_stop=True,
+                skip_pending=True,
+                timeout=60,
+                long_polling_timeout=60,
+            )
+        except Exception as e:
+            log.error(f"Polling error: {e}")
+            if shutdown_event.is_set():
+                break
+            time.sleep(5)
