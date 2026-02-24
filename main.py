@@ -1,7 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════╗
 ║  🤖 Google Cloud Shell — Telegram Bot                    ║
-║  📌 Premium Edition v2.0 (With VLESS Auto Deploy)        ║
+║  📌 Premium Edition v3.0 (Queue + Auto Cleanup)          ║
 ║  🔧 Railway Optimized · Low RAM · Anti-Detection         ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -21,6 +21,7 @@ import json
 import logging
 import signal
 import base64
+import queue
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telebot.types import (
@@ -48,7 +49,7 @@ class Config:
 
     TOKEN = os.environ.get("BOT_TOKEN")
     PORT = int(os.environ.get("PORT", 8080))
-    VERSION = "2.0-VLESS"
+    VERSION = "3.0-VLESS-Queue"
 
     # ── المتصفح ──
     PAGE_LOAD_TIMEOUT = 45
@@ -81,7 +82,7 @@ class Config:
 
 
 # ╔═══════════════════════════════════════════════════════╗
-# ║  2 · LOGGING                                          ║
+# ║  2 · LOGGING & GLOBAL STATE                           ║
 # ╚═══════════════════════════════════════════════════════╝
 
 logging.basicConfig(
@@ -90,11 +91,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("CSBot")
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  3 · BOT + GLOBAL STATE                               ║
-# ╚═══════════════════════════════════════════════════════╝
 
 if not Config.TOKEN:
     log.critical("❌ BOT_TOKEN غير موجود! أضفه كمتغير بيئة.")
@@ -106,6 +102,11 @@ user_sessions: dict = {}
 sessions_lock = threading.Lock()
 chromedriver_lock = threading.Lock()
 shutdown_event = threading.Event()
+
+# 💡 نظام الطابور (Queue System)
+deployment_queue = queue.Queue()
+active_task_cid = None
+queue_lock = threading.Lock()
 
 
 # ╔═══════════════════════════════════════════════════════╗
@@ -136,6 +137,7 @@ class HealthHandler(BaseHTTPRequestHandler):
                     "status": "running",
                     "version": Config.VERSION,
                     "sessions": active,
+                    "queue_size": deployment_queue.qsize(),
                     "details": details,
                     "ts": datetime.now().isoformat(),
                 },
@@ -434,7 +436,7 @@ def _new_session_dict(driver, url, project_id, gen):
         "waiting_for_region": False,    
         "selected_region": None,        
         "vless_installed": False,       
-        "status_msg_id": None,          # ← متغير لتخزين ID الرسالة التي سنقوم بتحديثها باستمرار
+        "status_msg_id": None,          # رسالة التحديثات
         "created_at": time.time(),
         "cmd_history": [],
         "last_activity": time.time(),
@@ -982,7 +984,6 @@ def do_cloud_run_extraction(driver, chat_id, session):
     cur = current_url(driver)
 
     if "run/create" not in cur:
-        # 💡 التحديث الأول للرسالة الثابتة (بدل ارسال رسالة جديدة)
         if not session.get("status_msg_id"):
             msg = send_safe(chat_id, "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...")
             if msg: session["status_msg_id"] = msg.message_id
@@ -996,7 +997,6 @@ def do_cloud_run_extraction(driver, chat_id, session):
         )
         return False
 
-    # 💡 التحديث الثاني: جاري القراءة
     if session.get("status_msg_id"):
         edit_safe(chat_id, session["status_msg_id"], "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
 
@@ -1010,12 +1010,10 @@ def do_cloud_run_extraction(driver, chat_id, session):
         else:
             regions = [r.strip() for r in result.split("\n") if r.strip()]
             
-            # 💡 جعل القائمة منسقة في عمودين (لتقليل المساحة)
             mk = InlineKeyboardMarkup(row_width=2)
             buttons = [InlineKeyboardButton(r, callback_data=f"setreg_{r.split()[0]}") for r in regions]
             mk.add(*buttons)
 
-            # 💡 تحديث نفس الرسالة لتصبح هي القائمة
             if session.get("status_msg_id"):
                 edit_safe(
                     chat_id, session["status_msg_id"],
@@ -1041,7 +1039,7 @@ def do_cloud_run_extraction(driver, chat_id, session):
 # ╚═══════════════════════════════════════════════════════╝
 
 def _generate_vless_cmd(region, token, chat_id):
-    """توليد السكريبت بترميز Base64 وتنسيق الرسالة كصندوق Monospace قابل للنسخ باللمس"""
+    """توليد السكريبت مع علامة انتهاء (=== VLESS_DEPLOYMENT_COMPLETE ===) للتعرف على نهايته وإيقاف البوت"""
     
     script = f"""#!/bin/bash
 REGION="{region}"
@@ -1124,7 +1122,6 @@ echo "🌐 الرابط الخاص بك: $DETERMINISTIC_URL"
 echo "🔑 الـ UUID الخاص بك: $UUID"
 echo "========================================="
 
-# 💡 تم التنسيق باستخدام وسوم <pre> لصنع الصندوق الأسود (Monospace) المخصص للنسخ بضغطة
 MSG="✅ Create
 
 $DETERMINISTIC_URL
@@ -1135,6 +1132,10 @@ curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
     -d chat_id="{chat_id}" \\
     -d parse_mode="HTML" \\
     --data-urlencode text="$MSG"
+
+# 💡 علامة النهاية ليتعرف البوت على انتهاء المهمة بنجاح ويقوم بعمل التنظيف والتوقف
+echo ""
+echo "=== VLESS_DEPLOYMENT_COMPLETE ==="
 """
     b64 = base64.b64encode(script.encode('utf-8')).decode('utf-8')
     return f"echo {b64} | base64 -d > deploy_vless.sh && bash deploy_vless.sh\n"
@@ -1172,12 +1173,15 @@ def _update_stream(driver, chat_id, session, status, flash):
     bio = io.BytesIO(png)
     bio.name = f"l_{int(time.time())}_{random.randint(10,99)}.png"
 
-    bot.edit_message_media(
-        media=InputMediaPhoto(bio, caption=cap),
-        chat_id=chat_id,
-        message_id=session["msg_id"],
-        reply_markup=build_panel(session.get("cmd_mode", False)),
-    )
+    try:
+        bot.edit_message_media(
+            media=InputMediaPhoto(bio, caption=cap),
+            chat_id=chat_id,
+            message_id=session["msg_id"],
+            reply_markup=build_panel(session.get("cmd_mode", False)),
+        )
+    except Exception:
+        pass
     bio.close()
     del png
     return flash
@@ -1204,6 +1208,28 @@ def stream_loop(chat_id, gen):
                     session["terminal_ready"] = True
             except Exception:
                 pass
+            
+            # 💡 نظام التنظيف الذاتي (Auto Cleanup) والإيقاف عند الانتهاء
+            if session.get("vless_installed"):
+                term_text = read_terminal(driver) or ""
+                if "=== VLESS_DEPLOYMENT_COMPLETE ===" in term_text:
+                    time.sleep(2) # إعطاء فرصة ثانية لضمان إرسال الكود للتيليجرام عبر curl
+                    
+                    # 1. حذف صورة البث المباشر
+                    if session.get("msg_id"):
+                        try: bot.delete_message(chat_id, session["msg_id"])
+                        except Exception: pass
+                        
+                    # 2. حذف رسالة تحديثات الحالة (جاري الانتقال لـ Terminal...)
+                    if session.get("status_msg_id"):
+                        try: bot.delete_message(chat_id, session["status_msg_id"])
+                        except Exception: pass
+                    
+                    send_safe(chat_id, "🏁 **اكتملت المهمة بنجاح!**\nتم إغلاق البث المباشر وإنهاء الجلسة أوتوماتيكياً لإخلاء المكان.", parse_mode="Markdown")
+                    
+                    # 3. إيقاف الجلسة للبدء بالشخص التالي في الطابور
+                    session["running"] = False
+                    break
             continue
 
         time.sleep(random.uniform(*Config.STREAM_INTERVAL))
@@ -1341,10 +1367,11 @@ def _restart_driver(chat_id, session):
 
 
 # ╔═══════════════════════════════════════════════════════╗
-# ║  16 · START STREAM                                    ║
+# ║  16 · START STREAM (Synchronous for Queue)            ║
 # ╚═══════════════════════════════════════════════════════╝
 
-def start_stream(chat_id, url):
+def start_stream_sync(chat_id, url):
+    """دالة البدء المخصصة لنظام الطابور لضمان عدم تداخل العمليات"""
     old_drv = None
     with sessions_lock:
         if chat_id in user_sessions:
@@ -1353,8 +1380,7 @@ def start_stream(chat_id, url):
             old["gen"] = old.get("gen", 0) + 1
             old_drv = old.get("driver")
 
-    # 💡 التحديث: رسالة واحدة يتم تحديثها، ومسحها عند الانتهاء
-    status_msg = send_safe(chat_id, "⚡ جاري التجهيز...")
+    status_msg = send_safe(chat_id, "⚡ جاري التجهيز للبدء بعمليتك...")
     status_msg_id = status_msg.message_id if status_msg else None
 
     if old_drv:
@@ -1389,7 +1415,7 @@ def start_stream(chat_id, url):
         bio = io.BytesIO(png)
         bio.name = f"s_{int(time.time())}.png"
         
-        # 💡 التحديث: حذف رسالة التجهيز لتجنب التشتت وبقاء رسالة البث فقط
+        # 💡 حذف رسالة "المتصفح جاهز" لإبقاء الشات نظيف قبل البث
         if status_msg_id:
             try: bot.delete_message(chat_id, status_msg_id)
             except: pass
@@ -1406,12 +1432,44 @@ def start_stream(chat_id, url):
             session["msg_id"] = msg.message_id
             session["running"] = True
 
-        threading.Thread(
-            target=stream_loop, args=(chat_id, gen), daemon=True
-        ).start()
+        # تشغيل الجلسة بوضع مزامن (Sync) لضمان إيقاف الطابور حتى ينتهي
+        stream_loop(chat_id, gen)
 
     except Exception as e:
         cleanup_session(chat_id)
+
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  16.5 · QUEUE WORKER SYSTEM                           ║
+# ╚═══════════════════════════════════════════════════════╝
+
+def queue_worker():
+    """هذه الدالة تعمل باستمرار لمعالجة الطلبات في الطابور واحداً تلو الآخر"""
+    global active_task_cid
+    while not shutdown_event.is_set():
+        try:
+            task = deployment_queue.get(timeout=2)
+            cid = task["chat_id"]
+            url = task["url"]
+            
+            with queue_lock:
+                active_task_cid = cid
+                
+            log.info(f"🚀 بدء معالجة طلب الطابور للمستخدم: {cid}")
+            start_stream_sync(cid, url)
+            
+            # عند الانتهاء (أو الإيقاف)، يتم تنظيف المتغير وأخذ الطلب التالي
+            cleanup_session(cid)
+            with queue_lock:
+                active_task_cid = None
+            deployment_queue.task_done()
+            
+        except queue.Empty:
+            continue
+        except Exception as e:
+            log.error(f"Queue worker error: {e}")
+            with queue_lock:
+                active_task_cid = None
 
 
 # ╔═══════════════════════════════════════════════════════╗
@@ -1555,7 +1613,12 @@ def cmd_status(msg):
     cid = msg.chat.id
     s = get_session(cid)
     if not s:
-        bot.reply_to(msg, "❌ لا توجد جلسة نشطة.\nأرسل رابط SSO للبدء.")
+        # إخبار المستخدم إذا كان في الطابور
+        in_queue = any(t["chat_id"] == cid for t in list(deployment_queue.queue))
+        if in_queue:
+            bot.reply_to(msg, "⏳ أنت حالياً في طابور الانتظار. سيتم البدء فور توفر مساحة.")
+        else:
+            bot.reply_to(msg, "❌ لا توجد جلسة نشطة.\nأرسل رابط SSO للبدء.")
         return
 
     uptime = fmt_duration(time.time() - s.get("created_at", time.time()))
@@ -1584,8 +1647,20 @@ def cmd_stop(msg):
     cid = msg.chat.id
     s = get_session(cid)
     if not s:
-        bot.reply_to(msg, "❌ لا توجد جلسة لإيقافها.")
+        # السماح بإزالة الطلب من الطابور
+        removed = False
+        with deployment_queue.mutex:
+            for i, item in enumerate(deployment_queue.queue):
+                if item['chat_id'] == cid:
+                    del deployment_queue.queue[i]
+                    removed = True
+                    break
+        if removed:
+            bot.reply_to(msg, "🛑 تم سحب طلبك من الطابور بنجاح.")
+        else:
+            bot.reply_to(msg, "❌ لا توجد جلسة نشطة أو طلب في الطابور لإيقافه.")
         return
+        
     s["running"] = False
     s["gen"] = s.get("gen", 0) + 1
     try:
@@ -1596,7 +1671,7 @@ def cmd_stop(msg):
     except Exception:
         pass
     cleanup_session(cid)
-    bot.reply_to(msg, "🛑 تم إيقاف الجلسة بنجاح.")
+    bot.reply_to(msg, "🛑 تم إيقاف الجلسة بنجاح.\nجاري إفساح المجال للشخص التالي...")
 
 @bot.message_handler(commands=["restart"])
 def cmd_restart(msg):
@@ -1661,11 +1736,28 @@ def cmd_ss(msg):
     m.text and m.text.startswith("https://www.skills.google/google_sso")
 ))
 def handle_url_msg(msg):
-    threading.Thread(
-        target=start_stream,
-        args=(msg.chat.id, msg.text.strip()),
-        daemon=True,
-    ).start()
+    cid = msg.chat.id
+    url = msg.text.strip()
+    
+    # 💡 التحقق مما إذا كان المستخدم يملك جلسة حالية أو مسجل في الطابور
+    with sessions_lock:
+        if cid in user_sessions and user_sessions[cid].get("running"):
+            bot.reply_to(msg, "❌ لديك جلسة تعمل حالياً.\nيرجى انتظار انتهائها أو إيقافها باستخدام أمر /stop.")
+            return
+            
+    in_queue = any(t["chat_id"] == cid for t in list(deployment_queue.queue))
+    if in_queue or active_task_cid == cid:
+        bot.reply_to(msg, "❌ طلبك قيد المعالجة أو في الطابور بالفعل. يرجى الانتظار.")
+        return
+        
+    pos = deployment_queue.qsize()
+    
+    if active_task_cid is not None:
+        # البوت مشغول، إدخال في الطابور
+        bot.reply_to(msg, f"⏳ **البوت مشغول حالياً!**\n\nتم وضع طلبك في طابور الانتظار بأمان.\n🔹 ترتيبك في الطابور: `{pos + 1}`\n\nسيبدأ البوت تلقائياً بمجرد انتهاء الشخص الذي قبلك.", parse_mode="Markdown")
+    
+    deployment_queue.put({"chat_id": cid, "url": url})
+
 
 @bot.message_handler(func=lambda m: m.text and m.text.startswith("http"))
 def handle_bad_url(msg):
@@ -1725,7 +1817,6 @@ def on_callback(call):
             s["waiting_for_region"] = False
             bot.answer_callback_query(call.id, f"تم اختيار {region}")
             
-            # 💡 التحديث: إزالة الأزرار وتحديث نفس الرسالة لإخبار المستخدم بأن العمل بدأ
             msg_id = s.get("status_msg_id")
             if msg_id:
                 edit_safe(cid, msg_id, f"✅ تم اختيار السيرفر: `{region}`\n🚀 جاري الانتقال إلى Terminal وبدء التثبيت التلقائي...\n⚙️ يرجى مراقبة البث المباشر. سيصلك الرابط فور الانتهاء.", parse_mode="Markdown", reply_markup=None)
@@ -1758,9 +1849,7 @@ def on_callback(call):
                 )
             except Exception:
                 pass
-            safe_quit(s.get("driver"))
-            with sessions_lock:
-                user_sessions.pop(cid, None)
+            cleanup_session(cid)
 
         elif action == "refresh":
             bot.answer_callback_query(call.id, "🔄 تحديث...")
@@ -1895,7 +1984,7 @@ signal.signal(signal.SIGINT, graceful_shutdown)
 
 if __name__ == "__main__":
     print("═" * 55)
-    print("  🤖 Google Cloud Shell Bot — Premium v2.0-VLESS")
+    print("  🤖 Google Cloud Shell Bot — Premium v3.0-Queue")
     print(f"  🌐 Port: {Config.PORT}")
     print("═" * 55)
 
@@ -1907,6 +1996,9 @@ if __name__ == "__main__":
 
     # تنظيف تلقائي
     threading.Thread(target=_auto_cleanup_loop, daemon=True).start()
+    
+    # 💡 عامل الطابور (الذي يعالج الروابط بالترتيب)
+    threading.Thread(target=queue_worker, daemon=True).start()
 
     # حل مشكلة التعارض 409
     try:
@@ -1915,7 +2007,7 @@ if __name__ == "__main__":
     except Exception as e:
         log.warning(f"Webhook removal: {e}")
 
-    log.info("🚀 البوت يعمل الآن!")
+    log.info("🚀 البوت يعمل الآن ويستقبل الطلبات في الطابور!")
 
     while not shutdown_event.is_set():
         try:
