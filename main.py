@@ -207,7 +207,6 @@ def patch_driver(orig):
         if PATCHED_DRIVER_PATH and os.path.exists(PATCHED_DRIVER_PATH):
             return PATCHED_DRIVER_PATH
 
-        # 💡 قراءة الملف الأصلي وتعديله في الذاكرة لتجنب خطأ (Text file busy)
         dst = f"/tmp/chromedriver_patched_{os.getpid()}_{random.randint(1000, 9999)}"
         
         try:
@@ -282,6 +281,15 @@ def send_safe(chat_id, text, **kw):
         return bot.send_message(chat_id, text, **kw)
     except Exception as e:
         log.warning(f"send_safe: {e}")
+        return None
+
+def edit_safe(chat_id, message_id, text, **kw):
+    """تحديث رسالة موجودة بدلاً من إرسال رسالة جديدة لمنع التشتت"""
+    try:
+        return bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, **kw)
+    except Exception as e:
+        if "is not modified" not in str(e).lower():
+            log.warning(f"edit_safe: {e}")
         return None
 
 
@@ -423,9 +431,10 @@ def _new_session_dict(driver, url, project_id, gen):
         "gen": gen,
         "run_api_checked": False,
         "shell_loading_until": 0,
-        "waiting_for_region": False,    # ← لانتظار اختيار المستخدم
-        "selected_region": None,        # ← السيرفر المختار
-        "vless_installed": False,       # ← تم التثبيت أم لا
+        "waiting_for_region": False,    
+        "selected_region": None,        
+        "vless_installed": False,       
+        "status_msg_id": None,          # ← متغير لتخزين ID الرسالة التي سنقوم بتحديثها باستمرار
         "created_at": time.time(),
         "cmd_history": [],
         "last_activity": time.time(),
@@ -621,10 +630,8 @@ def send_command(driver, command):
 
     _focus_terminal(driver)
     
-    # 1. إزالة مسافة الإدخال الافتراضية 
     command_clean = command.rstrip('\n')
 
-    # 💡 الحل الذكي: نلصق الكود ومعه سطر جديد (\n) لضمان تنفيذه الفوري داخل xterm
     js_paste = """
     var text = arguments[0];
     function getTa() {
@@ -640,7 +647,7 @@ def send_command(driver, command):
     if (ta) {
         ta.focus();
         var dt = new DataTransfer();
-        dt.setData('text/plain', text + '\\n'); // إضافة Enter هنا
+        dt.setData('text/plain', text + '\\n'); 
         var ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true });
         ta.dispatchEvent(ev);
         return true;
@@ -651,9 +658,7 @@ def send_command(driver, command):
     try:
         success = driver.execute_script(js_paste, command_clean)
         if success:
-            time.sleep(1) # نعطي وقتاً كافياً للتيرمنال ليعالج اللصق
-            
-            # 💡 محاولة إضافية لضغط Enter من خلال Selenium لتأكيد التشغيل في حال تجاهل الـ Terminal للـ \n
+            time.sleep(1) 
             try:
                 driver.switch_to.default_content()
                 frames = driver.find_elements(By.TAG_NAME, "iframe")
@@ -715,24 +720,20 @@ def send_command(driver, command):
 
 
 def read_terminal(driver):
-    """قراءة محتوى التيرمنال بعدة طرق"""
     if not driver:
         return None
 
     for js in [
-        # طريقة 1: xterm-rows
         """var rows=document.querySelectorAll('.xterm-rows > div');
            if(!rows.length){var x=document.querySelector('.xterm');
            if(x) rows=x.querySelectorAll('.xterm-rows > div');}
            if(rows.length){var l=[];rows.forEach(function(r){
            var t=(r.textContent||'');if(t.trim())l.push(t);});
            return l.join('\\n');}return null;""",
-        # طريقة 2: xterm-screen
         """var s=document.querySelector('.xterm-screen');
            if(s) return s.textContent||s.innerText;
            var x=document.querySelector('.xterm');
            if(x) return x.textContent||x.innerText;return null;""",
-        # طريقة 3: aria-live
         """var l=document.querySelector('[aria-live]');
            if(l) return l.textContent||l.innerText;return null;""",
     ]:
@@ -746,7 +747,6 @@ def read_terminal(driver):
 
 
 def extract_result(full_output, command):
-    """استخراج نتيجة أمر من مخرجات التيرمنال"""
     if not full_output:
         return None
     lines = full_output.split("\n")
@@ -795,7 +795,6 @@ def take_screenshot(driver):
 # ╚═══════════════════════════════════════════════════════╝
 
 def _click_if_visible(driver, xpath_list, delay_before=0.5, delay_after=2):
-    """محاولة نقر أول زر مرئي من قائمة XPath"""
     for xp in xpath_list:
         try:
             btns = driver.find_elements(By.XPATH, xp)
@@ -817,7 +816,6 @@ def _click_if_visible(driver, xpath_list, delay_before=0.5, delay_after=2):
 
 
 def handle_google_pages(driver, session):
-    """التعامل التلقائي مع جميع صفحات / نوافذ Google"""
     status = "مراقبة..."
     try:
         body = driver.find_element(By.TAG_NAME, "body").text[:5000]
@@ -826,7 +824,6 @@ def handle_google_pages(driver, session):
 
     bl = body.lower()
 
-    # ── Terms of Service ──
     if "agree and continue" in bl and "terms of service" in bl:
         try:
             for cb in driver.find_elements(By.XPATH,
@@ -845,7 +842,6 @@ def handle_google_pages(driver, session):
             log.info("✅ Terms accepted")
             return "✅ تم قبول الشروط"
 
-    # ── Authorize Cloud Shell ──
     if "authorize cloud shell" in bl:
         if _click_if_visible(driver, [
             "//button[normalize-space(.)='Authorize']",
@@ -855,7 +851,6 @@ def handle_google_pages(driver, session):
             return "✅ تم التفويض"
         return "🔐 بانتظار التفويض..."
 
-    # ── Continue (Cloud Shell free) ──
     if "cloud shell" in bl and "continue" in bl and "free" in bl:
         if _click_if_visible(driver, [
             "//a[contains(text(),'Continue')]",
@@ -866,7 +861,6 @@ def handle_google_pages(driver, session):
             return "✅ Continue"
         return "☁️ نافذة Cloud Shell..."
 
-    # ── Verify ──
     if "verify it" in bl:
         if _click_if_visible(driver, [
             "//button[contains(.,'Continue')]",
@@ -876,7 +870,6 @@ def handle_google_pages(driver, session):
             return "✅ Verify"
         return "🔐 تحقق..."
 
-    # ── I understand ──
     if _click_if_visible(driver, [
         "//*[contains(text(),'I understand')]",
         "//input[@value='I understand']",
@@ -884,7 +877,6 @@ def handle_google_pages(driver, session):
     ], 1, 4):
         return "✅ I understand"
 
-    # ── Sign-in rejected ──
     if "couldn't sign you in" in bl:
         try:
             driver.delete_all_cookies()
@@ -895,7 +887,6 @@ def handle_google_pages(driver, session):
             pass
         return "⚠️ تم رفض الدخول — إعادة محاولة"
 
-    # ── Generic Authorize ──
     if "authorize" in bl and ("cloud" in bl or "google" in bl):
         if _click_if_visible(driver, [
             "//button[normalize-space(.)='Authorize']",
@@ -904,14 +895,12 @@ def handle_google_pages(driver, session):
             session["auth"] = True
             return "✅ تم التفويض"
 
-    # ── Dismiss Gemini ──
     if "gemini" in bl and "dismiss" in bl:
         _click_if_visible(driver, [
             "//button[contains(.,'Dismiss')]",
             "//a[contains(.,'Dismiss')]",
         ], 0.3, 1)
 
-    # ── Trust project ──
     if "trust this project" in bl or "trust project" in bl:
         if _click_if_visible(driver, [
             "//button[contains(.,'Trust')]",
@@ -919,7 +908,6 @@ def handle_google_pages(driver, session):
         ]):
             return "✅ Trust"
 
-    # ── الحالة بحسب الرابط ──
     try:
         u = driver.current_url
     except Exception:
@@ -994,9 +982,13 @@ def do_cloud_run_extraction(driver, chat_id, session):
     cur = current_url(driver)
 
     if "run/create" not in cur:
-        send_safe(chat_id,
-            "⚙️ جاري فتح صفحة Cloud Run "
-            "(مع تفعيل الـ API إن لزم الأمر)...")
+        # 💡 التحديث الأول للرسالة الثابتة (بدل ارسال رسالة جديدة)
+        if not session.get("status_msg_id"):
+            msg = send_safe(chat_id, "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...")
+            if msg: session["status_msg_id"] = msg.message_id
+        else:
+            edit_safe(chat_id, session["status_msg_id"], "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...")
+            
         safe_navigate(
             driver,
             f"https://console.cloud.google.com/run/create"
@@ -1004,43 +996,42 @@ def do_cloud_run_extraction(driver, chat_id, session):
         )
         return False
 
-    send_safe(chat_id, "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
+    # 💡 التحديث الثاني: جاري القراءة
+    if session.get("status_msg_id"):
+        edit_safe(chat_id, session["status_msg_id"], "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
 
     try:
         driver.set_script_timeout(Config.SCRIPT_TIMEOUT)
         result = driver.execute_async_script(REGION_JS)
 
-        if result is None:
-            send_safe(chat_id, "⚠️ لم يتم الحصول على نتيجة.")
-        elif result == "NO_DROPDOWN":
-            send_safe(chat_id, "❌ لم أجد قائمة السيرفرات (Region).")
-        elif result == "NO_REGIONS":
-            send_safe(chat_id, "⚠️ جميع السيرفرات مقيّدة.")
-        elif result.startswith("ERROR:"):
-            send_safe(chat_id, f"⚠️ خطأ: {result[6:][:200]}")
+        if result is None or result == "NO_DROPDOWN" or result == "NO_REGIONS" or result.startswith("ERROR:"):
+            if session.get("status_msg_id"):
+                edit_safe(chat_id, session["status_msg_id"], "⚠️ تعذر جلب السيرفرات، سيتم تخطي الخطوة.")
         else:
             regions = [r.strip() for r in result.split("\n") if r.strip()]
-            mk = InlineKeyboardMarkup(row_width=1)
-            for r in regions:
-                region_code = r.split()[0]  # يستخرج us-east1 من (us-east1 (South Carolina
-                mk.add(InlineKeyboardButton(r, callback_data=f"setreg_{region_code}"))
-
-            send_safe(
-                chat_id,
-                "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:",
-                reply_markup=mk,
-                parse_mode="Markdown",
-            )
             
-            # إيقاف التقدم حتى يختار المستخدم
+            # 💡 جعل القائمة منسقة في عمودين (لتقليل المساحة)
+            mk = InlineKeyboardMarkup(row_width=2)
+            buttons = [InlineKeyboardButton(r, callback_data=f"setreg_{r.split()[0]}") for r in regions]
+            mk.add(*buttons)
+
+            # 💡 تحديث نفس الرسالة لتصبح هي القائمة
+            if session.get("status_msg_id"):
+                edit_safe(
+                    chat_id, session["status_msg_id"],
+                    "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:",
+                    reply_markup=mk,
+                    parse_mode="Markdown"
+                )
+            else:
+                msg = send_safe(chat_id, "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:", reply_markup=mk, parse_mode="Markdown")
+                if msg: session["status_msg_id"] = msg.message_id
+            
             session["waiting_for_region"] = True
             
     except Exception as e:
-        send_safe(
-            chat_id,
-            f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:200]}`",
-            parse_mode="Markdown",
-        )
+        if session.get("status_msg_id"):
+            edit_safe(chat_id, session["status_msg_id"], f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:100]}`", parse_mode="Markdown")
 
     return True
 
@@ -1050,9 +1041,7 @@ def do_cloud_run_extraction(driver, chat_id, session):
 # ╚═══════════════════════════════════════════════════════╝
 
 def _generate_vless_cmd(region, token, chat_id):
-    """توليد السكريبت بترميز Base64 لمنع تجمد التيرمنال، 
-    مع إزالة علامات التنصيص حول EOC لضمان كتابة الـ UUID الصحيح،
-    وتنسيق الرسالة كالصورة المطلوبة تماماً باستخدام وسم <pre> لإنشاء صندوق Monospace القابل للنسخ."""
+    """توليد السكريبت بترميز Base64 وتنسيق الرسالة كصندوق Monospace قابل للنسخ باللمس"""
     
     script = f"""#!/bin/bash
 REGION="{region}"
@@ -1065,7 +1054,6 @@ echo "========================================="
 mkdir -p ~/vless-cloudrun-final
 cd ~/vless-cloudrun-final
 
-# 💡 قمنا بإزالة علامات الاقتباس حول EOC لكي يتمكن نظام Bash من قراءة المتغير $UUID بشكل صحيح
 cat << EOC > config.json
 {{
     "inbounds": [
@@ -1123,13 +1111,11 @@ gcloud run deploy $SERVICE_NAME \\
     --memory=2Gi \\
     --quiet
 
-# استخراج رقم المشروع لبناء الرابط الكلاسيكي (بدون حروف عشوائية)
 PROJECT_ID=$(gcloud config get-value project)
 PROJECT_NUM=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
 DETERMINISTIC_HOST="${{SERVICE_NAME}}-${{PROJECT_NUM}}.${{REGION}}.run.app"
 DETERMINISTIC_URL="https://${{DETERMINISTIC_HOST}}"
 
-# بناء رابط VLESS المباشر بالخصائص المطلوبة
 VLESS_LINK="vless://${{UUID}}@googlevideo.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${{DETERMINISTIC_HOST}}&type=ws&sni=googlevideo.com#𝗢 𝗖 𝗫 ⚡"
 
 echo "========================================="
@@ -1138,7 +1124,7 @@ echo "🌐 الرابط الخاص بك: $DETERMINISTIC_URL"
 echo "🔑 الـ UUID الخاص بك: $UUID"
 echo "========================================="
 
-# 💡 حل مشكلة التنسيق: استخدام وسم <pre> لإنشاء صندوق Monospace يسهل نسخه باللمس كما في الصورة تماماً
+# 💡 تم التنسيق باستخدام وسوم <pre> لصنع الصندوق الأسود (Monospace) المخصص للنسخ بضغطة
 MSG="✅ Create
 
 $DETERMINISTIC_URL
@@ -1150,7 +1136,6 @@ curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
     -d parse_mode="HTML" \\
     --data-urlencode text="$MSG"
 """
-    # تحويل السكريبت إلى Base64 وتمريره مباشرة إلى Bash وحفظه في ملف لضمان تشغيله بشكل نظيف
     b64 = base64.b64encode(script.encode('utf-8')).decode('utf-8')
     return f"echo {b64} | base64 -d > deploy_vless.sh && bash deploy_vless.sh\n"
 
@@ -1159,7 +1144,6 @@ curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
 # ║  15 · STREAM ENGINE                                   ║
 # ╚═══════════════════════════════════════════════════════╝
 
-# ── أنماط أخطاء ──
 _TIMEOUT_KEYS = (
     "urllib3", "requests", "readtimeout", "connection aborted",
     "timeout", "read timed out", "max retries", "connecttimeout",
@@ -1171,7 +1155,6 @@ _DRIVER_KEYS = (
 
 
 def _update_stream(driver, chat_id, session, status, flash):
-    """تحديث صورة البث المباشر"""
     flash = not flash
     icon = "🔴" if flash else "⭕"
     now = datetime.now().strftime("%H:%M:%S")
@@ -1214,7 +1197,6 @@ def stream_loop(chat_id, gen):
 
     while session["running"] and session.get("gen") == gen:
 
-        # ── وضع الأوامر: فقط تحقق من الجاهزية ──
         if session.get("cmd_mode"):
             time.sleep(Config.CMD_CHECK_INTERVAL)
             try:
@@ -1234,7 +1216,6 @@ def stream_loop(chat_id, gen):
             status = handle_google_pages(driver, session)
             cur = current_url(driver)
 
-            # ── تحديث الصورة ──
             try:
                 if time.time() >= session.get("shell_loading_until", 0):
                     flash = _update_stream(
@@ -1253,9 +1234,7 @@ def stream_loop(chat_id, gen):
             )
             on_shell = is_shell_page(driver)
 
-            # ── Cloud Run extraction ──
             if session.get("waiting_for_region"):
-                # المستخدم لم يختر السيرفر بعد، نتجاوز باقي الخطوات
                 pass
             elif (session.get("project_id")
                     and not session.get("run_api_checked")
@@ -1270,24 +1249,16 @@ def stream_loop(chat_id, gen):
                     if do_cloud_run_extraction(driver, chat_id, session):
                         session["run_api_checked"] = True
 
-            # ── Terminal ready notification ──
             elif on_shell and not session.get("terminal_notified"):
                 if is_terminal_ready(driver):
                     session["terminal_ready"] = True
                     session["terminal_notified"] = True
                     session["cmd_mode"] = True
 
-                    # ── التعديل هنا: فحص وجود سيرفر وتشغيل سكريبت VLESS ──
                     region = session.get("selected_region")
                     if region and not session.get("vless_installed"):
                         session["vless_installed"] = True
-                        send_safe(
-                            chat_id,
-                            f"⚙️ **جاري إنشاء سيرفر VLESS تلقائياً على {region}...**\n"
-                            "يرجى الانتظار ومراقبة البث المباشر. سيصلك الرابط والـ UUID فور الانتهاء مباشرة هنا.",
-                            parse_mode="Markdown",
-                        )
-                        # استدعاء وبناء سكريبت VLESS التلقائي
+                        
                         cmd = _generate_vless_cmd(region, Config.TOKEN, chat_id)
                         send_command(driver, cmd)
                         
@@ -1308,7 +1279,6 @@ def stream_loop(chat_id, gen):
                         except Exception:
                             pass
 
-            # ── تنظيف دوري ──
             if cycle % 8 == 0:
                 gc.collect()
 
@@ -1349,7 +1319,6 @@ def stream_loop(chat_id, gen):
 
 
 def _restart_driver(chat_id, session):
-    """إعادة تشغيل المتصفح مع الحفاظ على الجلسة"""
     send_safe(chat_id, "🔁 إعادة تشغيل المتصفح...")
     try:
         safe_quit(session.get("driver"))
@@ -1376,7 +1345,6 @@ def _restart_driver(chat_id, session):
 # ╚═══════════════════════════════════════════════════════╝
 
 def start_stream(chat_id, url):
-    # ── إنهاء أي جلسة سابقة ──
     old_drv = None
     with sessions_lock:
         if chat_id in user_sessions:
@@ -1385,25 +1353,21 @@ def start_stream(chat_id, url):
             old["gen"] = old.get("gen", 0) + 1
             old_drv = old.get("driver")
 
-    send_safe(chat_id, "⚡ جاري التجهيز...")
+    # 💡 التحديث: رسالة واحدة يتم تحديثها، ومسحها عند الانتهاء
+    status_msg = send_safe(chat_id, "⚡ جاري التجهيز...")
+    status_msg_id = status_msg.message_id if status_msg else None
+
     if old_drv:
         safe_quit(old_drv)
         time.sleep(2)
 
     project_id = extract_project_id(url)
-    if not project_id:
-        send_safe(chat_id,
-            "⚠️ لم أتمكن من استخراج Project ID.\n"
-            "بعض الميزات التلقائية قد لا تعمل.")
 
-    # ── إنشاء المتصفح ──
     try:
         driver = create_driver()
-        send_safe(chat_id, "✅ المتصفح جاهز")
+        if status_msg_id: edit_safe(chat_id, status_msg_id, "✅ المتصفح جاهز\n🌐 جاري فتح الرابط...")
     except Exception as e:
-        send_safe(chat_id,
-            f"❌ فشل تشغيل المتصفح:\n`{str(e)[:300]}`",
-            parse_mode="Markdown")
+        if status_msg_id: edit_safe(chat_id, status_msg_id, f"❌ فشل تشغيل المتصفح:\n`{str(e)[:300]}`", parse_mode="Markdown")
         return
 
     gen = int(time.time())
@@ -1413,21 +1377,23 @@ def start_stream(chat_id, url):
         )
         session = user_sessions[chat_id]
 
-    # ── فتح الرابط ──
-    send_safe(chat_id, "🌐 فتح الرابط...")
     try:
         driver.get(url)
     except Exception as e:
-        if "timeout" not in str(e).lower():
-            log.warning(f"URL load: {e}")
+        pass
     time.sleep(5)
 
-    # ── لقطة أولية + بدء البث ──
     try:
         _focus_terminal(driver)
         png = driver.get_screenshot_as_png()
         bio = io.BytesIO(png)
         bio.name = f"s_{int(time.time())}.png"
+        
+        # 💡 التحديث: حذف رسالة التجهيز لتجنب التشتت وبقاء رسالة البث فقط
+        if status_msg_id:
+            try: bot.delete_message(chat_id, status_msg_id)
+            except: pass
+
         msg = bot.send_photo(
             chat_id, bio,
             caption="🔴 بث مباشر\n📌 جاري البدء...",
@@ -1444,17 +1410,7 @@ def start_stream(chat_id, url):
             target=stream_loop, args=(chat_id, gen), daemon=True
         ).start()
 
-        send_safe(chat_id,
-            "✅ **البث يعمل!**\n\n"
-            "• البوت سيتعامل مع الصفحات تلقائياً\n"
-            "• سيتم إعلامك عند جاهزية Terminal\n"
-            "• استخدم الأزرار أدناه للتحكم",
-            parse_mode="Markdown")
-
     except Exception as e:
-        send_safe(chat_id,
-            f"❌ فشل بدء البث:\n`{str(e)[:200]}`",
-            parse_mode="Markdown")
         cleanup_session(chat_id)
 
 
@@ -1463,7 +1419,6 @@ def start_stream(chat_id, url):
 # ╚═══════════════════════════════════════════════════════╝
 
 def _adaptive_wait(command):
-    """تحديد وقت الانتظار بناءً على نوع الأمر"""
     cl = command.lower()
     if any(k in cl for k in Config.SLOW_CMDS):
         return 10
@@ -1494,7 +1449,6 @@ def execute_command(chat_id, command):
     session["terminal_ready"] = True
     session["last_activity"] = time.time()
 
-    # حفظ في السجل
     history = session.setdefault("cmd_history", [])
     history.append({"cmd": command, "ts": datetime.now().isoformat()})
     if len(history) > 20:
@@ -1510,10 +1464,11 @@ def execute_command(chat_id, command):
         send_safe(chat_id,
             "⚠️ فشل إرسال الأمر للتيرمنال.\n"
             "جرّب 🔄 تحديث ثم أعد المحاولة.")
-        _delete_msg(chat_id, status_msg)
+        if status_msg:
+            try: bot.delete_message(chat_id, status_msg.message_id)
+            except: pass
         return
 
-    # ── انتظار تكيّفي ──
     wait = _adaptive_wait(command)
     time.sleep(wait)
 
@@ -1529,7 +1484,6 @@ def execute_command(chat_id, command):
     elif text_after:
         output = extract_result(text_after, command) or ""
 
-    # تنظيف المخرجات
     if output:
         lines = output.split("\n")
         cleaned = []
@@ -1543,7 +1497,6 @@ def execute_command(chat_id, command):
 
     bio = take_screenshot(driver)
 
-    # ── إرسال النتيجة ──
     if output:
         if len(output) > 3900:
             output = output[:3900] + "\n… (تم اقتطاع النص)"
@@ -1580,15 +1533,9 @@ def execute_command(chat_id, command):
             pass
         bio.close()
 
-    _delete_msg(chat_id, status_msg)
-
-
-def _delete_msg(chat_id, msg):
-    if msg:
-        try:
-            bot.delete_message(chat_id, msg.message_id)
-        except Exception:
-            pass
+    if status_msg:
+        try: bot.delete_message(chat_id, status_msg.message_id)
+        except: pass
 
 
 # ╔═══════════════════════════════════════════════════════╗
@@ -1599,11 +1546,9 @@ def _delete_msg(chat_id, msg):
 def cmd_start(msg):
     bot.reply_to(msg, WELCOME_MSG, parse_mode="Markdown")
 
-
 @bot.message_handler(commands=["help", "h"])
 def cmd_help(msg):
     bot.reply_to(msg, HELP_MSG, parse_mode="Markdown")
-
 
 @bot.message_handler(commands=["status"])
 def cmd_status(msg):
@@ -1634,7 +1579,6 @@ def cmd_status(msg):
     )
     bot.reply_to(msg, text, parse_mode="Markdown")
 
-
 @bot.message_handler(commands=["stop", "s"])
 def cmd_stop(msg):
     cid = msg.chat.id
@@ -1654,7 +1598,6 @@ def cmd_stop(msg):
     cleanup_session(cid)
     bot.reply_to(msg, "🛑 تم إيقاف الجلسة بنجاح.")
 
-
 @bot.message_handler(commands=["restart"])
 def cmd_restart(msg):
     cid = msg.chat.id
@@ -1666,7 +1609,6 @@ def cmd_restart(msg):
         target=_restart_driver, args=(cid, s), daemon=True
     ).start()
 
-
 @bot.message_handler(commands=["url"])
 def cmd_url(msg):
     cid = msg.chat.id
@@ -1676,7 +1618,6 @@ def cmd_url(msg):
         return
     u = current_url(s["driver"])
     bot.reply_to(msg, f"🌐 الصفحة الحالية:\n`{u}`", parse_mode="Markdown")
-
 
 @bot.message_handler(commands=["cmd"])
 def cmd_command(msg):
@@ -1695,7 +1636,6 @@ def cmd_command(msg):
         args=(msg.chat.id, parts[1]),
         daemon=True,
     ).start()
-
 
 @bot.message_handler(commands=["screenshot", "ss"])
 def cmd_ss(msg):
@@ -1716,9 +1656,7 @@ def cmd_ss(msg):
     else:
         bot.reply_to(msg, "❌ فشل التقاط الشاشة.")
 
-
 # ── معالج الروابط ──
-
 @bot.message_handler(func=lambda m: (
     m.text and m.text.startswith("https://www.skills.google/google_sso")
 ))
@@ -1728,7 +1666,6 @@ def handle_url_msg(msg):
         args=(msg.chat.id, msg.text.strip()),
         daemon=True,
     ).start()
-
 
 @bot.message_handler(func=lambda m: m.text and m.text.startswith("http"))
 def handle_bad_url(msg):
@@ -1740,9 +1677,7 @@ def handle_bad_url(msg):
         parse_mode="Markdown",
     )
 
-
 # ── معالج النصوص (الأوامر المباشرة) ──
-
 @bot.message_handler(func=lambda m: (
     m.text
     and not m.text.startswith("/")
@@ -1784,13 +1719,16 @@ def on_callback(call):
 
         action = call.data
 
-        # ── التعديل هنا: التقاط اختيار المستخدم للسيرفر والانتقال للتيرمنال ──
         if action.startswith("setreg_"):
             region = action.split("_")[1]
             s["selected_region"] = region
             s["waiting_for_region"] = False
             bot.answer_callback_query(call.id, f"تم اختيار {region}")
-            send_safe(cid, f"✅ تم اختيار السيرفر: `{region}`\n🚀 جاري الانتقال إلى Terminal...", parse_mode="Markdown")
+            
+            # 💡 التحديث: إزالة الأزرار وتحديث نفس الرسالة لإخبار المستخدم بأن العمل بدأ
+            msg_id = s.get("status_msg_id")
+            if msg_id:
+                edit_safe(cid, msg_id, f"✅ تم اختيار السيرفر: `{region}`\n🚀 جاري الانتقال إلى Terminal وبدء التثبيت التلقائي...\n⚙️ يرجى مراقبة البث المباشر. سيصلك الرابط فور الانتهاء.", parse_mode="Markdown", reply_markup=None)
             
             pid = s.get("project_id")
             if pid:
