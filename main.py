@@ -1179,7 +1179,7 @@ docker run -d --name 3x-ui --network=host --restart=always -v ~/x-ui-db:/etc/x-u
 
 echo "⏳ ننتظر بدء تشغيل خادم اللوحة على المنفذ 2053 (لتجنب خطأ Web Preview)..."
 # حلقة انتظار ذكية للتأكد من أن اللوحة تعمل فعلياً وتستجيب للطلبات قبل إرسال الرابط لك
-for i in {1..30}; do
+for i in {{1..30}}; do
     if curl -s --max-time 2 http://127.0.0.1:2053 > /dev/null; then
         echo "✅ خادم اللوحة يعمل الآن ويستجيب للطلبات."
         break
