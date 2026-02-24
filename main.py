@@ -1174,8 +1174,8 @@ docker rm -f 3x-ui 2>/dev/null || true
 # إنشاء مجلد لحفظ قاعدة بيانات اللوحة حتى لا تضيع
 mkdir -p ~/x-ui-db
 
-# تشغيل اللوحة الأصلية عبر Docker وربطها بمنفذ 2053
-docker run -d --name 3x-ui --network=host --restart=always -v ~/x-ui-db:/etc/x-ui/ ghcr.io/mhsanaei/3x-ui:latest
+# تشغيل اللوحة الأصلية عبر Docker وربطها بمنفذ 2053 بشكل صحيح لضمان عمل Web Preview
+docker run -d --name 3x-ui -p 2053:2053 --restart=always -v ~/x-ui-db:/etc/x-ui/ ghcr.io/mhsanaei/3x-ui:latest
 
 echo "⏳ انتظار تشغيل اللوحة..."
 sleep 5
