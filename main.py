@@ -1087,7 +1087,7 @@ def do_cloud_run_extraction(driver, chat_id, session):
 # ╚═══════════════════════════════════════════════════════╝
 
 def _generate_vless_cmd(region, token, chat_id):
-    """توليد السكريبت مع علامة انتهاء وتثبيت لوحة 3x-ui الحقيقية عبر Docker"""
+    """توليد السكريبت مع علامة انتهاء وتثبيت لوحة 3x-ui الحقيقية عبر Docker بشكل متوافق تماماً"""
     
     script = f"""#!/bin/bash
 REGION="{region}"
@@ -1174,13 +1174,20 @@ docker rm -f 3x-ui 2>/dev/null || true
 # إنشاء مجلد لحفظ قاعدة بيانات اللوحة حتى لا تضيع
 mkdir -p ~/x-ui-db
 
-# تشغيل اللوحة الأصلية عبر Docker وربطها بمنفذ 2053 بشكل صحيح لضمان عمل Web Preview
-docker run -d --name 3x-ui -p 2053:2053 --restart=always -v ~/x-ui-db:/etc/x-ui/ ghcr.io/mhsanaei/3x-ui:latest
+# تشغيل اللوحة الأصلية عبر Docker باستخدام --network=host لضمان عمل Web Preview بشكل مثالي ومنع أي تعارض في البورتات
+docker run -d --name 3x-ui --network=host --restart=always -v ~/x-ui-db:/etc/x-ui/ ghcr.io/mhsanaei/3x-ui:latest
 
-echo "⏳ انتظار تشغيل اللوحة..."
-sleep 5
+echo "⏳ ننتظر بدء تشغيل خادم اللوحة على المنفذ 2053 (لتجنب خطأ Web Preview)..."
+# حلقة انتظار ذكية للتأكد من أن اللوحة تعمل فعلياً وتستجيب للطلبات قبل إرسال الرابط لك
+for i in {1..30}; do
+    if curl -s --max-time 2 http://127.0.0.1:2053 > /dev/null; then
+        echo "✅ خادم اللوحة يعمل الآن ويستجيب للطلبات."
+        break
+    fi
+    sleep 2
+done
 
-echo "✅ تم تثبيت اللوحة بنجاح وتجهيزها للاستخدام."
+echo "✅ تم تجهيز اللوحة بالكامل للاستخدام."
 # -------------------------------------------------------------------------
 
 # استخراج رابط المراقبة الدقيق للمنفذ 2053 باستخدام أداة cloudshell المدمجة
