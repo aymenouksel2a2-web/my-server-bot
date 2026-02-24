@@ -609,7 +609,7 @@ def _focus_terminal(driver):
         handles = driver.window_handles
         if handles:
             driver.switch_to.window(handles[-1])
-        driver.switch_to.default_content()
+            driver.switch_to.default_content()
     except Exception:
         pass
 
@@ -1052,7 +1052,7 @@ def do_cloud_run_extraction(driver, chat_id, session):
 def _generate_vless_cmd(region, token, chat_id):
     """توليد السكريبت بترميز Base64 لمنع تجمد التيرمنال، 
     مع إزالة علامات التنصيص حول EOC لضمان كتابة الـ UUID الصحيح،
-    وتنسيق الرسالة كالصورة المطلوبة تماماً بـ Monospace (code)."""
+    وتنسيق الرسالة كالصورة المطلوبة تماماً باستخدام وسم <pre> لإنشاء صندوق Monospace القابل للنسخ."""
     
     script = f"""#!/bin/bash
 REGION="{region}"
@@ -1138,12 +1138,12 @@ echo "🌐 الرابط الخاص بك: $DETERMINISTIC_URL"
 echo "🔑 الـ UUID الخاص بك: $UUID"
 echo "========================================="
 
-# 💡 حل مشكلة (command not found) وتنسيق الرسالة بصندوق Monospace مطابق للصورة
+# 💡 حل مشكلة التنسيق: استخدام وسم <pre> لإنشاء صندوق Monospace يسهل نسخه باللمس كما في الصورة تماماً
 MSG="✅ Create
 
 $DETERMINISTIC_URL
 
-<code>$VLESS_LINK</code>"
+<pre>$VLESS_LINK</pre>"
 
 curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
     -d chat_id="{chat_id}" \\
