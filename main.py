@@ -1,7 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════╗
 ║  🤖 Google Cloud Shell — Telegram Bot                    ║
-║  📌 Premium Edition v4.0 (MongoDB, Queue, Auto-Cleanup)  ║
+║  📌 Premium Edition v3.0 (Queue + Auto Cleanup)          ║
 ║  🔧 Railway Optimized · Low RAM · Anti-Detection         ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -21,7 +21,8 @@ import json
 import logging
 import signal
 import base64
-import certifi  # 💡 تم إضافة مكتبة certifi لحل مشكلة SSL/TLS مع MongoDB
+import queue
+import pymongo
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telebot.types import (
@@ -29,7 +30,6 @@ from telebot.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from pymongo import MongoClient
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -42,7 +42,7 @@ from pyvirtualdisplay import Display
 
 
 # ╔═══════════════════════════════════════════════════════╗
-# ║  1 · CONFIGURATION & MONGODB                          ║
+# ║  1 · CONFIGURATION                                    ║
 # ╚═══════════════════════════════════════════════════════╝
 
 class Config:
@@ -50,8 +50,8 @@ class Config:
 
     TOKEN = os.environ.get("BOT_TOKEN")
     PORT = int(os.environ.get("PORT", 8080))
-    MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017/")
-    VERSION = "4.0-VLESS-MongoQueue"
+    MONGO_URI = os.environ.get("MONGO_URI", "")
+    VERSION = "3.0-VLESS-Queue"
 
     # ── المتصفح ──
     PAGE_LOAD_TIMEOUT = 45
@@ -61,10 +61,6 @@ class Config:
     # ── البث المباشر ──
     STREAM_INTERVAL = (4, 6)          # (min, max) ثانية
     CMD_CHECK_INTERVAL = 3            # ثانية في وضع الأوامر
-
-    # ── إعدادات الطابور والحظر ──
-    REGION_TIMEOUT_SEC = 30           # مهلة اختيار السيرفر 30 ثانية
-    COOLDOWN_MINUTES = 15             # مدة الانتظار قبل إنشاء سيرفر جديد
 
     # ── الجلسات ──
     SESSION_MAX_AGE_HOURS = 4
@@ -87,21 +83,8 @@ class Config:
     )
 
 
-# ── إعداد قاعدة البيانات ──
-try:
-    # 💡 تم تمرير tlsCAFile=certifi.where() لضمان نجاح الـ SSL Handshake بدون أخطاء
-    mongo_client = MongoClient(Config.MONGO_URI, serverSelectionTimeoutMS=5000, tlsCAFile=certifi.where())
-    db = mongo_client["cloudshell_bot"]
-    queue_col = db["deployment_queue"]
-    cooldown_col = db["cooldowns"]
-    mongo_client.server_info() # فحص الاتصال
-    MONGO_READY = True
-except Exception as e:
-    print(f"⚠️ تحذير: تعذر الاتصال بـ MongoDB. تأكد من إعداد MONGO_URI. الخطأ: {e}")
-    MONGO_READY = False
-
 # ╔═══════════════════════════════════════════════════════╗
-# ║  2 · LOGGING                                          ║
+# ║  2 · LOGGING & GLOBAL STATE                           ║
 # ╚═══════════════════════════════════════════════════════╝
 
 logging.basicConfig(
@@ -111,23 +94,34 @@ logging.basicConfig(
 )
 log = logging.getLogger("CSBot")
 
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  3 · BOT + GLOBAL STATE                               ║
-# ╚═══════════════════════════════════════════════════════╝
-
 if not Config.TOKEN:
     log.critical("❌ BOT_TOKEN غير موجود! أضفه كمتغير بيئة.")
     sys.exit(1)
 
 bot = telebot.TeleBot(Config.TOKEN)
 
+# 💡 إعداد قاعدة بيانات MongoDB لتخفيف الحمل عن الذاكرة
+mongo_client = None
+db = None
+users_col = None
+local_cooldowns = {} # ذاكرة احتياطية في حال تعطل قاعدة البيانات
+
+if Config.MONGO_URI:
+    try:
+        mongo_client = pymongo.MongoClient(Config.MONGO_URI, serverSelectionTimeoutMS=5000)
+        db = mongo_client["cloudshell_bot"]
+        users_col = db["users"]
+        log.info("✅ تم الاتصال بقاعدة بيانات MongoDB بنجاح")
+    except Exception as e:
+        log.error(f"❌ فشل الاتصال بـ MongoDB سيتم استخدام الذاكرة المؤقتة: {e}")
+
 user_sessions: dict = {}
 sessions_lock = threading.Lock()
 chromedriver_lock = threading.Lock()
 shutdown_event = threading.Event()
 
-# 💡 نظام الطابور المباشر
+# 💡 نظام الطابور (Queue System)
+deployment_queue = queue.Queue()
 active_task_cid = None
 queue_lock = threading.Lock()
 
@@ -155,13 +149,12 @@ class HealthHandler(BaseHTTPRequestHandler):
                     }
                     for cid, s in user_sessions.items()
                 ]
-            q_size = queue_col.count_documents({}) if MONGO_READY else 0
             payload = json.dumps(
                 {
                     "status": "running",
                     "version": Config.VERSION,
                     "sessions": active,
-                    "queue_size": q_size,
+                    "queue_size": deployment_queue.qsize(),
                     "details": details,
                     "ts": datetime.now().isoformat(),
                 },
@@ -201,46 +194,8 @@ if display is None:
 
 
 # ╔═══════════════════════════════════════════════════════╗
-# ║  6 · UTILITY HELPERS & MONGODB LOGIC                  ║
+# ║  6 · UTILITY HELPERS                                   ║
 # ╚═══════════════════════════════════════════════════════╝
-
-def is_user_in_cooldown(chat_id):
-    """فحص ما إذا كان المستخدم في فترة الحظر"""
-    if not MONGO_READY: return False
-    record = cooldown_col.find_one({"chat_id": chat_id})
-    if record and time.time() < record.get("expires_at", 0):
-        return True
-    return False
-
-def set_user_cooldown(chat_id):
-    """تطبيق الحظر على المستخدم"""
-    if not MONGO_READY: return
-    expires = time.time() + (Config.COOLDOWN_MINUTES * 60)
-    cooldown_col.update_one({"chat_id": chat_id}, {"$set": {"expires_at": expires}}, upsert=True)
-
-def track_message(session, msg_id):
-    """تتبع رسائل البوت ليتم حذفها لاحقاً لتنظيف الشات"""
-    if msg_id and "tracked_messages" in session:
-        session["tracked_messages"].append(msg_id)
-
-def send_safe(chat_id, text, session=None, **kw):
-    """إرسال رسالة مع حماية من الأخطاء وتسجيل الـ ID للحذف"""
-    try:
-        msg = bot.send_message(chat_id, text, **kw)
-        if session: track_message(session, msg.message_id)
-        return msg
-    except Exception as e:
-        log.warning(f"send_safe: {e}")
-        return None
-
-def edit_safe(chat_id, message_id, text, **kw):
-    """تحديث رسالة موجودة بدلاً من إرسال رسالة جديدة لمنع التشتت"""
-    try:
-        return bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, **kw)
-    except Exception as e:
-        if "is not modified" not in str(e).lower():
-            log.warning(f"edit_safe: {e}")
-        return None
 
 def find_path(names, extras=None):
     for n in names:
@@ -337,6 +292,24 @@ def fmt_duration(secs):
     if secs < 3600:
         return f"{int(secs // 60)}د {int(secs % 60)}ث"
     return f"{int(secs // 3600)}س {int((secs % 3600) // 60)}د"
+
+
+def send_safe(chat_id, text, **kw):
+    """إرسال رسالة مع حماية من الأخطاء"""
+    try:
+        return bot.send_message(chat_id, text, **kw)
+    except Exception as e:
+        log.warning(f"send_safe: {e}")
+        return None
+
+def edit_safe(chat_id, message_id, text, **kw):
+    """تحديث رسالة موجودة بدلاً من إرسال رسالة جديدة لمنع التشتت"""
+    try:
+        return bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, **kw)
+    except Exception as e:
+        if "is not modified" not in str(e).lower():
+            log.warning(f"edit_safe: {e}")
+        return None
 
 
 # ╔═══════════════════════════════════════════════════════╗
@@ -477,12 +450,10 @@ def _new_session_dict(driver, url, project_id, gen):
         "gen": gen,
         "run_api_checked": False,
         "shell_loading_until": 0,
-        "waiting_for_region": False,
-        "region_ask_time": 0,           # 💡 لتتبع الـ 30 ثانية
-        "selected_region": None,
-        "vless_installed": False,
-        "status_msg_id": None,
-        "tracked_messages": [],         # 💡 تتبع الرسائل لحذفها لاحقاً
+        "waiting_for_region": False,    
+        "selected_region": None,        
+        "vless_installed": False,       
+        "status_msg_id": None,          # رسالة التحديثات
         "created_at": time.time(),
         "cmd_history": [],
         "last_activity": time.time(),
@@ -498,21 +469,11 @@ def safe_quit(driver):
         gc.collect()
 
 
-def cleanup_session(chat_id, force_delete_messages=False):
+def cleanup_session(chat_id):
     with sessions_lock:
         s = user_sessions.pop(chat_id, None)
     if s:
         s["running"] = False
-        
-        # 💡 التنظيف الشامل للرسائل المتبقية إذا طُلب ذلك
-        if force_delete_messages:
-            for m_id in s.get("tracked_messages", []):
-                try: bot.delete_message(chat_id, m_id)
-                except Exception: pass
-            if s.get("msg_id"):
-                try: bot.delete_message(chat_id, s["msg_id"])
-                except Exception: pass
-                
         safe_quit(s.get("driver"))
         gc.collect()
 
@@ -778,24 +739,20 @@ def send_command(driver, command):
 
 
 def read_terminal(driver):
-    """قراءة محتوى التيرمنال بعدة طرق"""
     if not driver:
         return None
 
     for js in [
-        # طريقة 1: xterm-rows
         """var rows=document.querySelectorAll('.xterm-rows > div');
            if(!rows.length){var x=document.querySelector('.xterm');
            if(x) rows=x.querySelectorAll('.xterm-rows > div');}
            if(rows.length){var l=[];rows.forEach(function(r){
            var t=(r.textContent||'');if(t.trim())l.push(t);});
            return l.join('\\n');}return null;""",
-        # طريقة 2: xterm-screen
         """var s=document.querySelector('.xterm-screen');
            if(s) return s.textContent||s.innerText;
            var x=document.querySelector('.xterm');
            if(x) return x.textContent||x.innerText;return null;""",
-        # طريقة 3: aria-live
         """var l=document.querySelector('[aria-live]');
            if(l) return l.textContent||l.innerText;return null;""",
     ]:
@@ -809,7 +766,6 @@ def read_terminal(driver):
 
 
 def extract_result(full_output, command):
-    """استخراج نتيجة أمر من مخرجات التيرمنال"""
     if not full_output:
         return None
     lines = full_output.split("\n")
@@ -858,7 +814,6 @@ def take_screenshot(driver):
 # ╚═══════════════════════════════════════════════════════╝
 
 def _click_if_visible(driver, xpath_list, delay_before=0.5, delay_after=2):
-    """محاولة نقر أول زر مرئي من قائمة XPath"""
     for xp in xpath_list:
         try:
             btns = driver.find_elements(By.XPATH, xp)
@@ -880,7 +835,6 @@ def _click_if_visible(driver, xpath_list, delay_before=0.5, delay_after=2):
 
 
 def handle_google_pages(driver, session):
-    """التعامل التلقائي مع جميع صفحات / نوافذ Google"""
     status = "مراقبة..."
     try:
         body = driver.find_element(By.TAG_NAME, "body").text[:5000]
@@ -889,7 +843,6 @@ def handle_google_pages(driver, session):
 
     bl = body.lower()
 
-    # ── Terms of Service ──
     if "agree and continue" in bl and "terms of service" in bl:
         try:
             for cb in driver.find_elements(By.XPATH,
@@ -908,7 +861,6 @@ def handle_google_pages(driver, session):
             log.info("✅ Terms accepted")
             return "✅ تم قبول الشروط"
 
-    # ── Authorize Cloud Shell ──
     if "authorize cloud shell" in bl:
         if _click_if_visible(driver, [
             "//button[normalize-space(.)='Authorize']",
@@ -918,7 +870,6 @@ def handle_google_pages(driver, session):
             return "✅ تم التفويض"
         return "🔐 بانتظار التفويض..."
 
-    # ── Continue (Cloud Shell free) ──
     if "cloud shell" in bl and "continue" in bl and "free" in bl:
         if _click_if_visible(driver, [
             "//a[contains(text(),'Continue')]",
@@ -929,7 +880,6 @@ def handle_google_pages(driver, session):
             return "✅ Continue"
         return "☁️ نافذة Cloud Shell..."
 
-    # ── Verify ──
     if "verify it" in bl:
         if _click_if_visible(driver, [
             "//button[contains(.,'Continue')]",
@@ -939,7 +889,6 @@ def handle_google_pages(driver, session):
             return "✅ Verify"
         return "🔐 تحقق..."
 
-    # ── I understand ──
     if _click_if_visible(driver, [
         "//*[contains(text(),'I understand')]",
         "//input[@value='I understand']",
@@ -947,7 +896,6 @@ def handle_google_pages(driver, session):
     ], 1, 4):
         return "✅ I understand"
 
-    # ── Sign-in rejected ──
     if "couldn't sign you in" in bl:
         try:
             driver.delete_all_cookies()
@@ -958,7 +906,6 @@ def handle_google_pages(driver, session):
             pass
         return "⚠️ تم رفض الدخول — إعادة محاولة"
 
-    # ── Generic Authorize ──
     if "authorize" in bl and ("cloud" in bl or "google" in bl):
         if _click_if_visible(driver, [
             "//button[normalize-space(.)='Authorize']",
@@ -967,14 +914,12 @@ def handle_google_pages(driver, session):
             session["auth"] = True
             return "✅ تم التفويض"
 
-    # ── Dismiss Gemini ──
     if "gemini" in bl and "dismiss" in bl:
         _click_if_visible(driver, [
             "//button[contains(.,'Dismiss')]",
             "//a[contains(.,'Dismiss')]",
         ], 0.3, 1)
 
-    # ── Trust project ──
     if "trust this project" in bl or "trust project" in bl:
         if _click_if_visible(driver, [
             "//button[contains(.,'Trust')]",
@@ -982,7 +927,6 @@ def handle_google_pages(driver, session):
         ]):
             return "✅ Trust"
 
-    # ── الحالة بحسب الرابط ──
     try:
         u = driver.current_url
     except Exception:
@@ -1006,67 +950,101 @@ REGION_JS = """
 var callback = arguments[arguments.length - 1];
 setTimeout(function() {
     try {
+        var clicked = false;
         var dd = document.querySelectorAll('mat-select, [role="combobox"]');
         for (var i = 0; i < dd.length; i++) {
-            if ((dd[i].getAttribute('aria-label') || '').toLowerCase().includes('region')) {
-                dd[i].click(); break;
+            var a = (dd[i].getAttribute('aria-label') || '').toLowerCase();
+            var id = (dd[i].getAttribute('id') || '').toLowerCase();
+            if (a.indexOf('region') !== -1 || id.indexOf('region') !== -1) {
+                dd[i].click(); clicked = true; break;
             }
         }
+        if (!clicked) {
+            var lbl = document.querySelectorAll('label, .mat-form-field-label');
+            for (var j = 0; j < lbl.length; j++) {
+                if (lbl[j].innerText && lbl[j].innerText.indexOf('Region') !== -1) {
+                    lbl[j].click(); clicked = true; break;
+                }
+            }
+        }
+        if (!clicked) { callback('NO_DROPDOWN'); return; }
         setTimeout(function() {
             var opts = document.querySelectorAll('mat-option, [role="option"]');
             var res = [];
             for (var k = 0; k < opts.length; k++) {
                 var o = opts[k];
-                if (o.getBoundingClientRect().width > 0 && !o.classList.contains('mat-option-disabled')) {
-                    var t = (o.innerText || '').trim().split('\\n')[0];
-                    if (t.includes('-') && !t.toLowerCase().includes('learn')) res.push(t);
-                }
+                var r = o.getBoundingClientRect();
+                var s = window.getComputedStyle(o);
+                if (r.width === 0 || r.height === 0 ||
+                    s.display === 'none' || s.visibility === 'hidden') continue;
+                if (o.classList.contains('mat-option-disabled') ||
+                    o.getAttribute('aria-disabled') === 'true') continue;
+                var t = (o.innerText || '').trim().split('\\n')[0];
+                if (t && t.indexOf('-') !== -1 &&
+                    t.toLowerCase().indexOf('learn') === -1) res.push(t);
             }
             document.dispatchEvent(new KeyboardEvent('keydown', {'key':'Escape'}));
+            var bk = document.querySelector('.cdk-overlay-backdrop');
+            if (bk) bk.click();
             callback(res.length ? res.join('\\n') : 'NO_REGIONS');
         }, 1500);
     } catch(e) { callback('ERROR:' + e); }
-}, 3000);
+}, 4000);
 """
+
 
 def do_cloud_run_extraction(driver, chat_id, session):
     pid = session.get("project_id")
-    if not pid: return True
+    if not pid:
+        return True
 
     cur = current_url(driver)
 
     if "run/create" not in cur:
         if not session.get("status_msg_id"):
-            msg = send_safe(chat_id, "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...", session)
+            msg = send_safe(chat_id, "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...")
             if msg: session["status_msg_id"] = msg.message_id
-        else: edit_safe(chat_id, session["status_msg_id"], "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...")
-        
-        safe_navigate(driver, f"https://console.cloud.google.com/run/create?enableapi=true&project={pid}")
+        else:
+            edit_safe(chat_id, session["status_msg_id"], "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...")
+            
+        safe_navigate(
+            driver,
+            f"https://console.cloud.google.com/run/create"
+            f"?enableapi=true&project={pid}",
+        )
         return False
 
     if session.get("status_msg_id"):
-        edit_safe(chat_id, session["status_msg_id"], "🔍 جاري قراءة السيرفرات المسموحة...")
+        edit_safe(chat_id, session["status_msg_id"], "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
 
     try:
-        driver.set_script_timeout(15)
+        driver.set_script_timeout(Config.SCRIPT_TIMEOUT)
         result = driver.execute_async_script(REGION_JS)
-        if result and result not in ("NO_DROPDOWN", "NO_REGIONS") and not result.startswith("ERROR:"):
+
+        if result is None or result == "NO_DROPDOWN" or result == "NO_REGIONS" or result.startswith("ERROR:"):
+            if session.get("status_msg_id"):
+                edit_safe(chat_id, session["status_msg_id"], "⚠️ تعذر جلب السيرفرات، سيتم تخطي الخطوة.")
+        else:
             regions = [r.strip() for r in result.split("\n") if r.strip()]
             
-            # 💡 عرض الأزرار في عمودين
             mk = InlineKeyboardMarkup(row_width=2)
-            mk.add(*[InlineKeyboardButton(r, callback_data=f"setreg_{r.split()[0]}") for r in regions])
+            buttons = [InlineKeyboardButton(r, callback_data=f"setreg_{r.split()[0]}") for r in regions]
+            mk.add(*buttons)
 
             if session.get("status_msg_id"):
                 edit_safe(
                     chat_id, session["status_msg_id"],
-                    "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:\n*(لديك 30 ثانية للاختيار قبل إلغاء الجلسة)*",
+                    "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:\n\n⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*",
                     reply_markup=mk,
                     parse_mode="Markdown"
                 )
+            else:
+                msg = send_safe(chat_id, "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:\n\n⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*", reply_markup=mk, parse_mode="Markdown")
+                if msg: session["status_msg_id"] = msg.message_id
             
             session["waiting_for_region"] = True
-            session["region_ask_time"] = time.time()  # 💡 بدء عداد الـ 30 ثانية
+            session["region_prompt_time"] = time.time()
+            
     except Exception as e:
         if session.get("status_msg_id"):
             edit_safe(chat_id, session["status_msg_id"], f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:100]}`", parse_mode="Markdown")
@@ -1078,16 +1056,17 @@ def do_cloud_run_extraction(driver, chat_id, session):
 # ║  14.5 · VLESS SCRIPT GENERATOR                        ║
 # ╚═══════════════════════════════════════════════════════╝
 
-def _generate_vless_cmd(region):
-    """
-    توليد السكريبت مع علامة انتهاء (===VLESS_DATA_END===).
-    البايثون هو من سيقرأ البيانات ويرسل الرسالة لتفادي أخطاء الـ Bash.
-    """
+def _generate_vless_cmd(region, token, chat_id):
+    """توليد السكريبت مع علامة انتهاء (=== VLESS_DEPLOYMENT_COMPLETE ===) للتعرف على نهايته وإيقاف البوت"""
+    
     script = f"""#!/bin/bash
 REGION="{region}"
 SERVICE_NAME="ocx-server-max"
 UUID=$(cat /proc/sys/kernel/random/uuid)
 
+echo "========================================="
+echo "🚀 جاري تنظيف البيئة والبدء من جديد..."
+echo "========================================="
 mkdir -p ~/vless-cloudrun-final
 cd ~/vless-cloudrun-final
 
@@ -1130,42 +1109,83 @@ EXPOSE 8080
 CMD ["xray", "-config", "/etc/xray/config.json"]
 EOF
 
-gcloud run deploy $SERVICE_NAME --source . --region=$REGION --allow-unauthenticated --timeout=3600 --no-cpu-throttling --execution-environment=gen2 --min-instances=1 --max-instances=8 --concurrency=100 --cpu=2 --memory=2Gi --quiet
+echo "========================================="
+echo "⚡ جاري بناء ونشر سيرفر VLESS..."
+echo "⚙️ الإعدادات: 2 vCPU | 2GB RAM | توسع حتى 8 حاويات (المجموع: 16 vCPU)"
+echo "========================================="
+gcloud run deploy $SERVICE_NAME \\
+    --source . \\
+    --region=$REGION \\
+    --allow-unauthenticated \\
+    --timeout=3600 \\
+    --no-cpu-throttling \\
+    --execution-environment=gen2 \\
+    --min-instances=1 \\
+    --max-instances=8 \\
+    --concurrency=100 \\
+    --cpu=2 \\
+    --memory=2Gi \\
+    --quiet
 
 PROJECT_ID=$(gcloud config get-value project)
 PROJECT_NUM=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
 DETERMINISTIC_HOST="${{SERVICE_NAME}}-${{PROJECT_NUM}}.${{REGION}}.run.app"
 DETERMINISTIC_URL="https://${{DETERMINISTIC_HOST}}"
 
-VLESS_LINK="vless://${{UUID}}@googlevideo.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${{DETERMINISTIC_HOST}}&type=ws&sni=googlevideo.com#𝗢 𝗖 𝗫 ⚡"
+# بناء الرسالة التي سيتم إرسالها بصمت عبر الكود
+MSG="✅ تم انشاء
 
-echo "===VLESS_DATA_START==="
-echo "URL|${{DETERMINISTIC_URL}}"
-echo "VLINK|${{VLESS_LINK}}"
-echo "===VLESS_DATA_END==="
+$DETERMINISTIC_URL
+
+<pre>vless://${{UUID}}@googlevideo.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${{DETERMINISTIC_HOST}}&type=ws&sni=googlevideo.com#𝗢 𝗖 𝗫 ⚡</pre>
+
+📊 <b>رابط إدارة ومراقبة السيرفر:</b>
+$DETERMINISTIC_URL"
+
+curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
+    -d chat_id="{chat_id}" \\
+    -d parse_mode="HTML" \\
+    --data-urlencode text="$MSG"
+
+# 💡 علامة النهاية ليتعرف البوت على انتهاء المهمة بنجاح ويقوم بعمل التنظيف والتوقف
+echo ""
+echo "=== VLESS_DEPLOYMENT_COMPLETE ==="
 """
     b64 = base64.b64encode(script.encode('utf-8')).decode('utf-8')
     return f"echo {b64} | base64 -d > deploy_vless.sh && bash deploy_vless.sh\n"
 
 
 # ╔═══════════════════════════════════════════════════════╗
-# ║  15 · STREAM ENGINE & AUTOMATION                      ║
+# ║  15 · STREAM ENGINE                                   ║
 # ╚═══════════════════════════════════════════════════════╝
+
+_TIMEOUT_KEYS = (
+    "urllib3", "requests", "readtimeout", "connection aborted",
+    "timeout", "read timed out", "max retries", "connecttimeout",
+)
+_DRIVER_KEYS = (
+    "invalid session id", "chrome not reachable",
+    "disconnected:", "crashed", "no such session",
+)
+
 
 def _update_stream(driver, chat_id, session, status, flash):
     flash = not flash
     icon = "🔴" if flash else "⭕"
     now = datetime.now().strftime("%H:%M:%S")
-    proj = f"📁 {session.get('project_id','')}" if session.get("project_id") else ""
-    extra = " | ⌨️" if session.get("terminal_ready") else ""
+    proj = f"📁 {session['project_id']}" if session.get("project_id") else ""
+    extra = ""
+    if session.get("terminal_ready"):
+        extra += " | ⌨️"
     loading = session.get("shell_loading_until", 0)
-    if time.time() < loading: extra += f" | ⏳{int(loading - time.time())}s"
+    if time.time() < loading:
+        extra += f" | ⏳{int(loading - time.time())}s"
 
     cap = f"{icon} بث مباشر\n{proj}\n📌 {status}{extra}\n⏱ {now}"
 
     png = driver.get_screenshot_as_png()
     bio = io.BytesIO(png)
-    bio.name = f"l_{int(time.time())}.png"
+    bio.name = f"l_{int(time.time())}_{random.randint(10,99)}.png"
 
     try:
         bot.edit_message_media(
@@ -1177,12 +1197,14 @@ def _update_stream(driver, chat_id, session, status, flash):
     except Exception:
         pass
     bio.close()
+    del png
     return flash
 
 
 def stream_loop(chat_id, gen):
     with sessions_lock:
-        if chat_id not in user_sessions: return
+        if chat_id not in user_sessions:
+            return
         session = user_sessions[chat_id]
 
     driver = session["driver"]
@@ -1201,36 +1223,33 @@ def stream_loop(chat_id, gen):
             except Exception:
                 pass
             
-            # 💡 نظام التنظيف والإنهاء وقراءة النتيجة من التيرمنال
+            # 💡 نظام التنظيف الذاتي (Auto Cleanup) والإيقاف عند الانتهاء
             if session.get("vless_installed"):
                 term_text = read_terminal(driver) or ""
-                if "===VLESS_DATA_END===" in term_text:
-                    url_match = re.search(r"URL\|(https://[^\n]+)", term_text)
-                    vlink_match = re.search(r"VLINK\|(vless://[^\n]+)", term_text)
+                if "=== VLESS_DEPLOYMENT_COMPLETE ===" in term_text:
+                    time.sleep(2) # إعطاء فرصة لضمان إرسال الكود للتيليجرام عبر curl
                     
-                    if url_match and vlink_match:
-                        final_url = url_match.group(1).strip()
-                        final_vlink = vlink_match.group(1).strip()
+                    # 1. حذف صورة البث المباشر (تنظيف المحادثة)
+                    if session.get("msg_id"):
+                        try: bot.delete_message(chat_id, session["msg_id"])
+                        except Exception: pass
                         
-                        # استخراج رابط المراقبة Web Preview لـ Port 8080
-                        web_preview = ""
-                        try:
-                            host = driver.execute_script("return window.location.hostname;")
-                            if host and "cloudshell.dev" in host:
-                                web_preview = f"\n\n📊 **مراقبة السيرفر:**\n`https://8080-{host}`"
-                        except: pass
-
-                        # 1. تنظيف المحادثة تماماً (حذف البث ورسائل التحديثات)
-                        cleanup_session(chat_id, force_delete_messages=True)
-                        
-                        # 2. إرسال الرسالة الختامية الأنيقة بصيغة HTML للصندوق الأسود
-                        final_msg = f"✅ Create\n\n{final_url}\n\n<pre>{final_vlink}</pre>{web_preview}"
-                        bot.send_message(chat_id, final_msg, parse_mode="HTML")
-                        
-                        # 3. وضع المستخدم في قائمة الحظر المؤقت (Cooldown)
-                        set_user_cooldown(chat_id)
-                        break # إيقاف اللوب (وبالتالي إنهاء الجلسة)
-                continue
+                    # 2. حذف رسالة تحديثات الحالة السابقة (لتنظيف المحادثة)
+                    if session.get("status_msg_id"):
+                        try: bot.delete_message(chat_id, session["status_msg_id"])
+                        except Exception: pass
+                    
+                    # 3. حفظ وقت الحظر (15 دقيقة) في MongoDB لمنع التكرار
+                    cooldown_time = time.time() + (15 * 60)
+                    if users_col is not None:
+                        users_col.update_one({"_id": chat_id}, {"$set": {"vless_cooldown": cooldown_time}}, upsert=True)
+                    else:
+                        local_cooldowns[chat_id] = cooldown_time
+                    
+                    # 4. إيقاف الجلسة بصمت للبدء بالشخص التالي في الطابور
+                    session["running"] = False
+                    break
+            continue
 
         time.sleep(random.uniform(*Config.STREAM_INTERVAL))
         if not session["running"] or session.get("gen") != gen:
@@ -1244,27 +1263,45 @@ def stream_loop(chat_id, gen):
 
             try:
                 if time.time() >= session.get("shell_loading_until", 0):
-                    flash = _update_stream(driver, chat_id, session, status, flash)
+                    flash = _update_stream(
+                        driver, chat_id, session, status, flash
+                    )
                 err_n = 0
                 drv_err = 0
             except Exception as e:
-                if "message is not modified" not in str(e).lower(): raise
+                if "message is not modified" not in str(e).lower():
+                    raise
 
-            on_console = any(k in cur for k in ("console.cloud.google.com", "myaccount.google.com"))
+            on_console = any(
+                k in cur for k in (
+                    "console.cloud.google.com", "myaccount.google.com"
+                )
+            )
             on_shell = is_shell_page(driver)
 
-            # 💡 التحقق من مهلة الـ 30 ثانية لاختيار السيرفر
             if session.get("waiting_for_region"):
-                if time.time() - session.get("region_ask_time", 0) > Config.REGION_TIMEOUT_SEC:
+                # 💡 نظام المؤقت 30 ثانية لاختيار السيرفر
+                if time.time() - session.get("region_prompt_time", time.time()) > 30:
+                    send_safe(chat_id, "⏱️ **انتهى الوقت!**\nلم تقم باختيار السيرفر خلال 30 ثانية. تم إيقاف العملية لإفساح المجال في الطابور.\nيرجى إرسال الرابط وإعادة المحاولة.", parse_mode="Markdown")
+                    
+                    # تنظيف الشات لترتيب الطابور
                     if session.get("status_msg_id"):
-                        edit_safe(chat_id, session["status_msg_id"], "⏳ **انتهى الوقت!**\nلم تقم باختيار سيرفر خلال 30 ثانية. تم إنهاء الجلسة لإفساح المجال للآخرين.", parse_mode="Markdown")
-                    cleanup_session(chat_id, force_delete_messages=False)
+                        try: bot.delete_message(chat_id, session["status_msg_id"])
+                        except: pass
+                    if session.get("msg_id"):
+                        try: bot.delete_message(chat_id, session["msg_id"])
+                        except: pass
+                        
+                    session["running"] = False
                     break
-                continue
-
-            elif (session.get("project_id") and not session.get("run_api_checked") and on_console):
-                popup = status not in ("مراقبة...", "📊 Console", "✅ Terminal")
-                auth_url = any(k in cur.lower() for k in ("signin", "challenge", "speedbump", "accounts.google.com"))
+            elif (session.get("project_id")
+                    and not session.get("run_api_checked")
+                    and on_console):
+                popup = status not in ("مراقبة...", "📊 Console",
+                                       "✅ Terminal جاهز")
+                auth_url = any(k in cur.lower() for k in
+                               ("signin", "challenge", "speedbump",
+                                "accounts.google.com"))
                 if not popup and not auth_url:
                     gc.collect()
                     if do_cloud_run_extraction(driver, chat_id, session):
@@ -1280,27 +1317,43 @@ def stream_loop(chat_id, gen):
                     if region and not session.get("vless_installed"):
                         session["vless_installed"] = True
                         
-                        cmd = _generate_vless_cmd(region)
+                        cmd = _generate_vless_cmd(region, Config.TOKEN, chat_id)
                         send_command(driver, cmd)
                         
-                        try: _update_stream(driver, chat_id, session, "⚙️ Deploying VLESS...", flash)
-                        except Exception: pass
+                        try:
+                            _update_stream(driver, chat_id, session, "⚙️ Deploying VLESS...", flash)
+                        except Exception:
+                            pass
                     else:
                         send_safe(
                             chat_id,
-                            "🖥️ **Terminal جاهز تماماً!** ✅\n\nتم تفعيل **⌨️ وضع الأوامر** تلقائياً.",
-                            session, parse_mode="Markdown",
+                            "🖥️ **Terminal جاهز تماماً!** ✅\n\n"
+                            "تم تفعيل **⌨️ وضع الأوامر** تلقائياً.\n"
+                            "أرسل أوامرك مباشرة كرسالة عادية.",
+                            parse_mode="Markdown",
                         )
+                        try:
+                            _update_stream(driver, chat_id, session, "✅ Terminal Ready", flash)
+                        except Exception:
+                            pass
 
-            if cycle % 8 == 0: gc.collect()
+            if cycle % 8 == 0:
+                gc.collect()
 
         except Exception as e:
             em = str(e).lower()
-            if "message is not modified" in em: continue
-            if any(k in em for k in _TIMEOUT_KEYS): time.sleep(2); continue
-            if time.time() < session.get("shell_loading_until", 0): time.sleep(3); continue
+            if "message is not modified" in em:
+                continue
+            if any(k in em for k in _TIMEOUT_KEYS):
+                time.sleep(2)
+                continue
+            if time.time() < session.get("shell_loading_until", 0):
+                time.sleep(3)
+                continue
 
             err_n += 1
+            log.warning(f"Stream err ({err_n}): {str(e)[:120]}")
+
             if "too many requests" in em or "retry after" in em:
                 w = re.search(r"retry after (\d+)", em)
                 time.sleep(int(w.group(1)) if w else 5)
@@ -1309,33 +1362,44 @@ def stream_loop(chat_id, gen):
                 if drv_err >= Config.MAX_DRV_ERR_BEFORE_RESTART:
                     _restart_driver(chat_id, session)
                     driver = session["driver"]
-                    drv_err = 0; err_n = 0; time.sleep(5)
+                    drv_err = 0
+                    err_n = 0
+                    time.sleep(5)
             elif err_n >= Config.MAX_ERR_BEFORE_REFRESH:
-                try: driver.refresh(); err_n = 0
-                except Exception: drv_err += 1
+                try:
+                    driver.refresh()
+                    err_n = 0
+                except Exception:
+                    drv_err += 1
 
+    log.info(f"🛑 Stream ended: {chat_id}")
     gc.collect()
 
 
 def _restart_driver(chat_id, session):
-    send_safe(chat_id, "🔁 إعادة تشغيل المتصفح...", session)
+    send_safe(chat_id, "🔁 إعادة تشغيل المتصفح...")
     try:
         safe_quit(session.get("driver"))
         new_drv = create_driver()
         session["driver"] = new_drv
         new_drv.get(session.get("url", "about:blank"))
         session.update({
-            "shell_opened": False, "auth": False, "terminal_ready": False,
-            "terminal_notified": False, "run_api_checked": False, "shell_loading_until": 0,
+            "shell_opened": False,
+            "auth": False,
+            "terminal_ready": False,
+            "terminal_notified": False,
+            "run_api_checked": False,
+            "shell_loading_until": 0,
         })
-        send_safe(chat_id, "✅ تم إعادة التشغيل بنجاح!", session)
+        send_safe(chat_id, "✅ تم إعادة التشغيل بنجاح!")
     except Exception as e:
-        send_safe(chat_id, f"❌ فشل إعادة التشغيل:\n`{str(e)[:200]}`", session, parse_mode="Markdown")
+        send_safe(chat_id, f"❌ فشل إعادة التشغيل:\n`{str(e)[:200]}`",
+                  parse_mode="Markdown")
         session["running"] = False
 
 
 # ╔═══════════════════════════════════════════════════════╗
-# ║  16 · QUEUE WORKER & START STREAM                     ║
+# ║  16 · START STREAM (Synchronous for Queue)            ║
 # ╚═══════════════════════════════════════════════════════╝
 
 def start_stream_sync(chat_id, url):
@@ -1348,8 +1412,8 @@ def start_stream_sync(chat_id, url):
             old["gen"] = old.get("gen", 0) + 1
             old_drv = old.get("driver")
 
-    msg = send_safe(chat_id, "⚡ جاري التجهيز لإنشاء السيرفر الخاص بك...")
-    status_msg_id = msg.message_id if msg else None
+    status_msg = send_safe(chat_id, "⚡ جاري التجهيز للبدء بعمليتك...")
+    status_msg_id = status_msg.message_id if status_msg else None
 
     if old_drv:
         safe_quit(old_drv)
@@ -1366,12 +1430,15 @@ def start_stream_sync(chat_id, url):
 
     gen = int(time.time())
     with sessions_lock:
-        user_sessions[chat_id] = _new_session_dict(driver, url, project_id, gen)
+        user_sessions[chat_id] = _new_session_dict(
+            driver, url, project_id, gen
+        )
         session = user_sessions[chat_id]
-        if status_msg_id: session["tracked_messages"].append(status_msg_id)
 
-    try: driver.get(url)
-    except Exception: pass
+    try:
+        driver.get(url)
+    except Exception as e:
+        pass
     time.sleep(5)
 
     try:
@@ -1380,12 +1447,12 @@ def start_stream_sync(chat_id, url):
         bio = io.BytesIO(png)
         bio.name = f"s_{int(time.time())}.png"
         
-        # إخفاء رسالة المتصفح جاهز واستبدالها بالبث
+        # 💡 حذف رسالة "المتصفح جاهز" لإبقاء الشات نظيف قبل البث
         if status_msg_id:
             try: bot.delete_message(chat_id, status_msg_id)
             except: pass
 
-        m = bot.send_photo(
+        msg = bot.send_photo(
             chat_id, bio,
             caption="🔴 بث مباشر\n📌 جاري البدء...",
             reply_markup=build_panel(),
@@ -1394,39 +1461,47 @@ def start_stream_sync(chat_id, url):
         del png
 
         with sessions_lock:
-            session["msg_id"] = m.message_id
+            session["msg_id"] = msg.message_id
             session["running"] = True
 
         # تشغيل الجلسة بوضع مزامن (Sync) لضمان إيقاف الطابور حتى ينتهي
         stream_loop(chat_id, gen)
 
-    except Exception:
+    except Exception as e:
         cleanup_session(chat_id)
 
 
+# ╔═══════════════════════════════════════════════════════╗
+# ║  16.5 · QUEUE WORKER SYSTEM                           ║
+# ╚═══════════════════════════════════════════════════════╝
+
 def queue_worker():
-    """نظام الطابور المعتمد على MongoDB لمعالجة طلب واحد في كل مرة"""
+    """هذه الدالة تعمل باستمرار لمعالجة الطلبات في الطابور واحداً تلو الآخر"""
     global active_task_cid
     while not shutdown_event.is_set():
-        if not MONGO_READY: time.sleep(5); continue
-        
         try:
-            task = queue_col.find_one_and_delete({}, sort=[("ts", 1)])
-            if task:
-                cid = task["chat_id"]
-                url = task["url"]
+            task = deployment_queue.get(timeout=2)
+            cid = task["chat_id"]
+            url = task["url"]
+            
+            with queue_lock:
+                active_task_cid = cid
                 
-                with queue_lock: active_task_cid = cid
-                start_stream_sync(cid, url)
-                
-                # عند الانتهاء (أو الإيقاف)، تنظيف الذاكرة وأخذ الطلب التالي
-                cleanup_session(cid)
-                with queue_lock: active_task_cid = None
-            else: time.sleep(2)
+            log.info(f"🚀 بدء معالجة طلب الطابور للمستخدم: {cid}")
+            start_stream_sync(cid, url)
+            
+            # عند الانتهاء (أو الإيقاف)، يتم تنظيف المتغير وأخذ الطلب التالي
+            cleanup_session(cid)
+            with queue_lock:
+                active_task_cid = None
+            deployment_queue.task_done()
+            
+        except queue.Empty:
+            continue
         except Exception as e:
             log.error(f"Queue worker error: {e}")
-            with queue_lock: active_task_cid = None
-            time.sleep(2)
+            with queue_lock:
+                active_task_cid = None
 
 
 # ╔═══════════════════════════════════════════════════════╗
@@ -1435,10 +1510,14 @@ def queue_worker():
 
 def _adaptive_wait(command):
     cl = command.lower()
-    if any(k in cl for k in Config.SLOW_CMDS): return 10
-    if any(k in cl for k in Config.FAST_CMDS): return 2
-    if "|" in command or ">" in command: return 5
+    if any(k in cl for k in Config.SLOW_CMDS):
+        return 10
+    if any(k in cl for k in Config.FAST_CMDS):
+        return 2
+    if "|" in command or ">" in command:
+        return 5
     return 3
+
 
 def execute_command(chat_id, command):
     session = get_session(chat_id)
@@ -1452,7 +1531,9 @@ def execute_command(chat_id, command):
         return
 
     if not is_shell_page(driver):
-        send_safe(chat_id, "⚠️ لست في Cloud Shell بعد.\nانتظر حتى يصل البوت للتيرمنال.")
+        send_safe(chat_id,
+            "⚠️ لست في Cloud Shell بعد.\n"
+            "انتظر حتى يصل البوت للتيرمنال.")
         return
 
     session["terminal_ready"] = True
@@ -1460,15 +1541,19 @@ def execute_command(chat_id, command):
 
     history = session.setdefault("cmd_history", [])
     history.append({"cmd": command, "ts": datetime.now().isoformat()})
-    if len(history) > 20: history.pop(0)
+    if len(history) > 20:
+        history.pop(0)
 
-    status_msg = send_safe(chat_id, f"⏳ جاري تنفيذ:\n`{command}`", session, parse_mode="Markdown")
+    status_msg = send_safe(chat_id, f"⏳ جاري تنفيذ:\n`{command}`",
+                           parse_mode="Markdown")
 
     text_before = read_terminal(driver) or ""
     success = send_command(driver, command)
 
     if not success:
-        send_safe(chat_id, "⚠️ فشل إرسال الأمر للتيرمنال.\nجرّب 🔄 تحديث ثم أعد المحاولة.", session)
+        send_safe(chat_id,
+            "⚠️ فشل إرسال الأمر للتيرمنال.\n"
+            "جرّب 🔄 تحديث ثم أعد المحاولة.")
         if status_msg:
             try: bot.delete_message(chat_id, status_msg.message_id)
             except: pass
@@ -1484,8 +1569,10 @@ def execute_command(chat_id, command):
         if len(text_after) > len(text_before):
             new_part = text_after[len(text_before):].strip()
             output = new_part or extract_result(text_after, command) or ""
-        else: output = extract_result(text_after, command) or ""
-    elif text_after: output = extract_result(text_after, command) or ""
+        else:
+            output = extract_result(text_after, command) or ""
+    elif text_after:
+        output = extract_result(text_after, command) or ""
 
     if output:
         lines = output.split("\n")
@@ -1493,24 +1580,47 @@ def execute_command(chat_id, command):
         skip_first = False
         for ln in lines:
             if not skip_first and command in ln:
-                skip_first = True; continue
+                skip_first = True
+                continue
             cleaned.append(ln)
         output = "\n".join(cleaned).strip()
 
     bio = take_screenshot(driver)
 
     if output:
-        if len(output) > 3900: output = output[:3900] + "\n… (تم اقتطاع النص)"
+        if len(output) > 3900:
+            output = output[:3900] + "\n… (تم اقتطاع النص)"
         try:
-            send_safe(chat_id, f"✅ **الأمر:**\n`{command}`\n\n📋 **النتيجة:**\n```\n{output}\n```", session, parse_mode="Markdown", reply_markup=build_panel(cmd_mode=True))
+            send_safe(
+                chat_id,
+                f"✅ **الأمر:**\n`{command}`\n\n"
+                f"📋 **النتيجة:**\n```\n{output}\n```",
+                parse_mode="Markdown",
+                reply_markup=build_panel(cmd_mode=True),
+            )
         except Exception:
-            send_safe(chat_id, f"✅ الأمر: {command}\n\n📋 النتيجة:\n{output}", session, reply_markup=build_panel(cmd_mode=True))
+            send_safe(
+                chat_id,
+                f"✅ الأمر: {command}\n\n📋 النتيجة:\n{output}",
+                reply_markup=build_panel(cmd_mode=True),
+            )
     else:
-        send_safe(chat_id, f"✅ تم تنفيذ: `{command}`\n📋 لم يُلتقط نص (شاهد الصورة)", session, parse_mode="Markdown")
+        send_safe(
+            chat_id,
+            f"✅ تم تنفيذ: `{command}`\n📋 لم يُلتقط نص (شاهد الصورة)",
+            parse_mode="Markdown",
+        )
 
     if bio:
-        try: bot.send_photo(chat_id, bio, caption=f"📸 بعد: `{command}`", parse_mode="Markdown", reply_markup=build_panel(cmd_mode=True))
-        except Exception: pass
+        try:
+            bot.send_photo(
+                chat_id, bio,
+                caption=f"📸 بعد: `{command}`",
+                parse_mode="Markdown",
+                reply_markup=build_panel(cmd_mode=True),
+            )
+        except Exception:
+            pass
         bio.close()
 
     if status_msg:
@@ -1533,22 +1643,23 @@ def cmd_help(msg):
 @bot.message_handler(commands=["status"])
 def cmd_status(msg):
     cid = msg.chat.id
-    if MONGO_READY:
-        in_queue = queue_col.count_documents({"chat_id": cid}) > 0
-        if in_queue: bot.reply_to(msg, "⏳ أنت حالياً في طابور الانتظار."); return
-        
-        cd = cooldown_col.find_one({"chat_id": cid})
-        if cd and time.time() < cd["expires_at"]:
-            bot.reply_to(msg, "⏳ لديك حظر مؤقت نشط لمنع الضغط. يرجى الانتظار."); return
-
     s = get_session(cid)
-    if not s: bot.reply_to(msg, "❌ لا توجد جلسة نشطة."); return
-    
+    if not s:
+        # إخبار المستخدم إذا كان في الطابور
+        in_queue = any(t["chat_id"] == cid for t in list(deployment_queue.queue))
+        if in_queue:
+            bot.reply_to(msg, "⏳ أنت حالياً في طابور الانتظار. سيتم البدء فور توفر مساحة.")
+        else:
+            bot.reply_to(msg, "❌ لا توجد جلسة نشطة.\nأرسل رابط SSO للبدء.")
+        return
+
     uptime = fmt_duration(time.time() - s.get("created_at", time.time()))
     drv = s.get("driver")
     cur = current_url(drv) if drv else "غير متوفر"
     hist = s.get("cmd_history", [])
-    last_cmds = "\n".join([f"  • `{h['cmd']}`" for h in hist[-5:]]) if hist else "  لا يوجد"
+    last_cmds = "\n".join(
+        [f"  • `{h['cmd']}`" for h in hist[-5:]]
+    ) if hist else "  لا يوجد"
 
     text = (
         "ℹ️ **حالة الجلسة**\n"
@@ -1567,37 +1678,51 @@ def cmd_status(msg):
 def cmd_stop(msg):
     cid = msg.chat.id
     s = get_session(cid)
-    
-    # محاولة سحبه من الطابور إذا كان موجوداً
-    if MONGO_READY:
-        res = queue_col.delete_one({"chat_id": cid})
-        if res.deleted_count > 0:
-            bot.reply_to(msg, "🛑 تم سحب طلبك من الطابور بنجاح.")
-            return
-            
     if not s:
-        bot.reply_to(msg, "❌ لا توجد جلسة نشطة أو طلب في الطابور لإيقافه.")
+        # السماح بإزالة الطلب من الطابور
+        removed = False
+        with deployment_queue.mutex:
+            for i, item in enumerate(deployment_queue.queue):
+                if item['chat_id'] == cid:
+                    del deployment_queue.queue[i]
+                    removed = True
+                    break
+        if removed:
+            bot.reply_to(msg, "🛑 تم سحب طلبك من الطابور بنجاح.")
+        else:
+            bot.reply_to(msg, "❌ لا توجد جلسة نشطة أو طلب في الطابور لإيقافه.")
         return
         
     s["running"] = False
     s["gen"] = s.get("gen", 0) + 1
-    try: bot.edit_message_caption("🛑 تم الإيقاف", chat_id=cid, message_id=s.get("msg_id"))
-    except Exception: pass
+    try:
+        bot.edit_message_caption(
+            "🛑 تم الإيقاف",
+            chat_id=cid, message_id=s.get("msg_id"),
+        )
+    except Exception:
+        pass
     cleanup_session(cid)
-    bot.reply_to(msg, "🛑 تم إيقاف الجلسة بنجاح.")
+    bot.reply_to(msg, "🛑 تم إيقاف الجلسة بنجاح.\nجاري إفساح المجال للشخص التالي...")
 
 @bot.message_handler(commands=["restart"])
 def cmd_restart(msg):
     cid = msg.chat.id
     s = get_session(cid)
-    if not s: bot.reply_to(msg, "❌ لا توجد جلسة."); return
-    threading.Thread(target=_restart_driver, args=(cid, s), daemon=True).start()
+    if not s:
+        bot.reply_to(msg, "❌ لا توجد جلسة.")
+        return
+    threading.Thread(
+        target=_restart_driver, args=(cid, s), daemon=True
+    ).start()
 
 @bot.message_handler(commands=["url"])
 def cmd_url(msg):
     cid = msg.chat.id
     s = get_session(cid)
-    if not s or not s.get("driver"): bot.reply_to(msg, "❌ لا توجد جلسة نشطة."); return
+    if not s or not s.get("driver"):
+        bot.reply_to(msg, "❌ لا توجد جلسة نشطة.")
+        return
     u = current_url(s["driver"])
     bot.reply_to(msg, f"🌐 الصفحة الحالية:\n`{u}`", parse_mode="Markdown")
 
@@ -1605,54 +1730,78 @@ def cmd_url(msg):
 def cmd_command(msg):
     parts = msg.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.reply_to(msg, "💡 **الاستخدام:**\n`/cmd ls -la`\n`/cmd gcloud config list`", parse_mode="Markdown")
+        bot.reply_to(
+            msg,
+            "💡 **الاستخدام:**\n"
+            "`/cmd ls -la`\n"
+            "`/cmd gcloud config list`",
+            parse_mode="Markdown",
+        )
         return
-    threading.Thread(target=execute_command, args=(msg.chat.id, parts[1]), daemon=True).start()
+    threading.Thread(
+        target=execute_command,
+        args=(msg.chat.id, parts[1]),
+        daemon=True,
+    ).start()
 
 @bot.message_handler(commands=["screenshot", "ss"])
 def cmd_ss(msg):
     cid = msg.chat.id
     s = get_session(cid)
-    if not s or not s.get("driver"): bot.reply_to(msg, "❌ لا توجد جلسة نشطة."); return
+    if not s or not s.get("driver"):
+        bot.reply_to(msg, "❌ لا توجد جلسة نشطة.")
+        return
     bio = take_screenshot(s["driver"])
     if bio:
         now = datetime.now().strftime("%H:%M:%S")
-        bot.send_photo(cid, bio, caption=f"📸 لقطة شاشة — {now}", reply_markup=build_panel(s.get("cmd_mode", False)))
+        bot.send_photo(
+            cid, bio,
+            caption=f"📸 لقطة شاشة — {now}",
+            reply_markup=build_panel(s.get("cmd_mode", False)),
+        )
         bio.close()
-    else: bot.reply_to(msg, "❌ فشل التقاط الشاشة.")
+    else:
+        bot.reply_to(msg, "❌ فشل التقاط الشاشة.")
 
-# ── معالج الروابط و نظام الطابور ──
-@bot.message_handler(func=lambda m: (m.text and m.text.startswith("https://www.skills.google/google_sso")))
+# ── معالج الروابط ──
+@bot.message_handler(func=lambda m: (
+    m.text and m.text.startswith("https://www.skills.google/google_sso")
+))
 def handle_url_msg(msg):
     cid = msg.chat.id
     url = msg.text.strip()
     
-    if not MONGO_READY:
-        bot.reply_to(msg, "❌ قاعدة البيانات غير متصلة. لا يمكن حفظ الطلبات في الطابور.")
+    # 💡 التحقق من فترة الانتظار (Cooldown) في قاعدة البيانات لمنع التكرار
+    cooldown_expiry = 0
+    if users_col is not None:
+        user_record = users_col.find_one({"_id": cid})
+        if user_record and "vless_cooldown" in user_record:
+            cooldown_expiry = user_record["vless_cooldown"]
+    else:
+        cooldown_expiry = local_cooldowns.get(cid, 0)
+
+    if time.time() < cooldown_expiry:
+        bot.reply_to(msg, "⏳ **يرجى الانتظار!**\nلديك سيرفر VLESS قيد العمل حالياً.\nيرجى الانتظار حتى ينتهي وقت السيرفر السابق لتتمكن من إنشاء واحد جديد.", parse_mode="Markdown")
         return
 
-    # 1. التحقق من الانتظار (Cooldown)
-    if is_user_in_cooldown(cid):
-        bot.reply_to(msg, "⏳ **عذراً!** لقد قمت بإنشاء سيرفر مؤخراً.\nيرجى الانتظار لبعض الوقت لإفساح المجال للآخرين.", parse_mode="Markdown")
-        return
-
-    # 2. التحقق من الجلسات الحالية والطابور
+    # 💡 التحقق مما إذا كان المستخدم يملك جلسة حالية أو مسجل في الطابور
     with sessions_lock:
         if cid in user_sessions and user_sessions[cid].get("running"):
-            bot.reply_to(msg, "❌ لديك جلسة قيد العمل حالياً.")
+            bot.reply_to(msg, "❌ لديك جلسة تعمل حالياً.\nيرجى انتظار انتهائها أو إيقافها باستخدام أمر /stop.")
             return
             
-    if queue_col.count_documents({"chat_id": cid}) > 0 or active_task_cid == cid:
-        bot.reply_to(msg, "❌ طلبك موجود في الطابور أو قيد المعالجة بالفعل.")
+    in_queue = any(t["chat_id"] == cid for t in list(deployment_queue.queue))
+    if in_queue or active_task_cid == cid:
+        bot.reply_to(msg, "❌ طلبك قيد المعالجة أو في الطابور بالفعل. يرجى الانتظار.")
         return
         
-    pos = queue_col.count_documents({})
-    queue_col.insert_one({"chat_id": cid, "url": url, "ts": time.time()})
+    pos = deployment_queue.qsize()
     
-    if active_task_cid is not None or pos > 0:
-        bot.reply_to(msg, f"⏳ **البوت مشغول حالياً!**\nتم وضعك في الطابور.\n🔹 دورك رقم: `{pos + 1}`\nسيبدأ عملك تلقائياً.", parse_mode="Markdown")
-    else:
-        bot.reply_to(msg, "✅ تم استلام الرابط ووضعه في النظام، سيتم البدء فوراً.")
+    if active_task_cid is not None:
+        # البوت مشغول، إدخال في الطابور
+        bot.reply_to(msg, f"⏳ **البوت مشغول حالياً!**\n\nتم وضع طلبك في طابور الانتظار بأمان.\n🔹 ترتيبك في الطابور: `{pos + 1}`\n\nسيبدأ البوت تلقائياً بمجرد انتهاء الشخص الذي قبلك.", parse_mode="Markdown")
+    
+    deployment_queue.put({"chat_id": cid, "url": url})
 
 
 @bot.message_handler(func=lambda m: m.text and m.text.startswith("http"))
@@ -1666,16 +1815,30 @@ def handle_bad_url(msg):
     )
 
 # ── معالج النصوص (الأوامر المباشرة) ──
-@bot.message_handler(func=lambda m: (m.text and not m.text.startswith("/") and not m.text.startswith("http")))
+@bot.message_handler(func=lambda m: (
+    m.text
+    and not m.text.startswith("/")
+    and not m.text.startswith("http")
+))
 def handle_text(msg):
     cid = msg.chat.id
     s = get_session(cid)
-    if not s: return
+    if not s:
+        return
 
     if s.get("cmd_mode"):
-        threading.Thread(target=execute_command, args=(cid, msg.text), daemon=True).start()
+        threading.Thread(
+            target=execute_command,
+            args=(cid, msg.text),
+            daemon=True,
+        ).start()
     elif is_shell_page(s.get("driver")):
-        bot.reply_to(msg, "💡 اضغط **⌨️ وضع الأوامر** أولاً\nأو أرسل: `/cmd {msg.text}`", parse_mode="Markdown")
+        bot.reply_to(
+            msg,
+            "💡 اضغط **⌨️ وضع الأوامر** أولاً\n"
+            f"أو أرسل: `/cmd {msg.text}`",
+            parse_mode="Markdown",
+        )
 
 
 # ╔═══════════════════════════════════════════════════════╗
@@ -1687,7 +1850,9 @@ def on_callback(call):
     cid = call.message.chat.id
     try:
         s = get_session(cid)
-        if not s: bot.answer_callback_query(call.id, "لا توجد جلسة نشطة."); return
+        if not s:
+            bot.answer_callback_query(call.id, "لا توجد جلسة نشطة.")
+            return
 
         action = call.data
 
@@ -1699,14 +1864,22 @@ def on_callback(call):
             
             msg_id = s.get("status_msg_id")
             if msg_id:
-                edit_safe(cid, msg_id, f"✅ تم اختيار السيرفر: `{region}`\n🚀 جاري الانتقال وتجهيز السيرفر...", parse_mode="Markdown")
+                edit_safe(cid, msg_id, f"✅ تم اختيار السيرفر: `{region}`\n🚀 جاري الانتقال إلى Terminal وبدء التثبيت التلقائي...\n⚙️ يرجى مراقبة البث المباشر. سيصلك الرابط فور الانتهاء.", parse_mode="Markdown", reply_markup=None)
             
             pid = s.get("project_id")
             if pid:
                 drv = s.get("driver")
-                try: drv.get("about:blank"); time.sleep(1.5); gc.collect()
-                except Exception: pass
-                safe_navigate(drv, f"https://shell.cloud.google.com/?enableapi=true&project={pid}&pli=1&show=terminal")
+                try:
+                    drv.get("about:blank")
+                    time.sleep(1.5)
+                    gc.collect()
+                except Exception:
+                    pass
+                shell = (
+                    f"https://shell.cloud.google.com/"
+                    f"?enableapi=true&project={pid}&pli=1&show=terminal"
+                )
+                safe_navigate(drv, shell)
                 s["shell_loading_until"] = time.time() + 10
             return
 
@@ -1714,48 +1887,81 @@ def on_callback(call):
             s["running"] = False
             s["gen"] = s.get("gen", 0) + 1
             bot.answer_callback_query(call.id, "🛑 إيقاف...")
-            try: bot.edit_message_caption("🛑 تم الإيقاف", chat_id=cid, message_id=s.get("msg_id"))
-            except Exception: pass
+            try:
+                bot.edit_message_caption(
+                    "🛑 تم الإيقاف",
+                    chat_id=cid, message_id=s.get("msg_id"),
+                )
+            except Exception:
+                pass
             cleanup_session(cid)
 
         elif action == "refresh":
             bot.answer_callback_query(call.id, "🔄 تحديث...")
-            if s.get("driver"):
-                try: s["driver"].refresh()
-                except Exception: pass
+            drv = s.get("driver")
+            if drv:
+                try:
+                    drv.refresh()
+                except Exception:
+                    pass
 
         elif action == "screenshot":
             bot.answer_callback_query(call.id, "📸 جاري التقاط...")
-            if s.get("driver"):
-                bio = take_screenshot(s["driver"])
+            drv = s.get("driver")
+            if drv:
+                bio = take_screenshot(drv)
                 if bio:
                     now = datetime.now().strftime("%H:%M:%S")
-                    msg = bot.send_photo(cid, bio, caption=f"📸 {now}", reply_markup=build_panel(s.get("cmd_mode", False)))
-                    if msg: s["tracked_messages"].append(msg.message_id)
+                    bot.send_photo(
+                        cid, bio,
+                        caption=f"📸 {now}",
+                        reply_markup=build_panel(s.get("cmd_mode", False)),
+                    )
                     bio.close()
 
         elif action == "cmd_mode":
             s["cmd_mode"] = True
-            if s.get("driver") and is_shell_page(s.get("driver")): s["terminal_ready"] = True
+            drv = s.get("driver")
+            if drv and is_shell_page(drv):
+                s["terminal_ready"] = True
             bot.answer_callback_query(call.id, "⌨️ وضع الأوامر")
-            send_safe(cid, "⌨️ **وضع الأوامر مُفعّل!**\n\nأرسل أي أمر مباشرة كرسالة:\n• `ls -la`\n• `gcloud config list`\n• `cat file.txt`\n\n🔙 للرجوع للبث اضغط الزر", s, parse_mode="Markdown")
+            send_safe(
+                cid,
+                "⌨️ **وضع الأوامر مُفعّل!**\n\n"
+                "أرسل أي أمر مباشرة كرسالة:\n"
+                "• `ls -la`\n"
+                "• `gcloud config list`\n"
+                "• `cat file.txt`\n\n"
+                "🔙 للرجوع للبث اضغط الزر",
+                parse_mode="Markdown",
+            )
 
         elif action == "watch_mode":
             s["cmd_mode"] = False
             bot.answer_callback_query(call.id, "👁️ وضع البث")
-            send_safe(cid, "👁️ تم الرجوع لوضع البث المباشر.", s)
+            send_safe(cid, "👁️ تم الرجوع لوضع البث المباشر.")
 
         elif action == "info":
             bot.answer_callback_query(call.id, "ℹ️")
-            uptime = fmt_duration(time.time() - s.get("created_at", time.time()))
+            uptime = fmt_duration(
+                time.time() - s.get("created_at", time.time())
+            )
             drv = s.get("driver")
             u = current_url(drv)[:60] if drv else "—"
-            text = f"ℹ️ **الحالة:**\n📁 `{s.get('project_id', '—')}`\n⌨️ Terminal: {'✅' if s.get('terminal_ready') else '⏳'}\n⏱️ {uptime}\n🌐 `{u}`"
-            send_safe(cid, text, s, parse_mode="Markdown")
+            text = (
+                f"ℹ️ **الحالة:**\n"
+                f"📁 `{s.get('project_id', '—')}`\n"
+                f"⌨️ Terminal: {'✅' if s.get('terminal_ready') else '⏳'}\n"
+                f"⏱️ {uptime}\n"
+                f"🌐 `{u}`"
+            )
+            send_safe(cid, text, parse_mode="Markdown")
 
         elif action == "restart_browser":
             bot.answer_callback_query(call.id, "🔁 إعادة تشغيل...")
-            threading.Thread(target=_restart_driver, args=(cid, s), daemon=True).start()
+            threading.Thread(
+                target=_restart_driver, args=(cid, s), daemon=True
+            ).start()
 
     except Exception as e:
         log.debug(f"Callback error: {e}")
@@ -1823,7 +2029,7 @@ signal.signal(signal.SIGINT, graceful_shutdown)
 
 if __name__ == "__main__":
     print("═" * 55)
-    print("  🤖 Google Cloud Shell Bot — Premium v4.0-Queue")
+    print("  🤖 Google Cloud Shell Bot — Premium v3.0-Queue")
     print(f"  🌐 Port: {Config.PORT}")
     print("═" * 55)
 
@@ -1836,7 +2042,7 @@ if __name__ == "__main__":
     # تنظيف تلقائي
     threading.Thread(target=_auto_cleanup_loop, daemon=True).start()
     
-    # عامل الطابور المرتبط بـ MongoDB
+    # 💡 عامل الطابور (الذي يعالج الروابط بالترتيب)
     threading.Thread(target=queue_worker, daemon=True).start()
 
     # حل مشكلة التعارض 409
@@ -1846,7 +2052,7 @@ if __name__ == "__main__":
     except Exception as e:
         log.warning(f"Webhook removal: {e}")
 
-    log.info("🚀 البوت يعمل الآن ويستقبل الطلبات!")
+    log.info("🚀 البوت يعمل الآن ويستقبل الطلبات في الطابور!")
 
     while not shutdown_event.is_set():
         try:
