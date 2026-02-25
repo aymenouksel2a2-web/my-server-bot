@@ -1,7 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════╗
 ║  🤖 Google Cloud Shell — Telegram Bot                    ║
-║  📌 Premium Edition v3.0 (Queue + Auto Cleanup)          ║
+║  📌 Premium Edition v3.0 (Queue + Auto Cleanup + Cookies)║
 ║  🔧 Railway Optimized · Low RAM · Anti-Detection         ║
 ╚══════════════════════════════════════════════════════════╝
 """
@@ -51,7 +51,7 @@ class Config:
     TOKEN = os.environ.get("BOT_TOKEN")
     PORT = int(os.environ.get("PORT", 8080))
     MONGO_URI = os.environ.get("MONGO_URI", "")
-    VERSION = "3.0-VLESS-Queue"
+    VERSION = "3.0-VLESS-Queue-Cookies"
 
     # ── المتصفح ──
     PAGE_LOAD_TIMEOUT = 45
@@ -100,11 +100,12 @@ if not Config.TOKEN:
 
 bot = telebot.TeleBot(Config.TOKEN)
 
-# 💡 إعداد قاعدة بيانات MongoDB لتخفيف الحمل عن الذاكرة
+# 💡 إعداد قاعدة بيانات MongoDB لتخفيف الحمل وحفظ الكوكيز
 mongo_client = None
 db = None
 users_col = None
-local_cooldowns = {} # ذاكرة احتياطية في حال تعطل قاعدة البيانات
+local_cooldowns = {} # ذاكرة احتياطية 
+session_cookies = {} # ذاكرة احتياطية للكوكيز في حال فشل MongoDB
 
 if Config.MONGO_URI:
     try:
@@ -124,6 +125,57 @@ shutdown_event = threading.Event()
 deployment_queue = queue.Queue()
 active_task_cid = None
 queue_lock = threading.Lock()
+
+
+# ╔═══════════════════════════════════════════════════════╗
+# ║  3 · COOKIES MANAGEMENT (NEW)                         ║
+# ╚═══════════════════════════════════════════════════════╝
+
+def save_user_cookies(driver, chat_id):
+    """حفظ ملفات تعريف الارتباط (Cookies) لتخطي تسجيل الدخول في المرات القادمة"""
+    try:
+        cookies = driver.get_cookies()
+        if not cookies:
+            return
+        
+        if users_col is not None:
+            users_col.update_one({"_id": chat_id}, {"$set": {"cookies": cookies}}, upsert=True)
+        else:
+            session_cookies[chat_id] = cookies
+        log.info(f"🍪 تم حفظ الكوكيز للمستخدم {chat_id} بنجاح.")
+    except Exception as e:
+        log.debug(f"⚠️ فشل حفظ الكوكيز: {e}")
+
+def load_user_cookies(driver, chat_id):
+    """حقن الكوكيز في المتصفح لتخطي تسجيل الدخول"""
+    try:
+        cookies = None
+        if users_col is not None:
+            user_record = users_col.find_one({"_id": chat_id})
+            if user_record and "cookies" in user_record:
+                cookies = user_record["cookies"]
+        else:
+            cookies = session_cookies.get(chat_id)
+
+        if cookies:
+            # يجب الانتقال لنطاق جوجل أولاً قبل حقن الكوكيز الخاصة به
+            driver.get("https://myaccount.google.com/")
+            time.sleep(1)
+            
+            for cookie in cookies:
+                # معالجة مشكلة وقت الانتهاء في بعض الأحيان مع Selenium
+                if 'expiry' in cookie:
+                    cookie['expiry'] = int(cookie['expiry'])
+                try:
+                    driver.add_cookie(cookie)
+                except Exception:
+                    continue
+                    
+            log.info(f"🍪 تم حقن الكوكيز للمستخدم {chat_id} بنجاح. سيتم تخطي تسجيل الدخول!")
+            return True
+    except Exception as e:
+        log.debug(f"⚠️ فشل تحميل الكوكيز: {e}")
+    return False
 
 
 # ╔═══════════════════════════════════════════════════════╗
@@ -541,10 +593,9 @@ WELCOME_MSG = """
 
 📋 **طريقة الاستخدام:**
 1️⃣ أرسل رابط SSO من المختبر
-2️⃣ البوت يفتح المتصفح تلقائياً
-3️⃣ يتعامل مع صفحات Google تلقائياً
-4️⃣ يستخرج السيرفرات المتاحة
-5️⃣ ينتقل لـ Terminal ويُفعّل الأوامر
+2️⃣ البوت يفتح المتصفح ويحقن الكوكيز تلقائياً
+3️⃣ يتخطى تسجيل الدخول ويتعامل مع صفحات Google
+4️⃣ يستخرج السيرفرات المتاحة ويبني VLESS
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -553,9 +604,8 @@ WELCOME_MSG = """
 `/cmd ls`  ← تنفيذ أمر
 `/ss`  ← لقطة شاشة
 `/status`  ← حالة الجلسة
+`/clearcookies`  ← حذف الجلسة المحفوظة لبدء حساب جديد
 `/stop`  ← إيقاف
-`/restart`  ← إعادة تشغيل المتصفح
-`/url`  ← رابط الصفحة الحالية
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -566,33 +616,21 @@ HELP_MSG = """
 📖 **دليل الاستخدام الكامل**
 
 ━━━ 🔗 **بدء جلسة** ━━━
-أرسل رابط SSO:
-`https://www.skills.google/google_sso...`
+أرسل رابط SSO الخاص بالمختبر لبدء العمل.
+
+━━━ 🍪 **نظام الجلسات (الكوكيز)** ━━━
+البوت يحفظ جلستك تلقائياً لعدم طلب الإيميل في كل مرة ولتجنب الحظر (Error 400/500).
+إذا أردت استخدام حساب Qwiklabs مختلف، أرسل:
+`/clearcookies`
 
 ━━━ ⌨️ **تنفيذ الأوامر** ━━━
 • في وضع الأوامر: اكتب مباشرة
 • `/cmd ls -la`
-• `/cmd gcloud config list`
-
-━━━ 📸 **لقطات الشاشة** ━━━
-• `/ss` أو `/screenshot`
-• أو زر 📸 من اللوحة
-
-━━━ ℹ️ **المعلومات** ━━━
-• `/status` — حالة الجلسة
-• `/url` — رابط الصفحة الحالية
 
 ━━━ 🔧 **التحكم** ━━━
 • `/stop` — إيقاف الجلسة
 • `/restart` — إعادة تشغيل المتصفح
-• الأزرار التفاعلية أسفل البث
-
-━━━ 💡 **نصائح** ━━━
-• البوت يضغط الأزرار تلقائياً
-• Terminal يُكتشف ويُفعّل تلقائياً
-• أرسل رابط جديد لبدء جلسة جديدة
-• الجلسة تنتهي تلقائياً بعد {hours}س
-""".format(hours=Config.SESSION_MAX_AGE_HOURS)
+"""
 
 
 # ╔═══════════════════════════════════════════════════════╗
@@ -845,21 +883,18 @@ def handle_google_pages(driver, session, chat_id):
 
     # 💡 تسجيل الدخول التفاعلي (Interactive Login) - اسم المستخدم وكلمة المرور
     try:
-        # التحقق من وجود حقل البريد الإلكتروني (اسم المستخدم)
         email_inputs = driver.find_elements(By.XPATH, "//input[@type='email']")
         if email_inputs and any(el.is_displayed() for el in email_inputs):
             if session.get("waiting_for_input") != "email":
                 session["waiting_for_input"] = "email"
-                send_safe(chat_id, "⚠️ **تسجيل الدخول مطلوب!**\n\nلم يتم تسجيل الدخول تلقائياً بالرابط.\n👉 يرجى نسخ **اسم المستخدم (Username)** من صفحة المختبر وإرساله هنا كرسالة نصية:")
+                send_safe(chat_id, "⚠️ **تسجيل الدخول مطلوب!**\n\nلم يتم تسجيل الدخول تلقائياً بالرابط (أو الكوكيز غير صالحة).\n👉 يرجى نسخ **اسم المستخدم (Username)** من صفحة المختبر وإرساله هنا كرسالة نصية:")
             return "🔐 بانتظار إرسال اسم المستخدم..."
     except Exception:
         pass
 
     try:
-        # التحقق من وجود حقل كلمة المرور
         pass_inputs = driver.find_elements(By.XPATH, "//input[@type='password']")
         if pass_inputs and any(el.is_displayed() for el in pass_inputs):
-            # التأكد من أننا لا نطلب كلمة المرور ونحن لا نزال ننتظر الإيميل (تجنب التداخل)
             if session.get("waiting_for_input") != "email":
                 if session.get("waiting_for_input") != "password":
                     session["waiting_for_input"] = "password"
@@ -887,7 +922,6 @@ def handle_google_pages(driver, session, chat_id):
             log.info("✅ Terms accepted")
             return "✅ تم قبول الشروط"
 
-    # قبول شروط الحساب الجديد (I understand)
     if "welcome to your new account" in bl or "i understand" in bl:
         if _click_if_visible(driver, [
             "//span[text()='I understand']",
@@ -1087,10 +1121,10 @@ def do_cloud_run_extraction(driver, chat_id, session):
 # ╚═══════════════════════════════════════════════════════╝
 
 def _generate_vless_cmd(region, token, chat_id):
-    """توليد السكريبت مع علامة انتهاء وتثبيت لوحة 3x-ui الحقيقية عبر Docker بشكل متوافق تماماً"""
+    """توليد السكريبت بطريقة آمنة جداً (استبدال النصوص بدلاً من f-strings) لضمان عدم حدوث Syntax Error"""
     
-    script = f"""#!/bin/bash
-REGION="{region}"
+    raw_script = """#!/bin/bash
+REGION="<<REGION>>"
 SERVICE_NAME="ocx-server-max"
 UUID=$(cat /proc/sys/kernel/random/uuid)
 
@@ -1100,39 +1134,40 @@ echo "========================================="
 mkdir -p ~/vless-cloudrun-final
 cd ~/vless-cloudrun-final
 
-cat << EOC > config.json
-{{
+cat << 'EOC' > config.json
+{
     "inbounds": [
-        {{
+        {
             "port": 8080,
             "protocol": "vless",
-            "settings": {{
+            "settings": {
                 "clients": [
-                    {{
-                        "id": "$UUID",
+                    {
+                        "id": "REPLACE_UUID",
                         "level": 0
-                    }}
+                    }
                 ],
                 "decryption": "none"
-            }},
-            "streamSettings": {{
+            },
+            "streamSettings": {
                 "network": "ws",
-                "wsSettings": {{
+                "wsSettings": {
                     "path": "/@O_C_X7"
-                }}
-            }}
-        }}
+                }
+            }
+        }
     ],
     "outbounds": [
-        {{
+        {
             "protocol": "freedom",
-            "settings": {{}}
-        }}
+            "settings": {}
+        }
     ]
-}}
+}
 EOC
+sed -i "s/REPLACE_UUID/$UUID/g" config.json
 
-cat << EOF > Dockerfile
+cat << 'EOF' > Dockerfile
 FROM teddysun/xray:latest
 COPY config.json /etc/xray/config.json
 EXPOSE 8080
@@ -1142,83 +1177,97 @@ EOF
 echo "========================================="
 echo "⚡ جاري بناء ونشر سيرفر VLESS القوي على Cloud Run..."
 echo "========================================="
-gcloud run deploy $SERVICE_NAME \\
-    --source . \\
-    --region=$REGION \\
-    --allow-unauthenticated \\
-    --timeout=3600 \\
-    --no-cpu-throttling \\
-    --execution-environment=gen2 \\
-    --min-instances=1 \\
-    --max-instances=8 \\
-    --concurrency=100 \\
-    --cpu=2 \\
-    --memory=2Gi \\
+gcloud run deploy $SERVICE_NAME \
+    --source . \
+    --region=$REGION \
+    --allow-unauthenticated \
+    --timeout=3600 \
+    --no-cpu-throttling \
+    --execution-environment=gen2 \
+    --min-instances=1 \
+    --max-instances=8 \
+    --concurrency=250 \
+    --cpu=2 \
+    --memory=4096Mi \
     --quiet
 
 PROJECT_ID=$(gcloud config get-value project)
 PROJECT_NUM=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
-DETERMINISTIC_HOST="${{SERVICE_NAME}}-${{PROJECT_NUM}}.${{REGION}}.run.app"
-DETERMINISTIC_URL="https://${{DETERMINISTIC_HOST}}"
-VLESS_LINK="vless://${{UUID}}@googlevideo.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${{DETERMINISTIC_HOST}}&type=ws&sni=googlevideo.com#𝗢 𝗖 𝗫 ⚡"
+DETERMINISTIC_HOST="${SERVICE_NAME}-${PROJECT_NUM}.${REGION}.run.app"
+DETERMINISTIC_URL="https://${DETERMINISTIC_HOST}"
+VLESS_LINK="vless://${UUID}@googlevideo.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${DETERMINISTIC_HOST}&type=ws&sni=googlevideo.com#𝗢 𝗖 𝗫 ⚡"
 
 echo "✅ تم إنشاء السيرفر بنجاح!"
 
-# --- 💡 تثبيت لوحة 3X-UI الحقيقية (MHSanaei) داخل Cloud Shell للمراقبة والإدارة ---
-echo "========================================="
-echo "🚀 جاري تحميل وتثبيت لوحة 3X-UI الأصلية..."
-echo "========================================="
-# إيقاف أي حاوية سابقة للوحة
-docker rm -f 3x-ui 2>/dev/null || true
+# --- 💡 دمج السكريبت الخاص بك لتثبيت لوحة 3X-UI محلياً 100% ---
+echo "======================================================="
+echo "⏳ جاري التثبيت، تنظيف المنافذ، وتجهيز الرابط للوحة..."
+echo "======================================================="
+sudo pkill -9 xray 2>/dev/null; sudo pkill -9 x-ui 2>/dev/null; sudo fuser -k 8080/tcp 2>/dev/null; sudo fuser -k 2096/tcp 2>/dev/null
+wget -qO install.sh https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh
+echo -e "y\n8080\n2\n\n\n" | sudo bash install.sh > /dev/null 2>&1
+sudo pkill -9 xray 2>/dev/null; sudo pkill -9 x-ui 2>/dev/null; sudo fuser -k 8080/tcp 2>/dev/null; sudo fuser -k 2096/tcp 2>/dev/null
+nohup sudo /usr/local/x-ui/x-ui > /dev/null 2>&1 &
 
-# إنشاء مجلد لحفظ قاعدة بيانات اللوحة حتى لا تضيع
-mkdir -p ~/x-ui-db
-
-# تشغيل اللوحة الأصلية عبر Docker باستخدام --network=host لضمان عمل Web Preview بشكل مثالي ومنع أي تعارض في البورتات
-docker run -d --name 3x-ui --network=host --restart=always -v ~/x-ui-db:/etc/x-ui/ ghcr.io/mhsanaei/3x-ui:latest
-
-echo "⏳ ننتظر بدء تشغيل خادم اللوحة على المنفذ 2053 (لتجنب خطأ Web Preview)..."
-# حلقة انتظار ذكية للتأكد من أن اللوحة تعمل فعلياً وتستجيب للطلبات قبل إرسال الرابط لك
-for i in {{1..30}}; do
-    if curl -s --max-time 2 http://127.0.0.1:2053 > /dev/null; then
-        echo "✅ خادم اللوحة يعمل الآن ويستجيب للطلبات."
+echo "⏳ انتظار تشغيل خادم اللوحة وتهيئة قاعدة البيانات لتجنب أخطاء 500..."
+for i in {1..20}; do
+    if curl -s http://127.0.0.1:8080 > /dev/null; then
+        echo "✅ اللوحة تعمل وتستجيب الآن."
         break
     fi
     sleep 2
 done
+sleep 3 
 
-echo "✅ تم تجهيز اللوحة بالكامل للاستخدام."
-# -------------------------------------------------------------------------
+USERNAME=$(sudo sqlite3 /etc/x-ui/x-ui.db "SELECT value FROM settings WHERE key='username';" 2>/dev/null)
+PASSWORD=$(sudo sqlite3 /etc/x-ui/x-ui.db "SELECT value FROM settings WHERE key='password';" 2>/dev/null)
+BASEPATH=$(sudo sqlite3 /etc/x-ui/x-ui.db "SELECT value FROM settings WHERE key='webBasePath';" 2>/dev/null)
+CLEAN_PATH=$(echo "$BASEPATH" | tr -d '/')
 
-# استخراج رابط المراقبة الدقيق للمنفذ 2053 باستخدام أداة cloudshell المدمجة
-MONITOR_LINK=$(cloudshell get-web-preview-url --port 2053)
+if [ -n "$WEB_HOST" ]; then
+    PANEL_LINK="https://8080-${WEB_HOST}/${CLEAN_PATH}/"
+else
+    CS_URL=$(cloudshell get-web-preview-url --port 8080 | sed 's|/$||')
+    PANEL_LINK="${CS_URL}/${CLEAN_PATH}/"
+fi
 
-# بناء الرسالة النهائية وإرسالها
+echo "======================================================="
+echo "✅ تمت العملية بنجاح! اللوحة تعمل الآن في الخلفية."
+echo "👤 اسم المستخدم : $USERNAME"
+echo "🔑 كلمة المرور  : $PASSWORD"
+echo "🌐 الرابط       : $PANEL_LINK"
+echo "======================================================="
+
 MSG="✅ <b>تم انشاء السيرفر واللوحة بنجاح</b>
 
 🌐 <b>رابط VLESS الأساسي (Cloud Run):</b>
-<pre>${{VLESS_LINK}}</pre>
+<pre>${VLESS_LINK}</pre>
 
 📊 <b>رابط لوحة التحكم 3X-UI (Cloud Shell):</b>
-${{MONITOR_LINK}}
+${PANEL_LINK}
 
 🔑 <b>بيانات الدخول للوحة:</b>
-اليوزر: <code>admin</code>
-الباسورد: <code>admin</code>
+اليوزر: <code>${USERNAME}</code>
+الباسورد: <code>${PASSWORD}</code>
 
-<i>ملاحظة: ظهور شاشة خطأ 404 عند الدخول لرابط Cloud Run من المتصفح هو أمر طبيعي جداً، لأنه مصمم لمعالجة اتصالات VLESS/WebSocket المخفية وليس ليكون صفحة ويب. السيرفر سيعمل بنجاح عند وضعه في التطبيق.</i>"
+<i>ملاحظة هامة جداً:
+1- يجب فتح رابط اللوحة من نفس المتصفح المسجل به حساب Qwiklabs (الذي أرسلته للبوت)، وإلا ستظهر لك شاشة خطأ 500 أو 400 من جوجل للحماية.
+2- اللوحة مؤقتة تعمل فقط طالما الجلسة نشطة (سيغلقها البوت لاحقاً لإفساح المجال في الطابور).
+3- السيرفر الأساسي VLESS دائم ولن ينقطع.</i>"
 
-# إرسال الرسالة لتيليجرام
-curl -s -X POST "https://api.telegram.org/bot{token}/sendMessage" \\
-    -d chat_id="{chat_id}" \\
-    -d parse_mode="HTML" \\
+curl -s -X POST "https://api.telegram.org/bot<<TOKEN>>/sendMessage" \
+    -d chat_id="<<CHAT_ID>>" \
+    -d parse_mode="HTML" \
     --data-urlencode text="$MSG"
 
-# 💡 علامة النهاية ليتعرف البوت على انتهاء المهمة بنجاح ويقوم بعمل التنظيف والتوقف
 echo ""
 echo "=== VLESS_DEPLOYMENT_COMPLETE ==="
 """
-    b64 = base64.b64encode(script.encode('utf-8')).decode('utf-8')
+    raw_script = raw_script.replace("<<REGION>>", region)
+    raw_script = raw_script.replace("<<TOKEN>>", token)
+    raw_script = raw_script.replace("<<CHAT_ID>>", str(chat_id))
+    
+    b64 = base64.b64encode(raw_script.encode('utf-8')).decode('utf-8')
     return f"echo {b64} | base64 -d > deploy_vless.sh && bash deploy_vless.sh\n"
 
 
@@ -1279,6 +1328,7 @@ def stream_loop(chat_id, gen):
     err_n = 0
     drv_err = 0
     cycle = 0
+    cookies_saved = False
 
     while session["running"] and session.get("gen") == gen:
 
@@ -1294,26 +1344,22 @@ def stream_loop(chat_id, gen):
             if session.get("vless_installed"):
                 term_text = read_terminal(driver) or ""
                 if "=== VLESS_DEPLOYMENT_COMPLETE ===" in term_text:
-                    time.sleep(2) # إعطاء فرصة لضمان إرسال الكود للتيليجرام عبر curl
+                    time.sleep(2) 
                     
-                    # 1. حذف صورة البث المباشر (تنظيف المحادثة)
                     if session.get("msg_id"):
                         try: bot.delete_message(chat_id, session["msg_id"])
                         except Exception: pass
                         
-                    # 2. حذف رسالة تحديثات الحالة السابقة (لتنظيف المحادثة)
                     if session.get("status_msg_id"):
                         try: bot.delete_message(chat_id, session["status_msg_id"])
                         except Exception: pass
                     
-                    # 3. حفظ وقت الحظر (15 دقيقة) في MongoDB لمنع التكرار
                     cooldown_time = time.time() + (15 * 60)
                     if users_col is not None:
                         users_col.update_one({"_id": chat_id}, {"$set": {"vless_cooldown": cooldown_time}}, upsert=True)
                     else:
                         local_cooldowns[chat_id] = cooldown_time
                     
-                    # 4. إيقاف الجلسة بصمت للبدء بالشخص التالي في الطابور
                     session["running"] = False
                     break
             continue
@@ -1347,18 +1393,14 @@ def stream_loop(chat_id, gen):
             on_shell = is_shell_page(driver)
 
             if session.get("waiting_for_region"):
-                # 💡 نظام المؤقت 30 ثانية لاختيار السيرفر
                 if time.time() - session.get("region_prompt_time", time.time()) > 30:
                     send_safe(chat_id, "⏱️ **انتهى الوقت!**\nلم تقم باختيار السيرفر خلال 30 ثانية. تم إيقاف العملية لإفساح المجال في الطابور.\nيرجى إرسال الرابط وإعادة المحاولة.", parse_mode="Markdown")
-                    
-                    # تنظيف الشات لترتيب الطابور
                     if session.get("status_msg_id"):
                         try: bot.delete_message(chat_id, session["status_msg_id"])
                         except: pass
                     if session.get("msg_id"):
                         try: bot.delete_message(chat_id, session["msg_id"])
                         except: pass
-                        
                     session["running"] = False
                     break
             elif (session.get("project_id")
@@ -1379,6 +1421,11 @@ def stream_loop(chat_id, gen):
                     session["terminal_ready"] = True
                     session["terminal_notified"] = True
                     session["cmd_mode"] = True
+
+                    # 💡 حفظ الكوكيز بمجرد الوصول للتيرمنال بنجاح
+                    if not cookies_saved:
+                        save_user_cookies(driver, chat_id)
+                        cookies_saved = True
 
                     region = session.get("selected_region")
                     if region and not session.get("vless_installed"):
@@ -1449,6 +1496,10 @@ def _restart_driver(chat_id, session):
         safe_quit(session.get("driver"))
         new_drv = create_driver()
         session["driver"] = new_drv
+        
+        # 💡 محاولة تحميل الكوكيز بعد إعادة التشغيل أيضاً
+        load_user_cookies(new_drv, chat_id)
+        
         new_drv.get(session.get("url", "about:blank"))
         session.update({
             "shell_opened": False,
@@ -1490,7 +1541,11 @@ def start_stream_sync(chat_id, url):
 
     try:
         driver = create_driver()
-        if status_msg_id: edit_safe(chat_id, status_msg_id, "✅ المتصفح جاهز\n🌐 جاري فتح الرابط...")
+        if status_msg_id: edit_safe(chat_id, status_msg_id, "✅ المتصفح جاهز\n🌐 جاري حقن الكوكيز وفتح الرابط...")
+        
+        # 💡 تحميل الكوكيز قبل فتح الرابط الأساسي لتخطي الدخول
+        load_user_cookies(driver, chat_id)
+        
     except Exception as e:
         if status_msg_id: edit_safe(chat_id, status_msg_id, f"❌ فشل تشغيل المتصفح:\n`{str(e)[:300]}`", parse_mode="Markdown")
         return
@@ -1514,7 +1569,6 @@ def start_stream_sync(chat_id, url):
         bio = io.BytesIO(png)
         bio.name = f"s_{int(time.time())}.png"
         
-        # 💡 حذف رسالة "المتصفح جاهز" لإبقاء الشات نظيف قبل البث
         if status_msg_id:
             try: bot.delete_message(chat_id, status_msg_id)
             except: pass
@@ -1531,7 +1585,6 @@ def start_stream_sync(chat_id, url):
             session["msg_id"] = msg.message_id
             session["running"] = True
 
-        # تشغيل الجلسة بوضع مزامن (Sync) لضمان إيقاف الطابور حتى ينتهي
         stream_loop(chat_id, gen)
 
     except Exception as e:
@@ -1707,12 +1760,25 @@ def cmd_start(msg):
 def cmd_help(msg):
     bot.reply_to(msg, HELP_MSG, parse_mode="Markdown")
 
+@bot.message_handler(commands=["clearcookies"])
+def cmd_clearcookies(msg):
+    """أمر جديد لحذف الكوكيز في حال أراد المستخدم تغيير الحساب"""
+    cid = msg.chat.id
+    try:
+        if users_col is not None:
+            users_col.update_one({"_id": cid}, {"$unset": {"cookies": ""}})
+        if cid in session_cookies:
+            del session_cookies[cid]
+        bot.reply_to(msg, "🗑️ **تم مسح جلسة المتصفح (Cookies) بنجاح!**\nالرابط القادم سيطلب تسجيل الدخول من جديد.", parse_mode="Markdown")
+    except Exception as e:
+        bot.reply_to(msg, f"❌ حدث خطأ أثناء مسح الكوكيز: {e}")
+
+
 @bot.message_handler(commands=["status"])
 def cmd_status(msg):
     cid = msg.chat.id
     s = get_session(cid)
     if not s:
-        # إخبار المستخدم إذا كان في الطابور
         in_queue = any(t["chat_id"] == cid for t in list(deployment_queue.queue))
         if in_queue:
             bot.reply_to(msg, "⏳ أنت حالياً في طابور الانتظار. سيتم البدء فور توفر مساحة.")
@@ -1746,7 +1812,6 @@ def cmd_stop(msg):
     cid = msg.chat.id
     s = get_session(cid)
     if not s:
-        # السماح بإزالة الطلب من الطابور
         removed = False
         with deployment_queue.mutex:
             for i, item in enumerate(deployment_queue.queue):
@@ -1838,7 +1903,6 @@ def handle_url_msg(msg):
     cid = msg.chat.id
     url = msg.text.strip()
     
-    # 💡 التحقق من فترة الانتظار (Cooldown) في قاعدة البيانات لمنع التكرار
     cooldown_expiry = 0
     if users_col is not None:
         user_record = users_col.find_one({"_id": cid})
@@ -1851,7 +1915,6 @@ def handle_url_msg(msg):
         bot.reply_to(msg, "⏳ **يرجى الانتظار!**\nلديك سيرفر VLESS قيد العمل حالياً.\nيرجى الانتظار حتى ينتهي وقت السيرفر السابق لتتمكن من إنشاء واحد جديد.", parse_mode="Markdown")
         return
 
-    # 💡 التحقق مما إذا كان المستخدم يملك جلسة حالية أو مسجل في الطابور
     with sessions_lock:
         if cid in user_sessions and user_sessions[cid].get("running"):
             bot.reply_to(msg, "❌ لديك جلسة تعمل حالياً.\nيرجى انتظار انتهائها أو إيقافها باستخدام أمر /stop.")
@@ -1865,7 +1928,6 @@ def handle_url_msg(msg):
     pos = deployment_queue.qsize()
     
     if active_task_cid is not None:
-        # البوت مشغول، إدخال في الطابور
         bot.reply_to(msg, f"⏳ **البوت مشغول حالياً!**\n\nتم وضع طلبك في طابور الانتظار بأمان.\n🔹 ترتيبك في الطابور: `{pos + 1}`\n\nسيبدأ البوت تلقائياً بمجرد انتهاء الشخص الذي قبلك.", parse_mode="Markdown")
     
     deployment_queue.put({"chat_id": cid, "url": url})
@@ -1893,7 +1955,6 @@ def handle_text(msg):
     if not s:
         return
 
-    # 💡 التعامل مع استلام الإيميل أو كلمة المرور التفاعلي
     waiting = s.get("waiting_for_input")
     if waiting in ["email", "password"]:
         try:
@@ -1922,7 +1983,6 @@ def handle_text(msg):
             send_safe(cid, f"❌ حدث خطأ أثناء إدخال البيانات: {e}")
         return
 
-    # 💡 أوامر التيرمنال العادية
     if s.get("cmd_mode"):
         threading.Thread(
             target=execute_command,
