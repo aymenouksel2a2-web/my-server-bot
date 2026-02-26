@@ -1091,67 +1091,19 @@ def do_cloud_run_extraction(driver, chat_id, session):
         else:
             regions = [r.strip() for r in result.split("\n") if r.strip()]
             
-            # 💡 تصنيف السيرفرات حسب القارات
-            categories = {
-                "🇺🇸 الأمريكتين": [],
-                "🇪🇺 أوروبا": [],
-                "🌏 آسيا": [],
-                "🐪 الشرق الأوسط": [],
-                "🦘 أستراليا": [],
-                "🌍 أفريقيا": [],
-                "🌐 أخرى": []
-            }
-
-            for r in regions:
-                rl = r.lower()
-                if rl.startswith("us-") or rl.startswith("northamerica-") or rl.startswith("southamerica-"):
-                    categories["🇺🇸 الأمريكتين"].append(r)
-                elif rl.startswith("europe-"):
-                    categories["🇪🇺 أوروبا"].append(r)
-                elif rl.startswith("asia-"):
-                    categories["🌏 آسيا"].append(r)
-                elif rl.startswith("me-"):
-                    categories["🐪 الشرق الأوسط"].append(r)
-                elif rl.startswith("australia-"):
-                    categories["🦘 أستراليا"].append(r)
-                elif rl.startswith("africa-"):
-                    categories["🌍 أفريقيا"].append(r)
-                else:
-                    categories["🌐 أخرى"].append(r)
-
-            mk = InlineKeyboardMarkup()
-            
-            # بناء الأزرار مع العناوين
-            for cat_name, cat_regions in categories.items():
-                if cat_regions:
-                    # زر كعنوان للقارة (غير قابل للضغط الفعلي)
-                    mk.row(InlineKeyboardButton(f"▬▬ {cat_name} ▬▬", callback_data="ignore"))
-                    
-                    # ترتيب سيرفرات هذه القارة (زرين في كل صف)
-                    row = []
-                    for r in cat_regions:
-                        row.append(InlineKeyboardButton(r, callback_data=f"setreg_{r.split()[0]}"))
-                        if len(row) == 2:
-                            mk.row(*row)
-                            row = []
-                    if row: # إذا تبقى زر فردي
-                        mk.row(*row)
-
-            msg_text = (
-                "🌍 **السيرفرات المسموحة للإنشاء:**\n"
-                "تم تنظيم السيرفرات لتسهيل الاختيار، اختر السيرفر الذي تريده لبناء VLESS:\n\n"
-                "⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*"
-            )
+            mk = InlineKeyboardMarkup(row_width=2)
+            buttons = [InlineKeyboardButton(r, callback_data=f"setreg_{r.split()[0]}") for r in regions]
+            mk.add(*buttons)
 
             if session.get("status_msg_id"):
                 edit_safe(
                     chat_id, session["status_msg_id"],
-                    msg_text,
+                    "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:\n\n⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*",
                     reply_markup=mk,
                     parse_mode="Markdown"
                 )
             else:
-                msg = send_safe(chat_id, msg_text, reply_markup=mk, parse_mode="Markdown")
+                msg = send_safe(chat_id, "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:\n\n⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*", reply_markup=mk, parse_mode="Markdown")
                 if msg: session["status_msg_id"] = msg.message_id
             
             session["waiting_for_region"] = True
@@ -2060,11 +2012,6 @@ def on_callback(call):
             return
 
         action = call.data
-
-        # 💡 تجاهل الضغط على أزرار العناوين (القارات)
-        if action == "ignore":
-            bot.answer_callback_query(call.id)
-            return
 
         if action.startswith("setreg_"):
             region = action.split("_")[1]
