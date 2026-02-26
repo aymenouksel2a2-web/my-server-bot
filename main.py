@@ -887,8 +887,8 @@ def handle_google_pages(driver, session, chat_id):
         if email_inputs and any(el.is_displayed() for el in email_inputs):
             if session.get("waiting_for_input") != "email":
                 session["waiting_for_input"] = "email"
-                send_safe(chat_id, "⚠️ **تسجيل الدخول مطلوب!**\n\nلم يتم تسجيل الدخول تلقائياً بالرابط (أو الكوكيز غير صالحة).\n👉 يرجى نسخ **اسم المستخدم (Username)** من صفحة المختبر وإرساله هنا كرسالة نصية:")
-            return "🔐 بانتظار إرسال اسم المستخدم..."
+                send_safe(chat_id, "⚠️ **تسجيل الدخول مطلوب!**\n\nيبدو أن الجلسة السابقة انتهت أو الكوكيز غير صالحة.\n👉 لديك خياران:\n1️⃣ أرسل **اسم المستخدم (Username)** كرسالة نصية.\n2️⃣ **أو الأسهل:** أرسل **رابط SSO جديد** من المختبر لبدء جلسة جديدة فوراً.")
+            return "🔐 بانتظار إرسال اسم المستخدم أو الرابط..."
     except Exception:
         pass
 
@@ -898,7 +898,7 @@ def handle_google_pages(driver, session, chat_id):
             if session.get("waiting_for_input") != "email":
                 if session.get("waiting_for_input") != "password":
                     session["waiting_for_input"] = "password"
-                    send_safe(chat_id, "🔐 **الخطوة التالية:**\n\n👉 يرجى نسخ **كلمة المرور (Password)** من صفحة المختبر وإرسالها هنا كرسالة نصية:")
+                    send_safe(chat_id, "🔐 **الخطوة التالية:**\n\n👉 يرجى نسخ **كلمة المرور (Password)** من صفحة المختبر وإرسالها هنا كرسالة نصية،\nأو إرسال **رابط SSO جديد**.")
                 return "🔐 بانتظار إرسال كلمة المرور..."
     except Exception:
         pass
@@ -1091,19 +1091,67 @@ def do_cloud_run_extraction(driver, chat_id, session):
         else:
             regions = [r.strip() for r in result.split("\n") if r.strip()]
             
-            mk = InlineKeyboardMarkup(row_width=2)
-            buttons = [InlineKeyboardButton(r, callback_data=f"setreg_{r.split()[0]}") for r in regions]
-            mk.add(*buttons)
+            # 💡 تصنيف السيرفرات حسب القارات
+            categories = {
+                "🇺🇸 الأمريكتين": [],
+                "🇪🇺 أوروبا": [],
+                "🌏 آسيا": [],
+                "🐪 الشرق الأوسط": [],
+                "🦘 أستراليا": [],
+                "🌍 أفريقيا": [],
+                "🌐 أخرى": []
+            }
+
+            for r in regions:
+                rl = r.lower()
+                if rl.startswith("us-") or rl.startswith("northamerica-") or rl.startswith("southamerica-"):
+                    categories["🇺🇸 الأمريكتين"].append(r)
+                elif rl.startswith("europe-"):
+                    categories["🇪🇺 أوروبا"].append(r)
+                elif rl.startswith("asia-"):
+                    categories["🌏 آسيا"].append(r)
+                elif rl.startswith("me-"):
+                    categories["🐪 الشرق الأوسط"].append(r)
+                elif rl.startswith("australia-"):
+                    categories["🦘 أستراليا"].append(r)
+                elif rl.startswith("africa-"):
+                    categories["🌍 أفريقيا"].append(r)
+                else:
+                    categories["🌐 أخرى"].append(r)
+
+            mk = InlineKeyboardMarkup()
+            
+            # بناء الأزرار مع العناوين
+            for cat_name, cat_regions in categories.items():
+                if cat_regions:
+                    # زر كعنوان للقارة (غير قابل للضغط الفعلي)
+                    mk.row(InlineKeyboardButton(f"▬▬ {cat_name} ▬▬", callback_data="ignore"))
+                    
+                    # ترتيب سيرفرات هذه القارة (زرين في كل صف)
+                    row = []
+                    for r in cat_regions:
+                        row.append(InlineKeyboardButton(r, callback_data=f"setreg_{r.split()[0]}"))
+                        if len(row) == 2:
+                            mk.row(*row)
+                            row = []
+                    if row: # إذا تبقى زر فردي
+                        mk.row(*row)
+
+            msg_text = (
+                "🌍 **السيرفرات المسموحة للإنشاء:**\n"
+                "تم تنظيم السيرفرات لتسهيل الاختيار، اختر السيرفر الذي تريده لبناء VLESS:\n\n"
+                "⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*"
+            )
 
             if session.get("status_msg_id"):
                 edit_safe(
                     chat_id, session["status_msg_id"],
-                    "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:\n\n⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*",
+                    msg_text,
                     reply_markup=mk,
                     parse_mode="Markdown"
                 )
             else:
-                msg = send_safe(chat_id, "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:\n\n⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*", reply_markup=mk, parse_mode="Markdown")
+                msg = send_safe(chat_id, msg_text, reply_markup=mk, parse_mode="Markdown")
                 if msg: session["status_msg_id"] = msg.message_id
             
             session["waiting_for_region"] = True
@@ -1390,6 +1438,12 @@ def stream_loop(chat_id, gen):
                     "console.cloud.google.com", "myaccount.google.com"
                 )
             )
+            
+            # 💡 حفظ الكوكيز مبكراً بمجرد الوصول للوحة التحكم لتجنب فقدان الجلسة في حال تعطل المتصفح
+            if on_console and not session.get("cookies_saved_early"):
+                save_user_cookies(driver, chat_id)
+                session["cookies_saved_early"] = True
+
             on_shell = is_shell_page(driver)
 
             if session.get("waiting_for_region"):
@@ -1422,7 +1476,7 @@ def stream_loop(chat_id, gen):
                     session["terminal_notified"] = True
                     session["cmd_mode"] = True
 
-                    # 💡 حفظ الكوكيز بمجرد الوصول للتيرمنال بنجاح
+                    # 💡 حفظ الكوكيز بمجرد الوصول للتيرمنال (تأكيد إضافي)
                     if not cookies_saved:
                         save_user_cookies(driver, chat_id)
                         cookies_saved = True
@@ -1917,8 +1971,20 @@ def handle_url_msg(msg):
 
     with sessions_lock:
         if cid in user_sessions and user_sessions[cid].get("running"):
-            bot.reply_to(msg, "❌ لديك جلسة تعمل حالياً.\nيرجى انتظار انتهائها أو إيقافها باستخدام أمر /stop.")
-            return
+            s = user_sessions[cid]
+            # 💡 إذا كان البوت يطلب تسجيل الدخول والمستخدم أرسل رابط جديد، نقبله فوراً كحل للمشكلة
+            if s.get("waiting_for_input"):
+                s["url"] = url
+                s["waiting_for_input"] = None
+                bot.reply_to(msg, "🔄 **تم استلام رابط SSO جديد!**\nجاري تحديث الجلسة ومحاولة الدخول التلقائي...", parse_mode="Markdown")
+                try:
+                    s["driver"].get(url)
+                except Exception:
+                    pass
+                return
+            else:
+                bot.reply_to(msg, "❌ لديك جلسة تعمل حالياً.\nيرجى انتظار انتهائها أو إيقافها باستخدام أمر /stop.")
+                return
             
     in_queue = any(t["chat_id"] == cid for t in list(deployment_queue.queue))
     if in_queue or active_task_cid == cid:
@@ -1964,6 +2030,19 @@ def handle_text(msg):
                 if els:
                     els[0].clear()
                     els[0].send_keys(msg.text)
+                    time.sleep(0.5)
+                    # 💡 النقر المضمون باستخدام جافاسكربت لتخطي الشاشة
+                    try:
+                        drv.execute_script("""
+                            var btns = document.querySelectorAll('button');
+                            for(var i=0; i<btns.length; i++) {
+                                if(btns[i].innerText.includes('Next') || btns[i].innerText.includes('التالي')) {
+                                    btns[i].click(); return;
+                                }
+                            }
+                        """)
+                    except:
+                        pass
                     els[0].send_keys(Keys.RETURN)
                     s["waiting_for_input"] = None
                     send_safe(cid, "✅ تم إدخال اسم المستخدم، يرجى الانتظار...")
@@ -1974,6 +2053,18 @@ def handle_text(msg):
                 if els:
                     els[0].clear()
                     els[0].send_keys(msg.text)
+                    time.sleep(0.5)
+                    try:
+                        drv.execute_script("""
+                            var btns = document.querySelectorAll('button');
+                            for(var i=0; i<btns.length; i++) {
+                                if(btns[i].innerText.includes('Next') || btns[i].innerText.includes('التالي')) {
+                                    btns[i].click(); return;
+                                }
+                            }
+                        """)
+                    except:
+                        pass
                     els[0].send_keys(Keys.RETURN)
                     s["waiting_for_input"] = None
                     send_safe(cid, "✅ تم إدخال كلمة المرور بنجاح، يرجى الانتظار...")
@@ -2012,6 +2103,11 @@ def on_callback(call):
             return
 
         action = call.data
+
+        # 💡 تجاهل الضغط على أزرار العناوين (القارات)
+        if action == "ignore":
+            bot.answer_callback_query(call.id)
+            return
 
         if action.startswith("setreg_"):
             region = action.split("_")[1]
