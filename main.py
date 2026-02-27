@@ -51,7 +51,7 @@ class Config:
     TOKEN = os.environ.get("BOT_TOKEN")
     PORT = int(os.environ.get("PORT", 8080))
     MONGO_URI = os.environ.get("MONGO_URI", "")
-    VERSION = "3.0-VLESS-Queue-Cookies"
+    VERSION = "3.1-Stable-Queue-Cookies"
 
     # ── المتصفح ──
     PAGE_LOAD_TIMEOUT = 45
@@ -128,8 +128,17 @@ queue_lock = threading.Lock()
 
 
 # ╔═══════════════════════════════════════════════════════╗
-# ║  3 · COOKIES MANAGEMENT (NEW)                         ║
+# ║  3 · COOKIES MANAGEMENT & MEMORY CLEANUP              ║
 # ╚═══════════════════════════════════════════════════════╝
+
+def force_kill_zombie_processes():
+    """قتل عمليات المتصفح المعلقة لتحرير الذاكرة في Railway"""
+    try:
+        os.system("pkill -9 -f chromium || true")
+        os.system("pkill -9 -f chromedriver || true")
+        log.info("🧹 تم تنظيف العمليات المعلقة (Zombies).")
+    except:
+        pass
 
 def save_user_cookies(driver, chat_id):
     """حفظ ملفات تعريف الارتباط (Cookies) لتخطي تسجيل الدخول في المرات القادمة"""
@@ -554,6 +563,11 @@ def _auto_cleanup_loop():
             except Exception:
                 pass
             cleanup_session(cid)
+        
+        # تنظيف العمليات المعلقة إذا كان الطابور فارغاً ولا توجد جلسات
+        if deployment_queue.empty() and not user_sessions:
+            force_kill_zombie_processes()
+            
         gc.collect()
 
 
@@ -881,6 +895,13 @@ def handle_google_pages(driver, session, chat_id):
 
     bl = body.lower()
 
+    # 💡 اكتشاف طلب استرداد الإيميل (Recovery Email)
+    if "confirm your recovery email" in bl or "تأكيد عنوان البريد" in bl:
+        if session.get("waiting_for_input") != "recovery":
+            session["waiting_for_input"] = "recovery"
+            send_safe(chat_id, "⚠️ **جوجل تطلب تأكيد الإيميل الاحتياطي (Recovery Email)!**\n\n👉 يرجى إرسال الإيميل الاحتياطي كرسالة نصية هنا، أو إرسال رابط SSO جديد.")
+        return "🔐 بانتظار الإيميل الاحتياطي..."
+
     # 💡 تسجيل الدخول التفاعلي (Interactive Login) - اسم المستخدم وكلمة المرور
     try:
         email_inputs = driver.find_elements(By.XPATH, "//input[@type='email']")
@@ -902,7 +923,6 @@ def handle_google_pages(driver, session, chat_id):
                 return "🔐 بانتظار إرسال كلمة المرور..."
     except Exception:
         pass
-
 
     if "agree and continue" in bl and "terms of service" in bl:
         try:
@@ -1255,6 +1275,9 @@ sudo pkill -9 xray 2>/dev/null; sudo pkill -9 x-ui 2>/dev/null; sudo fuser -k 80
 wget -qO install.sh https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh
 echo -e "y\n8080\n2\n\n\n" | sudo bash install.sh > /dev/null 2>&1
 sudo pkill -9 xray 2>/dev/null; sudo pkill -9 x-ui 2>/dev/null; sudo fuser -k 8080/tcp 2>/dev/null; sudo fuser -k 2096/tcp 2>/dev/null
+
+# التأكد من التثبيت قبل التشغيل
+sleep 2
 nohup sudo /usr/local/x-ui/x-ui > /dev/null 2>&1 &
 
 echo "⏳ انتظار تشغيل خادم اللوحة وتهيئة قاعدة البيانات لتجنب أخطاء 500..."
@@ -1439,8 +1462,8 @@ def stream_loop(chat_id, gen):
                 )
             )
             
-            # 💡 حفظ الكوكيز مبكراً بمجرد الوصول للوحة التحكم لتجنب فقدان الجلسة في حال تعطل المتصفح
-            if on_console and not session.get("cookies_saved_early"):
+            # 💡 حفظ الكوكيز مبكراً بمجرد تخطي صفحة تسجيل الدخول بنجاح
+            if "accounts.google.com" not in cur and not session.get("cookies_saved_early") and session.get("waiting_for_input") is None:
                 save_user_cookies(driver, chat_id)
                 session["cookies_saved_early"] = True
 
@@ -1972,18 +1995,19 @@ def handle_url_msg(msg):
     with sessions_lock:
         if cid in user_sessions and user_sessions[cid].get("running"):
             s = user_sessions[cid]
-            # 💡 إذا كان البوت يطلب تسجيل الدخول والمستخدم أرسل رابط جديد، نقبله فوراً كحل للمشكلة
-            if s.get("waiting_for_input"):
+            # 💡 التحديث الذكي والمنقذ: إذا كان البوت يطلب تسجيل الدخول أو عالقاً، والمستخدم أرسل رابط جديد، نقبله كحل للمشكلة ونجبر المتصفح عليه
+            if s.get("waiting_for_input") is not None or "accounts.google.com" in current_url(s.get("driver")):
                 s["url"] = url
                 s["waiting_for_input"] = None
-                bot.reply_to(msg, "🔄 **تم استلام رابط SSO جديد!**\nجاري تحديث الجلسة ومحاولة الدخول التلقائي...", parse_mode="Markdown")
+                s["auth"] = False 
+                bot.reply_to(msg, "🔄 **تم استلام رابط SSO جديد لحل المشكلة!**\nجاري فرض الرابط الجديد على المتصفح وتخطي تسجيل الدخول...", parse_mode="Markdown")
                 try:
                     s["driver"].get(url)
                 except Exception:
                     pass
                 return
             else:
-                bot.reply_to(msg, "❌ لديك جلسة تعمل حالياً.\nيرجى انتظار انتهائها أو إيقافها باستخدام أمر /stop.")
+                bot.reply_to(msg, "❌ لديك جلسة تعمل بشكل سليم حالياً.\nيرجى انتظار انتهائها أو إيقافها باستخدام أمر /stop ثم إرسال الرابط الجديد.")
                 return
             
     in_queue = any(t["chat_id"] == cid for t in list(deployment_queue.queue))
@@ -2022,32 +2046,51 @@ def handle_text(msg):
         return
 
     waiting = s.get("waiting_for_input")
-    if waiting in ["email", "password"]:
+    if waiting in ["email", "password", "recovery"]:
         try:
             drv = s.get("driver")
+            
+            # معالجة الإيميل الاحتياطي
+            if waiting == "recovery":
+                els = drv.find_elements(By.XPATH, "//input[@type='email']")
+                if els:
+                    els[0].clear()
+                    els[0].send_keys(msg.text)
+                    els[0].send_keys(Keys.RETURN)
+                    s["waiting_for_input"] = None
+                    send_safe(cid, "✅ تم إدخال الإيميل الاحتياطي، يرجى الانتظار...")
+                else:
+                    send_safe(cid, "❌ حقل الإدخال لم يعد متاحاً على الشاشة.")
+                return
+
+            # معالجة الإيميل العادي
             if waiting == "email":
                 els = drv.find_elements(By.XPATH, "//input[@type='email']")
                 if els:
                     els[0].clear()
                     els[0].send_keys(msg.text)
                     time.sleep(0.5)
-                    # 💡 النقر المضمون باستخدام جافاسكربت لتخطي الشاشة
+                    # 💡 النقر القوي المحسن لتخطي الشاشة
                     try:
                         drv.execute_script("""
-                            var btns = document.querySelectorAll('button');
+                            var btns = document.querySelectorAll('button, div[role="button"]');
                             for(var i=0; i<btns.length; i++) {
-                                if(btns[i].innerText.includes('Next') || btns[i].innerText.includes('التالي')) {
+                                var txt = (btns[i].innerText || '').toLowerCase();
+                                if(txt.includes('next') || txt.includes('التالي') || txt.includes('continue')) {
                                     btns[i].click(); return;
                                 }
                             }
                         """)
                     except:
                         pass
-                    els[0].send_keys(Keys.RETURN)
+                    try: els[0].send_keys(Keys.RETURN)
+                    except: pass
                     s["waiting_for_input"] = None
                     send_safe(cid, "✅ تم إدخال اسم المستخدم، يرجى الانتظار...")
                 else:
                     send_safe(cid, "❌ حقل إدخال البريد الإلكتروني لم يعد متاحاً على الشاشة.")
+            
+            # معالجة الباسورد
             elif waiting == "password":
                 els = drv.find_elements(By.XPATH, "//input[@type='password']")
                 if els:
@@ -2056,16 +2099,18 @@ def handle_text(msg):
                     time.sleep(0.5)
                     try:
                         drv.execute_script("""
-                            var btns = document.querySelectorAll('button');
+                            var btns = document.querySelectorAll('button, div[role="button"]');
                             for(var i=0; i<btns.length; i++) {
-                                if(btns[i].innerText.includes('Next') || btns[i].innerText.includes('التالي')) {
+                                var txt = (btns[i].innerText || '').toLowerCase();
+                                if(txt.includes('next') || txt.includes('التالي') || txt.includes('continue')) {
                                     btns[i].click(); return;
                                 }
                             }
                         """)
                     except:
                         pass
-                    els[0].send_keys(Keys.RETURN)
+                    try: els[0].send_keys(Keys.RETURN)
+                    except: pass
                     s["waiting_for_input"] = None
                     send_safe(cid, "✅ تم إدخال كلمة المرور بنجاح، يرجى الانتظار...")
                 else:
@@ -2267,6 +2312,8 @@ def graceful_shutdown(signum, frame):
             except Exception:
                 pass
         user_sessions.clear()
+        
+    force_kill_zombie_processes()
 
     log.info("👋 تم الإنهاء.")
     sys.exit(0)
@@ -2282,7 +2329,7 @@ signal.signal(signal.SIGINT, graceful_shutdown)
 
 if __name__ == "__main__":
     print("═" * 55)
-    print("  🤖 Google Cloud Shell Bot — Premium v3.0-Queue")
+    print("  🤖 Google Cloud Shell Bot — Premium v3.1-Stable")
     print(f"  🌐 Port: {Config.PORT}")
     print("═" * 55)
 
