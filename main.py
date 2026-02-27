@@ -135,8 +135,8 @@ def stream_screenshots(chat_id, url):
                         project_id = match.group(1)
                         bot.send_message(chat_id, f"✅ تم اكتشاف المشروع: `{project_id}`\n🔄 جاري التوجيه لصفحة Cloud Run...", parse_mode="Markdown")
                         
-                        # تم إزالة enableapi=false لأنها كانت تسبب الشاشة البيضاء وتعطل واجهة الحسابات الجديدة
-                        run_url = f"https://console.cloud.google.com/run/create?project={project_id}"
+                        # السر الخفي: وضعنا enableapi=true لإجبار جوجل على تفعيل السيرفرات ومنع انهيار الشاشة
+                        run_url = f"https://console.cloud.google.com/run/create?enableapi=true&project={project_id}"
                         driver.get(run_url)
                         active_streams[chat_id]['has_redirected_to_run'] = True
                         time.sleep(6) 
@@ -144,23 +144,39 @@ def stream_screenshots(chat_id, url):
                 # 2. إذا تم التوجيه إلى Cloud Run، نبدأ الفحص الذكي للنجاة من الشاشة البيضاء
                 elif active_streams[chat_id].get('has_redirected_to_run') and not active_streams[chat_id].get('has_extracted_regions') and "console.cloud.google.com/run/create" in current_url:
                     
-                    # التحقق الخارق: لا نبحث عن مجرد Combobox (لأنه قد يكون شريط البحث)، 
-                    # بل نبحث عن نصوص حقيقية لا تظهر إلا بعد اكتمال تحميل الفورم!
+                    # التحقق الخارق 2.0: نبحث عن عنصر قائمة "Region" بشكل فعلي وهندسي في الصفحة للتأكد من أنها لم تنهار
                     form_ready = driver.execute_script("""
-                        let text = document.body.innerText;
-                        return text.includes('Container image URL') || text.includes('Artifact Registry') || text.includes('Service name');
+                        let dropdowns = document.querySelectorAll('mat-select, cfc-select, [role="combobox"]');
+                        for (let box of dropdowns) {
+                            let label = (box.getAttribute('aria-label') || '').toLowerCase();
+                            let id = (box.getAttribute('id') || '').toLowerCase();
+                            let text = (box.innerText || '').toLowerCase();
+                            if (label.includes('search') || id.includes('search')) continue;
+                            if (label.includes('region') || id.includes('region') || text.includes('us-') || text.includes('europe-') || text.includes('asia-')) return true;
+                        }
+                        // فحص بديل إذا تغيرت خصائص القائمة: البحث بجوار نص Region
+                        let labels = document.querySelectorAll('label');
+                        for (let l of labels) {
+                            if (l.innerText.toLowerCase().includes('region')) {
+                                let p = l.parentElement;
+                                while(p && p.tagName !== 'BODY') {
+                                    if (p.querySelector('mat-select, cfc-select, [role="combobox"]')) return true;
+                                    p = p.parentElement;
+                                }
+                            }
+                        }
+                        return false;
                     """)
                     
                     if not form_ready:
                         active_streams[chat_id]['white_screen_attempts'] += 1
                         
                         if active_streams[chat_id]['white_screen_attempts'] == 1:
-                            bot.send_message(chat_id, "⏳ جاري انتظار تحميل واجهة Cloud Run (لتجنب مشكلة الشاشة البيضاء)...")
+                            bot.send_message(chat_id, "⏳ جاري انتظار بناء واجهة Cloud Run (يتم تخطي الانهيار الوهمي)...")
                             
-                        # إذا استمرت بيضاء لمدة طويلة (حوالي 18 ثانية - 6 محاولات)، نقوم بالإنعاش التلقائي
-                        # أحياناً تفعيل الـ API يأخذ وقتاً لذلك زدنا المحاولات
-                        if active_streams[chat_id]['white_screen_attempts'] >= 6:
-                            bot.send_message(chat_id, "⚠️ تم اكتشاف شاشة بيضاء أو تعليق. جاري عمل Refresh للصفحة لإنعاشها...")
+                        # إذا استمرت بيضاء لمدة طويلة (حوالي 15 ثانية - 5 محاولات)، نقوم بالإنعاش التلقائي
+                        if active_streams[chat_id]['white_screen_attempts'] >= 5:
+                            bot.send_message(chat_id, "⚠️ تم اكتشاف شاشة بيضاء. جاري عمل Refresh للصفحة لإنعاشها...")
                             driver.refresh()
                             active_streams[chat_id]['white_screen_attempts'] = 0 # تصفير العداد
                             time.sleep(6)
@@ -203,24 +219,46 @@ def stream_screenshots(chat_id, url):
                                 }
                             }
                             
+                            // البحث الهندسي البديل إذا لم يجدها بالخصائص
+                            if (!targetBox) {
+                                let labels = document.querySelectorAll('label');
+                                for (let l of labels) {
+                                    if (l.innerText.toLowerCase().includes('region')) {
+                                        let p = l.parentElement;
+                                        while(p && p.tagName !== 'BODY') {
+                                            let combo = p.querySelector('mat-select, cfc-select, [role="combobox"]');
+                                            if (combo) {
+                                                targetBox = combo;
+                                                break;
+                                            }
+                                            p = p.parentElement;
+                                        }
+                                        if (targetBox) break;
+                                    }
+                                }
+                            }
+                            
                             if (targetBox) {
-                                targetBox.scrollIntoView({block: 'center', behavior: 'auto'});
+                                targetBox.scrollIntoView({block: 'center', behavior: 'smooth'});
                                 targetBox.click();
+                                // إطلاق حدث الماوس للتأكيد واختراق أي طبقة شفافة
+                                let evt = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                                targetBox.dispatchEvent(evt);
                                 return true;
                             }
                             return false;
                         """)
                         
                         if not clicked:
-                            bot.send_message(chat_id, "⚠️ لم أتمكن من العثور على زر القائمة في الصفحة.")
+                            bot.send_message(chat_id, "⚠️ لم أتمكن من العثور على زر القائمة في الصفحة بشكل نهائي.")
                             active_streams[chat_id]['has_extracted_regions'] = True
                             continue
 
                         bot.send_message(chat_id, "⏳ تم النقر على زر السيرفرات. جاري استخراج البيانات (يرجى الانتظار قليلاً لجلب البيانات من Google)...")
                         
-                        # 3. استخراج السيرفرات مع Retry Loop
+                        # 3. استخراج السيرفرات مع Retry Loop لضمان جلبها بعد تحميل واجهة الـ API
                         servers = []
-                        for _ in range(4): 
+                        for _ in range(5): # زدت المحاولات لـ 5 لضمان جلبها
                             time.sleep(3) 
                             
                             servers = driver.execute_script("""
