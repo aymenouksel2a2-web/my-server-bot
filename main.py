@@ -1011,6 +1011,13 @@ def handle_google_pages(driver, session, chat_id):
         ]):
             return "✅ Trust"
 
+    if "api" in bl and ("enable" in bl or "تفعيل" in bl):
+        if _click_if_visible(driver, [
+            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'enable')]",
+            "//button[contains(.,'تفعيل')]"
+        ], 0.5, 3):
+            return "✅ جاري تفعيل API"
+
     try:
         u = driver.current_url
     except Exception:
@@ -1084,7 +1091,8 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
     cur = current_url(driver)
 
-    if "run/create" not in cur:
+    # 1. إذا لم نقم بتوجيه المتصفح بعد لصفحة Cloud Run
+    if not session.get("run_navigated"):
         if not session.get("status_msg_id"):
             msg = send_safe(chat_id, "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...")
             if msg: session["status_msg_id"] = msg.message_id
@@ -1096,18 +1104,35 @@ def do_cloud_run_extraction(driver, chat_id, session):
             f"https://console.cloud.google.com/run/create"
             f"?enableapi=true&project={pid}",
         )
+        session["run_navigated"] = True
+        session["run_navigate_time"] = time.time()
         return False
 
-    if session.get("status_msg_id"):
-        edit_safe(chat_id, session["status_msg_id"], "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
+    # 2. الانتظار حتى يتم تحميل الصفحة بشكل كامل (لأن جوجل تقوم بعمليات إعادة توجيه)
+    elapsed = time.time() - session.get("run_navigate_time", time.time())
+    if elapsed < 10: 
+        return False
+
+    # 3. تحديث رسالة الحالة
+    if not session.get("extracting_started"):
+        if session.get("status_msg_id"):
+            edit_safe(chat_id, session["status_msg_id"], "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
+        session["extracting_started"] = True
 
     try:
         driver.set_script_timeout(Config.SCRIPT_TIMEOUT)
         result = driver.execute_async_script(REGION_JS)
 
         if result is None or result == "NO_DROPDOWN" or result == "NO_REGIONS" or result.startswith("ERROR:"):
+            # إعطاء فرصة أخرى للمحاولة إذا كانت الصفحة ثقيلة أو تم إعادة التوجيه لصفحة تفعيل API
+            retry_count = session.get("run_extract_retries", 0)
+            if retry_count < 3:
+                session["run_extract_retries"] = retry_count + 1
+                session["run_navigate_time"] = time.time() - 5 # انتظر 5 ثوانٍ أخرى للمحاولة
+                return False
+                
             if session.get("status_msg_id"):
-                edit_safe(chat_id, session["status_msg_id"], "⚠️ تعذر جلب السيرفرات، سيتم تخطي الخطوة.")
+                edit_safe(chat_id, session["status_msg_id"], "⚠️ تعذر جلب السيرفرات تلقائياً، سيتم نقلك إلى التيرمنال مباشرة.")
         else:
             regions = [r.strip() for r in result.split("\n") if r.strip()]
             
