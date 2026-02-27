@@ -81,7 +81,7 @@ def stream_screenshots(chat_id, url):
         driver, display = init_driver()
         active_streams[chat_id] = {
             'driver': driver, 'display': display, 'streaming': True, 
-            'has_redirected_to_run': False, 'has_extracted_regions': False, 
+            'has_redirected_to_run': False, 'has_prepared_view': False, 
             'white_screen_attempts': 0
         }
         
@@ -133,8 +133,8 @@ def stream_screenshots(chat_id, url):
                         active_streams[chat_id]['has_redirected_to_run'] = True
                         time.sleep(6) 
                         
-                # 2. الفحص البصري الدقيق (لمنع خدعة الشاشة البيضاء)
-                elif active_streams[chat_id].get('has_redirected_to_run') and not active_streams[chat_id].get('has_extracted_regions') and "console.cloud.google.com/run/create" in current_url:
+                # 2. تجهيز الشاشة وعرض قسم Region للمستخدم (بدون استخراج)
+                elif active_streams[chat_id].get('has_redirected_to_run') and not active_streams[chat_id].get('has_prepared_view') and "console.cloud.google.com/run/create" in current_url:
                     
                     form_ready = driver.execute_script("""
                         // الفحص 1: هل الشاشة بيضاء تماماً؟
@@ -152,156 +152,61 @@ def stream_screenshots(chat_id, url):
                     if not form_ready:
                         active_streams[chat_id]['white_screen_attempts'] += 1
                         if active_streams[chat_id]['white_screen_attempts'] == 1:
-                            bot.send_message(chat_id, "⏳ جاري انتظار بناء الواجهة (تخطي الانهيار الوهمي)...")
+                            bot.send_message(chat_id, "⏳ جاري انتظار تحميل الصفحة وتخطي الشاشة البيضاء...")
                         if active_streams[chat_id]['white_screen_attempts'] >= 4:
-                            bot.send_message(chat_id, "⚠️ الشاشة بيضاء ومُعلقة! جاري عمل Refresh إجباري لإنعاشها...")
+                            bot.send_message(chat_id, "⚠️ الشاشة مُعلقة! جاري عمل Refresh إجباري لإنعاشها...")
                             driver.refresh()
                             active_streams[chat_id]['white_screen_attempts'] = 0
                             time.sleep(6)
                         continue
                     
-                    bot.send_message(chat_id, "🔍 تم تحميل الواجهة ورسمها بنجاح.\n🧹 جاري تنظيف الشاشة من النوافذ...")
+                    bot.send_message(chat_id, "🔍 تم تحميل الواجهة بنجاح.\n🧹 جاري تنظيف الشاشة وتجهيز العرض لك...")
                     
                     try:
+                        # تنظيف الشاشة من النوافذ المنبثقة
                         driver.execute_script("""
                             document.querySelectorAll('button[aria-label="Close"], button[aria-label="Close tutorial"], .cfc-coachmark-close, .close-button').forEach(btn => btn.click());
                             document.querySelectorAll('cfc-coachmark, cfc-tooltip, mat-tooltip-component, .cfc-coachmark-container, [role="dialog"], .guided-tour, cfc-panel').forEach(el => el.remove());
                         """)
                         time.sleep(2)
 
-                        # =================================================================
-                        # الإضافة الخارقة: استخدام سكريبت الفحص الخاص بك (Diagnostic Script)
-                        # =================================================================
-                        bot.send_message(chat_id, "🧬 جاري حقن سكريبت الفحص (Diagnostic) الخاص بك لاستخراج الزر...")
-                        
-                        diagnostic_js = """
-                            let regionElements = [];
-                            let allElements = document.querySelectorAll('mat-select, cfc-select, [role="combobox"], button, input');
+                        bot.send_message(chat_id, "👀 جاري تمرير الشاشة (Scroll) إلى قسم Region...")
+
+                        # التمرير برفق حتى يكون قسم Region في منتصف الشاشة
+                        driver.execute_script("""
+                            let targetElement = null;
+                            let labels = document.querySelectorAll('label, .cfc-form-field-label-text');
                             
-                            allElements.forEach(el => {
-                                let text = (el.innerText || '').toLowerCase();
-                                let label = (el.getAttribute('aria-label') || '').toLowerCase();
-                                let id = (el.id || '').toLowerCase();
-                                
-                                if (label.includes('region') || id.includes('region') || text.includes('us-central') || text.includes('europe-')) {
-                                    // استبعاد شريط البحث لعدم الانخداع به
-                                    if (!id.includes('search') && !label.includes('search')) {
-                                        regionElements.push({
-                                            tag: el.tagName.toLowerCase(),
-                                            id: el.id
-                                        });
-                                    }
+                            for (let l of labels) {
+                                if (l.innerText && l.innerText.toLowerCase().includes('region')) {
+                                    targetElement = l;
+                                    break;
                                 }
-                            });
-
-                            let labels = Array.from(document.querySelectorAll('label, .cfc-form-field-label-text')).filter(l => (l.innerText || '').toLowerCase().includes('region'));
-                            let labelData = labels.map(l => ({
-                                htmlFor: l.getAttribute('for')
-                            }));
-
-                            return JSON.stringify({ dropdowns: regionElements, labels: labelData });
-                        """
-                        
-                        diag_result = driver.execute_script(diagnostic_js)
-                        diag_data = json.loads(diag_result)
-                        
-                        target_id = None
-                        
-                        # المحاولة 1: استخراج الـ ID من خاصية for الخاصة بالنص Region
-                        if diag_data.get('labels'):
-                            for l in diag_data['labels']:
-                                if l.get('htmlFor'):
-                                    target_id = l['htmlFor']
-                                    break
-                                    
-                        # المحاولة 2: استخراج الـ ID من قائمة العناصر المشتبه بها
-                        if not target_id and diag_data.get('dropdowns'):
-                            for d in diag_data['dropdowns']:
-                                if d.get('id'):
-                                    target_id = d['id']
-                                    break
-                        
-                        clicked = False
-                        
-                        if target_id:
-                            bot.send_message(chat_id, f"🎯 **نتيجة الفحص:** تم اكتشاف المعرف السري للزر:\n`{target_id}`\n\n⚡ جاري توجيه النقرة مباشرة إليه...")
+                            }
                             
-                            click_js = f"""
-                                let targetBox = document.getElementById('{target_id}');
-                                if (targetBox) {{
-                                    targetBox.scrollIntoView({{block: 'center', behavior: 'instant'}});
-                                    let evtDown = new MouseEvent('mousedown', {{ bubbles: true, cancelable: true, view: window }});
-                                    let evtUp = new MouseEvent('mouseup', {{ bubbles: true, cancelable: true, view: window }});
-                                    let evtClick = new MouseEvent('click', {{ bubbles: true, cancelable: true, view: window }});
-                                    targetBox.dispatchEvent(evtDown);
-                                    targetBox.dispatchEvent(evtUp);
-                                    targetBox.dispatchEvent(evtClick);
-                                    targetBox.click(); // نقرة تأكيدية
-                                    return true;
-                                }}
-                                return false;
-                            """
-                            clicked = driver.execute_script(click_js)
-                        else:
-                            bot.send_message(chat_id, "⚠️ تم تشغيل السكريبت ولكن لم أتمكن من استخراج ID واضح. سأحاول النقر على أول عنصر متاح.")
-                            
-                            fallback_click_js = """
+                            if (!targetElement) {
                                 let selects = document.querySelectorAll('cfc-select');
                                 if (selects.length > 0) {
-                                    let targetBox = selects[0];
-                                    targetBox.scrollIntoView({block: 'center', behavior: 'instant'});
-                                    let evtDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window });
-                                    let evtUp = new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window });
-                                    let evtClick = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                                    targetBox.dispatchEvent(evtDown);
-                                    targetBox.dispatchEvent(evtUp);
-                                    targetBox.dispatchEvent(evtClick);
-                                    targetBox.click();
-                                    return true;
+                                    targetElement = selects[0];
                                 }
-                                return false;
-                            """
-                            clicked = driver.execute_script(fallback_click_js)
-
-                        if not clicked:
-                            bot.send_message(chat_id, "⚠️ لم ينجح النقر على القائمة. سأحاول مجدداً في التحديث القادم...")
-                            continue
-
-                        bot.send_message(chat_id, "⏳ تم النقر! جاري استخراج السيرفرات...")
+                            }
+                            
+                            if (targetElement) {
+                                targetElement.scrollIntoView({block: 'center', behavior: 'smooth'});
+                            } else {
+                                // إذا لم يجده، ينزل لمنتصف الصفحة تقريباً
+                                window.scrollTo(0, document.body.scrollHeight / 2.5);
+                            }
+                        """)
                         
-                        servers = []
-                        for _ in range(4):
-                            time.sleep(3) 
-                            servers = driver.execute_script("""
-                                let options = document.querySelectorAll('mat-option, cfc-option, [role="option"], .mat-mdc-option');
-                                let available = [];
-                                for (let opt of options) {
-                                    let text = opt.innerText.trim();
-                                    if (text.length > 0 && !text.includes('Learn more') && !text.includes('Create multi-region') && text.includes('-') && !text.toLowerCase().includes('search')) {
-                                        let mainText = text.split('\\n')[0].trim();
-                                        if (mainText && !available.includes(mainText)) {
-                                            available.push(mainText);
-                                        }
-                                    }
-                                }
-                                return available;
-                            """)
-                            if servers and len(servers) > 0:
-                                break
-                        
-                        active_streams[chat_id]['has_extracted_regions'] = True
-                        
-                        if servers and len(servers) > 0:
-                            servers_list_text = "\n".join([f"🌍 `{s}`" for s in servers])
-                            bot.send_message(chat_id, f"✅ **تم العثور على السيرفرات التالية:**\n\n{servers_list_text}", parse_mode="Markdown")
-                        else:
-                            bot.send_message(chat_id, "⚠️ فتحت القائمة ولكن لم تظهر السيرفرات. الحصة (Quota) غير متاحة.")
+                        active_streams[chat_id]['has_prepared_view'] = True
+                        bot.send_message(chat_id, "✅ الواجهة جاهزة الآن ومُركزة على Region! يمكنك مراقبة البث المباشر.")
                             
                         time.sleep(2) 
                     except Exception as script_err:
                         error_snippet = str(script_err)[:200]
-                        bot.send_message(chat_id, f"⚠️ حدث خطأ داخلي:\n`{error_snippet}`", parse_mode="Markdown")
-                        active_streams[chat_id]['has_extracted_regions'] = True
+                        bot.send_message(chat_id, f"⚠️ حدث خطأ بسيط أثناء التمرير:\n`{error_snippet}`", parse_mode="Markdown")
+                        active_streams[chat_id]['has_prepared_view'] = True
             except Exception as e:
                 pass
             # -------------------------------------------------------------
