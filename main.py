@@ -56,7 +56,7 @@ class Config:
     # ── المتصفح ──
     PAGE_LOAD_TIMEOUT = 45
     SCRIPT_TIMEOUT = 25
-    WINDOW_SIZE = (1024, 768)
+    WINDOW_SIZE = (800, 600)
 
     # ── البث المباشر ──
     STREAM_INTERVAL = (4, 6)          # (min, max) ثانية
@@ -352,7 +352,10 @@ def create_driver():
     for flag in [
         "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
         "--disable-features=site-per-process", "--disable-software-rasterizer",
-        "--disable-notifications", f"--window-size={Config.WINDOW_SIZE[0]},{Config.WINDOW_SIZE[1]}",
+        "--disable-notifications", "--disable-extensions", "--disable-component-update",
+        "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding", "--js-flags=--max-old-space-size=256",
+        f"--window-size={Config.WINDOW_SIZE[0]},{Config.WINDOW_SIZE[1]}",
         "--mute-audio"
     ]:
         opts.add_argument(flag)
@@ -671,7 +674,11 @@ def do_cloud_run_extraction(driver, chat_id, session):
             
     except Exception as e:
         if session.get("status_msg_id"):
-            edit_safe(chat_id, session["status_msg_id"], f"⚠️ فشل استخراج السيرفرات: `{str(e)[:100]}`", parse_mode="Markdown")
+            err_str = str(e)
+            if "tab crashed" in err_str.lower():
+                edit_safe(chat_id, session["status_msg_id"], "⚠️ **انهيار المتصفح (Tab Crashed):**\nنفدت الذاكرة (RAM) بسبب ثقل صفحة جوجل. يرجى الضغط على زر **🔁 إعادة تشغيل** أسفل البث للمحاولة مرة أخرى.", parse_mode="Markdown")
+            else:
+                edit_safe(chat_id, session["status_msg_id"], f"⚠️ فشل استخراج السيرفرات: `{err_str[:100]}`", parse_mode="Markdown")
 
     return True
 
