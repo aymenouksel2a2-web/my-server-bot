@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from selenium import webdriver
-from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.chrome.options import Options
 from pyvirtualdisplay import Display
 
 # جلب توكن البوت من متغيرات البيئة في Railway
@@ -42,7 +42,7 @@ def run_health_server():
 threading.Thread(target=run_health_server, daemon=True).start()
 
 # ---------------------------------------------------------
-# 2. إعدادات Selenium والبث المباشر
+# 2. إعدادات Selenium والبث المباشر (متصفح خفيف جداً)
 # ---------------------------------------------------------
 active_streams = {}
 
@@ -50,14 +50,28 @@ def init_driver():
     display = Display(visible=0, size=(1280, 720))
     display.start()
     
-    firefox_options = Options()
-    firefox_options.add_argument('-private')
-    firefox_options.set_preference("browser.cache.disk.enable", False)
-    firefox_options.set_preference("browser.cache.memory.enable", False)
-    firefox_options.set_preference("browser.cache.offline.enable", False)
-    firefox_options.set_preference("network.http.use-cache", False)
+    chrome_options = Options()
     
-    driver = webdriver.Firefox(options=firefox_options)
+    # ── إعدادات أساسية ──
+    chrome_options.add_argument('--incognito')
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage') # مهم جداً لمنع انهيار الذاكرة
+    
+    # ── إعدادات التخفيف الخارقة (لتقليل استهلاك الـ RAM والـ CPU) ──
+    chrome_options.add_argument('--disable-gpu')
+    chrome_options.add_argument('--disable-software-rasterizer')
+    chrome_options.add_argument('--disable-extensions')
+    chrome_options.add_argument('--disable-infobars')
+    chrome_options.add_argument('--disable-notifications')
+    chrome_options.add_argument('--disable-background-networking')
+    chrome_options.add_argument('--disable-default-apps')
+    chrome_options.add_argument('--disable-sync')
+    chrome_options.add_argument('--mute-audio')
+    chrome_options.add_argument('--no-first-run')
+    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+    chrome_options.add_argument('--js-flags="--max-old-space-size=512"') # تقييد استهلاك الجافاسكربت للذاكرة
+    
+    driver = webdriver.Chrome(options=chrome_options)
     driver.set_window_size(1280, 720) 
     driver.implicitly_wait(3)
     return driver, display
@@ -76,7 +90,7 @@ def stop_stream(chat_id):
         del active_streams[chat_id]
 
 def stream_screenshots(chat_id, url):
-    msg = bot.send_message(chat_id, "⚙️ جاري تهيئة متصفح Firefox وفتح الرابط... يرجى الانتظار.")
+    msg = bot.send_message(chat_id, "⚙️ جاري تهيئة متصفح Chromium الخفيف وفتح الرابط... يرجى الانتظار.")
     
     try:
         driver, display = init_driver()
@@ -261,5 +275,5 @@ def callback_stop(call):
         bot.answer_callback_query(call.id, "البث متوقف بالفعل.")
 
 if __name__ == '__main__':
-    print("البوت يعمل الآن (باستخدام Firefox)... يتم الاستماع للرسائل.")
+    print("البوت يعمل الآن (باستخدام Chromium الخفيف)... يتم الاستماع للرسائل.")
     bot.infinity_polling()
