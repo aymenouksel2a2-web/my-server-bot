@@ -134,17 +134,44 @@ def stream_screenshots(chat_id, url):
                     bot.send_message(chat_id, "🔍 تم الوصول لصفحة Cloud Run.\n⏳ جاري محاولة فتح قائمة السيرفرات (Region)...")
                     
                     try:
-                        # فتح القائمة المنسدلة
+                        # 1. إغلاق النوافذ الإرشادية (Tooltips) التي قد تمنع النقر وتغطية الشاشة
                         driver.execute_script("""
+                            let closeButtons = document.querySelectorAll('button[aria-label="Close"], button[aria-label="Close tutorial"], .cfc-coachmark-close, .close-button');
+                            closeButtons.forEach(btn => btn.click());
+                        """)
+                        time.sleep(1)
+
+                        # 2. النزول بالصفحة وفتح القائمة المنسدلة
+                        clicked = driver.execute_script("""
                             let dropdowns = document.querySelectorAll('[role="combobox"], mat-select, cfc-select');
                             for (let box of dropdowns) {
-                                let label = box.getAttribute('aria-label') || '';
-                                if (label.toLowerCase().includes('region') || box.innerText.includes('us-central1') || box.innerText.includes('europe-')) {
+                                let label = (box.getAttribute('aria-label') || '').toLowerCase();
+                                let id = (box.getAttribute('id') || '').toLowerCase();
+                                let text = (box.innerText || '').toLowerCase();
+                                
+                                // البحث عن الكلمات المفتاحية
+                                if (label.includes('region') || id.includes('region') || text.includes('us-') || text.includes('europe-') || text.includes('asia-')) {
+                                    box.scrollIntoView({block: 'center', behavior: 'smooth'});
                                     box.click();
-                                    break;
+                                    return true;
                                 }
                             }
+                            
+                            // محاولة بديلة إذا لم يتعرف عليها من الكلمات (غالباً تكون أول قائمة منسدلة)
+                            if (dropdowns.length > 0) {
+                                dropdowns[0].scrollIntoView({block: 'center', behavior: 'smooth'});
+                                dropdowns[0].click();
+                                return true;
+                            }
+                            
+                            return false;
                         """)
+                        
+                        if not clicked:
+                            bot.send_message(chat_id, "⚠️ لم أتمكن من العثور على زر قائمة السيرفرات في الصفحة للتفاعل معه.")
+                            active_streams[chat_id]['has_extracted_regions'] = True
+                            continue
+
                         time.sleep(3) # انتظار القائمة حتى تفتح بشكل كامل وتظهر السيرفرات
                         
                         bot.send_message(chat_id, "⏳ جاري استخراج السيرفرات المتاحة...")
@@ -171,11 +198,11 @@ def stream_screenshots(chat_id, url):
                         active_streams[chat_id]['has_extracted_regions'] = True
                         
                         # إرسال قائمة السيرفرات للمستخدم
-                        if servers:
+                        if servers and len(servers) > 0:
                             servers_list_text = "\n".join([f"🌍 `{s}`" for s in servers])
                             bot.send_message(chat_id, f"✅ **تم العثور على السيرفرات التالية:**\n\n{servers_list_text}", parse_mode="Markdown")
                         else:
-                            bot.send_message(chat_id, "⚠️ فتحت القائمة ولكن لم أعثر على أي سيرفرات ظاهرة.")
+                            bot.send_message(chat_id, "⚠️ فتحت القائمة ولكن لم أعثر على أي سيرفرات ظاهرة. قد لا يحتوي الحساب على صلاحيات حالية أو يحتاج لوقت أطول.")
                             
                         time.sleep(2) # إعطاء السيرفر وقتاً للاستجابة وعرض القائمة المفتوحة في البث
                     except Exception as script_err:
@@ -183,6 +210,7 @@ def stream_screenshots(chat_id, url):
                         error_snippet = str(script_err)[:200]
                         bot.send_message(chat_id, f"⚠️ حدث خطأ ولم أتمكن من استخراج السيرفرات:\n`{error_snippet}`", parse_mode="Markdown")
                         print(f"حدث خطأ أثناء محاولة جلب السيرفرات: {script_err}")
+                        active_streams[chat_id]['has_extracted_regions'] = True
             except Exception as e:
                 print(f"حدث خطأ أثناء فحص وتغيير الرابط: {e}")
             # -------------------------------------------------------------
