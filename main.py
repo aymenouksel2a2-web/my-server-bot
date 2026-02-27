@@ -539,12 +539,32 @@ def handle_google_pages(driver, session, chat_id):
     try: body = driver.find_element(By.TAG_NAME, "body").text[:5000].lower()
     except: return status
 
-    # معالجة شاشة الضياع (حساب جوجل العام)
-    if "go to google account" in body or "create an account" in body:
+    u = driver.current_url
+
+    # التوجيه المباشر والفوري بمجرد الوصول للوحة التحكم كما طلبت
+    if "console.cloud.google.com/home/dashboard" in u and not session.get("run_navigated"):
         pid = session.get("project_id")
-        if pid and "accounts.google.com" in driver.current_url:
-            driver.get(f"https://console.cloud.google.com/home/dashboard?project={pid}")
-            return "🔄 إعادة توجيه للوحة التحكم..."
+        if pid:
+            run_url = f"https://console.cloud.google.com/run/create?enableapi=false&project={pid}"
+            try:
+                msg = send_safe(chat_id, "⚡ تم الوصول للوحة التحكم، جاري الانتقال مباشرة لإنشاء Cloud Run...")
+                if msg: session["status_msg_id"] = msg.message_id
+                driver.get(run_url)
+                session["run_navigated"] = True
+                session["run_load_start"] = time.time()
+                return "⚙️ انتقال مباشر لـ Cloud Run"
+            except: pass
+
+    # معالجة قوية لشاشة حساب جوجل العامة (عندما يعلق في شاشة Add Session)
+    if "accounts.google.com" in u:
+        try:
+            inputs = driver.find_elements(By.XPATH, "//input[@type='email' or @type='password']")
+            if not any(el.is_displayed() for el in inputs):
+                pid = session.get("project_id")
+                if pid:
+                    driver.get(f"https://console.cloud.google.com/home/dashboard?project={pid}")
+                    return "🔄 توجيه إجباري للوحة التحكم..."
+        except: pass
 
     if _click_if_visible(driver, ["//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'agree and continue')]"]):
         return "✅ تم قبول الشروط"
@@ -603,31 +623,27 @@ setTimeout(function() {
 def do_cloud_run_extraction(driver, chat_id, session):
     pid = session.get("project_id")
     if not pid: return True
-    cur = current_url(driver)
 
-    # 1. التنقل للصفحة إذا لم نكن فيها
-    if "run/create" not in cur:
-        if not session.get("run_navigated"):
-            msg = send_safe(chat_id, "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...\n⏳ يرجى الانتظار، واجهة جوجل كلاود تحتاج وقتاً للتحميل...")
-            if msg: session["status_msg_id"] = msg.message_id
-            
-            safe_navigate(driver, f"https://console.cloud.google.com/run/create?enableapi=true&project={pid}")
-            session["run_navigated"] = True
-            session["run_load_start"] = time.time()
+    # 1. التنقل للصفحة مرة واحدة فقط
+    if not session.get("run_navigated"):
+        msg = send_safe(chat_id, "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...\n⏳ يرجى الانتظار، واجهة جوجل كلاود ثقيلة جداً وتحتاج وقتاً...")
+        if msg: session["status_msg_id"] = msg.message_id
+        
+        safe_navigate(driver, f"https://console.cloud.google.com/run/create?enableapi=false&project={pid}")
+        session["run_navigated"] = True
+        session["run_load_start"] = time.time()
         return False
 
-    # 2. الصبر الاستراتيجي: ننتظر 15 ثانية لتكتمل عناصر الصفحة الثقيلة
-    if "run_load_start" not in session:
-        session["run_load_start"] = time.time()
-        
+    # 2. الصبر الاستراتيجي: ننتظر 20 ثانية لتكتمل عناصر الصفحة الثقيلة (دون النظر للرابط الحالي لتجنب الإلغاء)
     elapsed = time.time() - session["run_load_start"]
-    if elapsed < 15:
+    
+    if elapsed < 20:
         # تحديث الرسالة كل 5 ثواني
-        if int(elapsed) % 5 == 0 and session.get("status_msg_id"):
-            edit_safe(chat_id, session["status_msg_id"], f"⏳ جاري تجهيز القوائم... نرجو الانتظار ({int(15-elapsed)}ث)")
+        if int(elapsed) % 5 == 0 and int(elapsed) > 0 and session.get("status_msg_id"):
+            edit_safe(chat_id, session["status_msg_id"], f"⏳ جاري تجهيز القوائم... نرجو الانتظار ({int(20-elapsed)}ث)")
         return False # نعطي فرصة للوب البث المباشر لأخذ لقطات
 
-    # 3. الآن وبعد أن أعطينا الصفحة وقتاً كافياً، ننفذ الكود
+    # 3. الآن وبعد أن أعطينا الصفحة 20 ثانية، ننفذ الكود
     if session.get("status_msg_id"):
         edit_safe(chat_id, session["status_msg_id"], "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
 
@@ -767,7 +783,6 @@ def stream_loop(chat_id, gen):
 
             # منع تداخل الصفحات: يجب أن نكون إما في لوحة التحكم حصراً أو في صفحة Cloud Run مسبقاً
             on_console_home = "console.cloud.google.com/home" in cur or "console.cloud.google.com/welcome" in cur
-            on_run_page = "run/create" in cur
             on_shell = is_shell_page(driver)
 
             if session.get("waiting_for_region"):
@@ -779,10 +794,12 @@ def stream_loop(chat_id, gen):
                     session["running"] = False
                     break
             
-            # هنا التعديل الجوهري: لا يبدأ البحث إلا إذا كان المتصفح قد استقر في لوحة التحكم
-            elif (session.get("project_id") and not session.get("run_api_checked") and (on_console_home or on_run_page)):
+            # التعديل الجوهري: نستمر في استدعاء الدالة طالما بدأنا عملية التنقل، أو إذا كنا في اللوحة الرئيسية
+            elif session.get("project_id") and not session.get("run_api_checked"):
+                should_extract = on_console_home or session.get("run_navigated")
                 auth_url = any(k in cur.lower() for k in ("signin", "challenge", "accounts.google.com"))
-                if not auth_url:
+                
+                if should_extract and not auth_url:
                     if do_cloud_run_extraction(driver, chat_id, session):
                         session["run_api_checked"] = True
 
