@@ -8,7 +8,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
+# تم تغيير الاستيراد ليصبح لمتصفح فايرفوكس
+from selenium.webdriver.firefox.options import Options
 from pyvirtualdisplay import Display
 
 # جلب توكن البوت من متغيرات البيئة في Railway
@@ -41,7 +42,7 @@ def run_health_server():
 threading.Thread(target=run_health_server, daemon=True).start()
 
 # ---------------------------------------------------------
-# 2. إعدادات Selenium والبث المباشر
+# 2. إعدادات Selenium والبث المباشر (باستخدام Firefox)
 # ---------------------------------------------------------
 active_streams = {}
 
@@ -49,14 +50,18 @@ def init_driver():
     display = Display(visible=0, size=(1280, 720))
     display.start()
     
-    chrome_options = Options()
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument('--disable-gpu')
-    chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-    chrome_options.add_argument('--incognito')
+    # إعدادات متصفح فايرفوكس الجبار
+    firefox_options = Options()
+    firefox_options.add_argument('-private') # التصفح الخفي لتخطي شاشات التأكيد
     
-    driver = webdriver.Chrome(options=chrome_options)
+    # تفضيلات إضافية لمنع انهيار الذاكرة وتسريع المتصفح
+    firefox_options.set_preference("browser.cache.disk.enable", False)
+    firefox_options.set_preference("browser.cache.memory.enable", False)
+    firefox_options.set_preference("browser.cache.offline.enable", False)
+    firefox_options.set_preference("network.http.use-cache", False)
+    
+    # مكتبة Selenium 4.18 تقوم تلقائياً بتحميل Geckodriver، لا داعي للقلق حوله!
+    driver = webdriver.Firefox(options=firefox_options)
     driver.set_window_size(1280, 720) 
     driver.implicitly_wait(3)
     return driver, display
@@ -75,7 +80,7 @@ def stop_stream(chat_id):
         del active_streams[chat_id]
 
 def stream_screenshots(chat_id, url):
-    msg = bot.send_message(chat_id, "⚙️ جاري تهيئة المتصفح وفتح الرابط... يرجى الانتظار.")
+    msg = bot.send_message(chat_id, "⚙️ جاري تهيئة متصفح Firefox وفتح الرابط... يرجى الانتظار.")
     
     try:
         driver, display = init_driver()
@@ -259,5 +264,5 @@ def callback_stop(call):
         bot.answer_callback_query(call.id, "البث متوقف بالفعل.")
 
 if __name__ == '__main__':
-    print("البوت يعمل الآن... يتم الاستماع للرسائل.")
+    print("البوت يعمل الآن (باستخدام Firefox)... يتم الاستماع للرسائل.")
     bot.infinity_polling()
