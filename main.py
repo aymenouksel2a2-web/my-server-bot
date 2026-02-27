@@ -132,33 +132,35 @@ def stream_screenshots(chat_id, url):
                         active_streams[chat_id]['has_redirected_to_run'] = True
                         time.sleep(6) 
                         
-                # 2. الفحص الذكي للصفحة بناءً على التشخيص
+                # 2. الفحص البصري الدقيق (لمنع خدعة الشاشة البيضاء)
                 elif active_streams[chat_id].get('has_redirected_to_run') and not active_streams[chat_id].get('has_extracted_regions') and "console.cloud.google.com/run/create" in current_url:
                     
                     form_ready = driver.execute_script("""
-                        let labels = document.querySelectorAll('label, .cfc-form-field-label-text');
-                        for (let l of labels) {
-                            if (l.innerText && l.innerText.toLowerCase().includes('region')) {
-                                let targetId = l.getAttribute('for');
-                                if (targetId && document.getElementById(targetId)) return true;
-                            }
+                        // الفحص 1: هل الشاشة بيضاء تماماً؟
+                        if (document.body.innerText.trim().length < 50) return false;
+
+                        // الفحص 2: هل زر قائمة السيرفرات (cfc-select) موجود ومرئي بوضوح على الشاشة؟
+                        let selects = document.querySelectorAll('cfc-select');
+                        for (let s of selects) {
+                            let rect = s.getBoundingClientRect();
+                            // إذا كان العرض والارتفاع أكبر من 0، فالصفحة محملة بسلام وليست بيضاء
+                            if (rect.width > 0 && rect.height > 0) return true;
                         }
-                        let text = document.body.innerText;
-                        return text.includes('Container image URL');
+                        return false;
                     """)
                     
                     if not form_ready:
                         active_streams[chat_id]['white_screen_attempts'] += 1
                         if active_streams[chat_id]['white_screen_attempts'] == 1:
-                            bot.send_message(chat_id, "⏳ جاري انتظار بناء واجهة Cloud Run...")
-                        if active_streams[chat_id]['white_screen_attempts'] >= 5:
-                            bot.send_message(chat_id, "⚠️ تم اكتشاف شاشة بيضاء. جاري عمل Refresh للصفحة لإنعاشها...")
+                            bot.send_message(chat_id, "⏳ جاري انتظار بناء الواجهة (تخطي الانهيار الوهمي)...")
+                        if active_streams[chat_id]['white_screen_attempts'] >= 4:
+                            bot.send_message(chat_id, "⚠️ الشاشة بيضاء ومُعلقة! جاري عمل Refresh إجباري لإنعاشها...")
                             driver.refresh()
                             active_streams[chat_id]['white_screen_attempts'] = 0
                             time.sleep(6)
-                        continue
+                        continue # تخطي باقي الكود والانتظار حتى تحمل الصفحة فعلياً
                     
-                    bot.send_message(chat_id, "🔍 تم تحميل الواجهة بنجاح.\n🧹 جاري تنظيف الشاشة من النوافذ الإرشادية...")
+                    bot.send_message(chat_id, "🔍 تم تحميل الواجهة ورسمها بنجاح.\n🧹 جاري تنظيف الشاشة من النوافذ...")
                     
                     try:
                         driver.execute_script("""
@@ -167,9 +169,9 @@ def stream_screenshots(chat_id, url):
                         """)
                         time.sleep(2)
 
-                        bot.send_message(chat_id, "⏳ جاري محاولة فتح القائمة الإجبارية (بالاعتماد على الـ ID الدقيق)...")
+                        bot.send_message(chat_id, "⏳ جاري محاكاة ضغطة الماوس الحقيقية لفتح القائمة...")
 
-                        # القناص: تحديد العنصر بناءً على بيانات التشخيص
+                        # القناص: تحديد العنصر والنقر عليه باستخدام حدث الماوس (Mouse Events)
                         clicked = driver.execute_script("""
                             let targetBox = null;
                             
@@ -189,29 +191,38 @@ def stream_screenshots(chat_id, url):
                             if (!targetBox) {
                                 let selects = document.querySelectorAll('cfc-select');
                                 if (selects.length > 0) {
-                                    targetBox = selects[0]; // نأخذ أول قائمة cfc-select لأنها التي ظهرت في التشخيص
+                                    targetBox = selects[0]; // نأخذ أول قائمة cfc-select
                                 }
                             }
                             
+                            // تنفيذ النقرة الخارقة
                             if (targetBox) {
-                                targetBox.scrollIntoView({block: 'center', behavior: 'smooth'});
-                                targetBox.click();
-                                let evt = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                                targetBox.dispatchEvent(evt);
+                                targetBox.scrollIntoView({block: 'center', behavior: 'instant'});
+                                
+                                // محاكاة ضغطة الماوس (MouseDown + MouseUp + Click) لاختراق حماية Google
+                                let evtDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window });
+                                let evtUp = new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window });
+                                let evtClick = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                                
+                                targetBox.dispatchEvent(evtDown);
+                                targetBox.dispatchEvent(evtUp);
+                                targetBox.dispatchEvent(evtClick);
+                                targetBox.click(); // نقرة إضافية للتأكيد
+                                
                                 return true;
                             }
                             return false;
                         """)
                         
                         if not clicked:
-                            bot.send_message(chat_id, "⚠️ لم أتمكن من العثور على القائمة باستخدام الهندسة العكسية.")
-                            active_streams[chat_id]['has_extracted_regions'] = True
+                            bot.send_message(chat_id, "⚠️ لم ينجح النقر على القائمة. سأحاول مجدداً في التحديث القادم...")
+                            # لن نضع True هنا لكي يكرر المحاولة في اللفة القادمة ولا يستسلم
                             continue
 
-                        bot.send_message(chat_id, "⏳ تم النقر على زر السيرفرات. جاري استخراج البيانات...")
+                        bot.send_message(chat_id, "⏳ تم النقر! جاري استخراج السيرفرات...")
                         
                         servers = []
-                        for _ in range(5):
+                        for _ in range(4):
                             time.sleep(3) 
                             servers = driver.execute_script("""
                                 let options = document.querySelectorAll('mat-option, cfc-option, [role="option"], .mat-mdc-option');
