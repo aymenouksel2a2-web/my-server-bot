@@ -968,9 +968,27 @@ if __name__ == "__main__":
     threading.Thread(target=_health_server, daemon=True).start()
     threading.Thread(target=_auto_cleanup_loop, daemon=True).start()
     threading.Thread(target=queue_worker, daemon=True).start()
-    try: bot.remove_webhook()
-    except: pass
+    
+    # تنظيف الـ Webhooks المعلقة إن وجدت
+    try: 
+        bot.delete_webhook(drop_pending_updates=True)
+        time.sleep(2)
+    except Exception as e: 
+        log.warning(f"Webhook cleanup: {e}")
+        
     log.info("🚀 البوت يعمل الآن...")
+    
     while not shutdown_event.is_set():
-        try: bot.polling(non_stop=True)
-        except: time.sleep(5)
+        try: 
+            # وضعنا non_stop=False لكي نتمكن من التقاط أخطاء الاتصال والتعامل معها بذكاء
+            bot.polling(non_stop=False, skip_pending=True, timeout=60, long_polling_timeout=60)
+        except Exception as e: 
+            err_msg = str(e)
+            log.error(f"Polling error: {err_msg}")
+            
+            # إذا كان الخطأ بسبب تداخل نسختين، ننتظر 15 ثانية لتموت النسخة القديمة
+            if "409" in err_msg or "Conflict" in err_msg:
+                log.warning("⚠️ هناك نسخة أخرى من البوت تعمل (تداخل 409)! سأنتظر 15 ثانية لكي تنغلق النسخة القديمة...")
+                time.sleep(15)
+            else:
+                time.sleep(5)
