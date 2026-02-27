@@ -895,6 +895,13 @@ def handle_google_pages(driver, session, chat_id):
 
     bl = body.lower()
 
+    # 💡 تخطي نوافذ التنبيهات المزعجة (Cloud Hub)
+    if "visibility" in bl and ("cloud hub" in bl or "no longer updated" in bl):
+        _click_if_visible(driver, [
+            "//button[@aria-label='Close']",
+            "//button[contains(@aria-label, 'Close')]"
+        ], 0.2, 1)
+
     # 💡 اكتشاف طلب استرداد الإيميل (Recovery Email)
     if "confirm your recovery email" in bl or "تأكيد عنوان البريد" in bl:
         if session.get("waiting_for_input") != "recovery":
@@ -1042,7 +1049,7 @@ var callback = arguments[arguments.length - 1];
 setTimeout(function() {
     try {
         var clicked = false;
-        var dd = document.querySelectorAll('mat-select, [role="combobox"]');
+        var dd = document.querySelectorAll('mat-select, [role="combobox"], [aria-haspopup="listbox"]');
         for (var i = 0; i < dd.length; i++) {
             var a = (dd[i].getAttribute('aria-label') || '').toLowerCase();
             var id = (dd[i].getAttribute('id') || '').toLowerCase();
@@ -1053,14 +1060,14 @@ setTimeout(function() {
         if (!clicked) {
             var lbl = document.querySelectorAll('label, .mat-form-field-label');
             for (var j = 0; j < lbl.length; j++) {
-                if (lbl[j].innerText && lbl[j].innerText.indexOf('Region') !== -1) {
+                if (lbl[j].innerText && lbl[j].innerText.toLowerCase().indexOf('region') !== -1) {
                     lbl[j].click(); clicked = true; break;
                 }
             }
         }
         if (!clicked) { callback('NO_DROPDOWN'); return; }
         setTimeout(function() {
-            var opts = document.querySelectorAll('mat-option, [role="option"]');
+            var opts = document.querySelectorAll('mat-option, [role="option"], li[role="option"]');
             var res = [];
             for (var k = 0; k < opts.length; k++) {
                 var o = opts[k];
@@ -1091,29 +1098,39 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
     cur = current_url(driver)
 
-    # 1. إذا لم نقم بتوجيه المتصفح بعد لصفحة Cloud Run
-    if not session.get("run_navigated"):
+    # 1. إذا كنا في صفحة تفعيل API أو الفوترة، ننتظر ولا نعيد التوجيه
+    if "apis/" in cur or "billing" in cur:
+        if session.get("status_msg_id"):
+            edit_safe(chat_id, session["status_msg_id"], "⚙️ جاري تفعيل واجهات الـ API الضرورية...")
+        return False
+
+    # 2. إذا لم يكن الرابط الحالي يحتوي على run/create نقوم بتوجيهه
+    if "run/create" not in cur:
+        # 💡 تجنب التوجيه المتكرر والمزعج (ننتظر 15 ثانية على الأقل قبل المحاولة مرة أخرى)
+        # هذا يحل مشكلة تعارض الـ SSO Redirect مع توجيه البوت
+        if time.time() - session.get("run_navigate_time", 0) < 15:
+            return False
+            
         if not session.get("status_msg_id"):
-            msg = send_safe(chat_id, "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...")
+            msg = send_safe(chat_id, "⚙️ جاري الانتقال لصفحة Cloud Run لاستخراج السيرفرات...")
             if msg: session["status_msg_id"] = msg.message_id
         else:
-            edit_safe(chat_id, session["status_msg_id"], "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...")
+            edit_safe(chat_id, session["status_msg_id"], "⚙️ جاري الانتقال لصفحة Cloud Run لاستخراج السيرفرات...")
             
         safe_navigate(
             driver,
             f"https://console.cloud.google.com/run/create"
             f"?enableapi=true&project={pid}",
         )
-        session["run_navigated"] = True
         session["run_navigate_time"] = time.time()
         return False
 
-    # 2. الانتظار حتى يتم تحميل الصفحة بشكل كامل (لأن جوجل تقوم بعمليات إعادة توجيه)
+    # 3. الانتظار حتى يتم تحميل الصفحة بشكل كامل
     elapsed = time.time() - session.get("run_navigate_time", time.time())
     if elapsed < 10: 
         return False
 
-    # 3. تحديث رسالة الحالة
+    # 4. تحديث رسالة الحالة
     if not session.get("extracting_started"):
         if session.get("status_msg_id"):
             edit_safe(chat_id, session["status_msg_id"], "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
@@ -1124,88 +1141,98 @@ def do_cloud_run_extraction(driver, chat_id, session):
         result = driver.execute_async_script(REGION_JS)
 
         if result is None or result == "NO_DROPDOWN" or result == "NO_REGIONS" or result.startswith("ERROR:"):
-            # إعطاء فرصة أخرى للمحاولة إذا كانت الصفحة ثقيلة أو تم إعادة التوجيه لصفحة تفعيل API
+            # إعطاء فرصة أخرى للمحاولة إذا كانت الصفحة ثقيلة
             retry_count = session.get("run_extract_retries", 0)
             if retry_count < 3:
                 session["run_extract_retries"] = retry_count + 1
                 session["run_navigate_time"] = time.time() - 5 # انتظر 5 ثوانٍ أخرى للمحاولة
                 return False
                 
-            if session.get("status_msg_id"):
-                edit_safe(chat_id, session["status_msg_id"], "⚠️ تعذر جلب السيرفرات تلقائياً، سيتم نقلك إلى التيرمنال مباشرة.")
+            # 💡 بعد الفشل المتكرر، نستخدم السيرفرات الافتراضية بدلاً من ترك المستخدم معلقاً
+            regions = [
+                "us-central1", "us-east1", "us-west1", "us-east4",
+                "europe-west1", "europe-west4", "europe-north1",
+                "asia-east1", "asia-southeast1", "australia-southeast1",
+                "me-central1", "southamerica-east1"
+            ]
+            msg_text_prefix = "⚠️ **تعذر جلب السيرفرات تلقائياً (ربما بسبب تحديث في جوجل).**\n\nقمنا بتوفير قائمة احتياطية بالسيرفرات الأكثر شيوعاً كبديل، يرجى الاختيار:\n\n"
         else:
             regions = [r.strip() for r in result.split("\n") if r.strip()]
+            msg_text_prefix = "🌍 **السيرفرات المسموحة للإنشاء:**\nتم تنظيم السيرفرات لتسهيل الاختيار، اختر السيرفر الذي تريده لبناء VLESS:\n\n"
             
-            # 💡 تصنيف السيرفرات حسب القارات
-            categories = {
-                "🇺🇸 الأمريكتين": [],
-                "🇪🇺 أوروبا": [],
-                "🌏 آسيا": [],
-                "🐪 الشرق الأوسط": [],
-                "🦘 أستراليا": [],
-                "🌍 أفريقيا": [],
-                "🌐 أخرى": []
-            }
+        # تصنيف السيرفرات حسب القارات
+        categories = {
+            "🇺🇸 الأمريكتين": [],
+            "🇪🇺 أوروبا": [],
+            "🌏 آسيا": [],
+            "🐪 الشرق الأوسط": [],
+            "🦘 أستراليا": [],
+            "🌍 أفريقيا": [],
+            "🌐 أخرى": []
+        }
 
-            for r in regions:
-                rl = r.lower()
-                if rl.startswith("us-") or rl.startswith("northamerica-") or rl.startswith("southamerica-"):
-                    categories["🇺🇸 الأمريكتين"].append(r)
-                elif rl.startswith("europe-"):
-                    categories["🇪🇺 أوروبا"].append(r)
-                elif rl.startswith("asia-"):
-                    categories["🌏 آسيا"].append(r)
-                elif rl.startswith("me-"):
-                    categories["🐪 الشرق الأوسط"].append(r)
-                elif rl.startswith("australia-"):
-                    categories["🦘 أستراليا"].append(r)
-                elif rl.startswith("africa-"):
-                    categories["🌍 أفريقيا"].append(r)
-                else:
-                    categories["🌐 أخرى"].append(r)
-
-            mk = InlineKeyboardMarkup()
-            
-            # بناء الأزرار مع العناوين
-            for cat_name, cat_regions in categories.items():
-                if cat_regions:
-                    # زر كعنوان للقارة (غير قابل للضغط الفعلي)
-                    mk.row(InlineKeyboardButton(f"▬▬ {cat_name} ▬▬", callback_data="ignore"))
-                    
-                    # ترتيب سيرفرات هذه القارة (زرين في كل صف)
-                    row = []
-                    for r in cat_regions:
-                        row.append(InlineKeyboardButton(r, callback_data=f"setreg_{r.split()[0]}"))
-                        if len(row) == 2:
-                            mk.row(*row)
-                            row = []
-                    if row: # إذا تبقى زر فردي
-                        mk.row(*row)
-
-            msg_text = (
-                "🌍 **السيرفرات المسموحة للإنشاء:**\n"
-                "تم تنظيم السيرفرات لتسهيل الاختيار، اختر السيرفر الذي تريده لبناء VLESS:\n\n"
-                "⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*"
-            )
-
-            if session.get("status_msg_id"):
-                edit_safe(
-                    chat_id, session["status_msg_id"],
-                    msg_text,
-                    reply_markup=mk,
-                    parse_mode="Markdown"
-                )
+        for r in regions:
+            rl = r.lower()
+            if rl.startswith("us-") or rl.startswith("northamerica-") or rl.startswith("southamerica-"):
+                categories["🇺🇸 الأمريكتين"].append(r)
+            elif rl.startswith("europe-"):
+                categories["🇪🇺 أوروبا"].append(r)
+            elif rl.startswith("asia-"):
+                categories["🌏 آسيا"].append(r)
+            elif rl.startswith("me-") or rl.startswith("mid-"):
+                categories["🐪 الشرق الأوسط"].append(r)
+            elif rl.startswith("australia-"):
+                categories["🦘 أستراليا"].append(r)
+            elif rl.startswith("africa-"):
+                categories["🌍 أفريقيا"].append(r)
             else:
-                msg = send_safe(chat_id, msg_text, reply_markup=mk, parse_mode="Markdown")
-                if msg: session["status_msg_id"] = msg.message_id
-            
-            session["waiting_for_region"] = True
-            session["region_prompt_time"] = time.time()
+                categories["🌐 أخرى"].append(r)
+
+        mk = InlineKeyboardMarkup()
+        
+        # بناء الأزرار مع العناوين
+        for cat_name, cat_regions in categories.items():
+            if cat_regions:
+                # زر كعنوان للقارة (غير قابل للضغط الفعلي)
+                mk.row(InlineKeyboardButton(f"▬▬ {cat_name} ▬▬", callback_data="ignore"))
+                
+                # ترتيب سيرفرات هذه القارة (زرين في كل صف)
+                row = []
+                for r in cat_regions:
+                    row.append(InlineKeyboardButton(r, callback_data=f"setreg_{r.split()[0]}"))
+                    if len(row) == 2:
+                        mk.row(*row)
+                        row = []
+                if row: # إذا تبقى زر فردي
+                    mk.row(*row)
+
+        msg_text = msg_text_prefix + "⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*"
+
+        if session.get("status_msg_id"):
+            edit_safe(
+                chat_id, session["status_msg_id"],
+                msg_text,
+                reply_markup=mk,
+                parse_mode="Markdown"
+            )
+        else:
+            msg = send_safe(chat_id, msg_text, reply_markup=mk, parse_mode="Markdown")
+            if msg: session["status_msg_id"] = msg.message_id
+        
+        session["waiting_for_region"] = True
+        session["region_prompt_time"] = time.time()
             
     except Exception as e:
         if session.get("status_msg_id"):
-            edit_safe(chat_id, session["status_msg_id"], f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:100]}`", parse_mode="Markdown")
-
+            edit_safe(chat_id, session["status_msg_id"], f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:100]}`\nسيتم توجيهك للتيرمنال مباشرة...", parse_mode="Markdown")
+        
+        # 💡 في حال حدوث خطأ كارثي برمجي، يجب أن لا نترك المستخدم عالقاً
+        pid = session.get("project_id")
+        if pid:
+            shell = f"https://shell.cloud.google.com/?enableapi=true&project={pid}&pli=1&show=terminal"
+            safe_navigate(driver, shell)
+            session["shell_loading_until"] = time.time() + 10
+            
     return True
 
 
