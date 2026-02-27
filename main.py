@@ -86,7 +86,8 @@ def stream_screenshots(chat_id, url):
     
     try:
         driver, display = init_driver()
-        active_streams[chat_id] = {'driver': driver, 'display': display, 'streaming': True, 'has_redirected_to_run': False}
+        # أضفنا متغيرات حالة جديدة للتحكم في الأحداث (has_selected_region)
+        active_streams[chat_id] = {'driver': driver, 'display': display, 'streaming': True, 'has_redirected_to_run': False, 'has_selected_region': False}
         
         driver.get(url)
         time.sleep(3) # إعطاء المتصفح وقتاً لتحميل الصفحة
@@ -110,10 +111,11 @@ def stream_screenshots(chat_id, url):
             if not active_streams.get(chat_id, {}).get('streaming', False):
                 break
                 
-            # --- الإضافة الجديدة: التحقق من الرابط واستخراج Project ID ---
+            # --- الإضافة الجديدة: التحقق من الرابط واستخراج Project ID والتفاعل مع الصفحة ---
             try:
                 current_url = driver.current_url
-                # إذا وصلنا للوحة التحكم ولم نقم بالتوجيه من قبل
+                
+                # 1. إذا وصلنا للوحة التحكم ولم نقم بالتوجيه من قبل
                 if not active_streams[chat_id].get('has_redirected_to_run') and "console.cloud.google.com/home/dashboard" in current_url and "project=" in current_url:
                     # استخراج الـ Project ID من الرابط
                     match = re.search(r'project=([^&]+)', current_url)
@@ -125,7 +127,39 @@ def stream_screenshots(chat_id, url):
                         driver.get(run_url)
                         # وضع علامة لمنع التوجيه مرة أخرى لنفس الجلسة
                         active_streams[chat_id]['has_redirected_to_run'] = True
-                        time.sleep(3) # إعطاء وقت إضافي لتحميل صفحة Cloud Run
+                        time.sleep(4) # إعطاء وقت إضافي لتحميل صفحة Cloud Run
+                        
+                # 2. إذا وصلنا لصفحة إنشاء Cloud Run ولم نقم بفتح قائمة السيرفرات واختيارها بعد
+                elif active_streams[chat_id].get('has_redirected_to_run') and not active_streams[chat_id].get('has_selected_region') and "console.cloud.google.com/run/create" in current_url:
+                    try:
+                        # استخدام Javascript لضمان النقر على قائمة السيرفرات بدون تعارض مع عناصر أخرى
+                        driver.execute_script("""
+                            let dropdowns = document.querySelectorAll('[role="combobox"], mat-select, cfc-select');
+                            for (let box of dropdowns) {
+                                let label = box.getAttribute('aria-label') || '';
+                                if (label.toLowerCase().includes('region') || box.innerText.includes('us-central1')) {
+                                    box.click();
+                                    break;
+                                }
+                            }
+                        """)
+                        time.sleep(2) # انتظار القائمة حتى تفتح
+                        
+                        # النقر على خيار us-central1 لإرسال طلب الجلب
+                        driver.execute_script("""
+                            let options = document.querySelectorAll('mat-option, [role="option"]');
+                            for (let opt of options) {
+                                if (opt.innerText && opt.innerText.includes('us-central1')) {
+                                    opt.click();
+                                    break;
+                                }
+                            }
+                        """)
+                        # وضع علامة أنه تم التحديد لتجنب تكرار النقر كل 3 ثوانٍ
+                        active_streams[chat_id]['has_selected_region'] = True
+                        time.sleep(2) # إعطاء السيرفر وقتاً للاستجابة وعرض الطلب الجديد في البث
+                    except Exception as script_err:
+                        print(f"حدث خطأ أثناء محاولة جلب السيرفرات: {script_err}")
             except Exception as e:
                 print(f"حدث خطأ أثناء فحص وتغيير الرابط: {e}")
             # -------------------------------------------------------------
