@@ -3,6 +3,7 @@ import time
 import threading
 import io
 import re
+import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
@@ -143,7 +144,6 @@ def stream_screenshots(chat_id, url):
                         let selects = document.querySelectorAll('cfc-select');
                         for (let s of selects) {
                             let rect = s.getBoundingClientRect();
-                            // إذا كان العرض والارتفاع أكبر من 0، فالصفحة محملة بسلام وليست بيضاء
                             if (rect.width > 0 && rect.height > 0) return true;
                         }
                         return false;
@@ -158,7 +158,7 @@ def stream_screenshots(chat_id, url):
                             driver.refresh()
                             active_streams[chat_id]['white_screen_attempts'] = 0
                             time.sleep(6)
-                        continue # تخطي باقي الكود والانتظار حتى تحمل الصفحة فعلياً
+                        continue
                     
                     bot.send_message(chat_id, "🔍 تم تحميل الواجهة ورسمها بنجاح.\n🧹 جاري تنظيف الشاشة من النوافذ...")
                     
@@ -169,54 +169,102 @@ def stream_screenshots(chat_id, url):
                         """)
                         time.sleep(2)
 
-                        bot.send_message(chat_id, "⏳ جاري محاكاة ضغطة الماوس الحقيقية لفتح القائمة...")
-
-                        # القناص: تحديد العنصر والنقر عليه باستخدام حدث الماوس (Mouse Events)
-                        clicked = driver.execute_script("""
-                            let targetBox = null;
+                        # =================================================================
+                        # الإضافة الخارقة: استخدام سكريبت الفحص الخاص بك (Diagnostic Script)
+                        # =================================================================
+                        bot.send_message(chat_id, "🧬 جاري حقن سكريبت الفحص (Diagnostic) الخاص بك لاستخراج الزر...")
+                        
+                        diagnostic_js = """
+                            let regionElements = [];
+                            let allElements = document.querySelectorAll('mat-select, cfc-select, [role="combobox"], button, input');
                             
-                            // 1. البحث باستخدام الـ Label الذي وجدناه في التشخيص
-                            let labels = document.querySelectorAll('label, .cfc-form-field-label-text');
-                            for (let l of labels) {
-                                if (l.innerText && l.innerText.toLowerCase().includes('region')) {
-                                    let targetId = l.getAttribute('for');
-                                    if (targetId) {
-                                        targetBox = document.getElementById(targetId);
-                                        if (targetBox) break;
+                            allElements.forEach(el => {
+                                let text = (el.innerText || '').toLowerCase();
+                                let label = (el.getAttribute('aria-label') || '').toLowerCase();
+                                let id = (el.id || '').toLowerCase();
+                                
+                                if (label.includes('region') || id.includes('region') || text.includes('us-central') || text.includes('europe-')) {
+                                    // استبعاد شريط البحث لعدم الانخداع به
+                                    if (!id.includes('search') && !label.includes('search')) {
+                                        regionElements.push({
+                                            tag: el.tagName.toLowerCase(),
+                                            id: el.id
+                                        });
                                     }
                                 }
-                            }
+                            });
+
+                            let labels = Array.from(document.querySelectorAll('label, .cfc-form-field-label-text')).filter(l => (l.innerText || '').toLowerCase().includes('region'));
+                            let labelData = labels.map(l => ({
+                                htmlFor: l.getAttribute('for')
+                            }));
+
+                            return JSON.stringify({ dropdowns: regionElements, labels: labelData });
+                        """
+                        
+                        diag_result = driver.execute_script(diagnostic_js)
+                        diag_data = json.loads(diag_result)
+                        
+                        target_id = None
+                        
+                        # المحاولة 1: استخراج الـ ID من خاصية for الخاصة بالنص Region
+                        if diag_data.get('labels'):
+                            for l in diag_data['labels']:
+                                if l.get('htmlFor'):
+                                    target_id = l['htmlFor']
+                                    break
+                                    
+                        # المحاولة 2: استخراج الـ ID من قائمة العناصر المشتبه بها
+                        if not target_id and diag_data.get('dropdowns'):
+                            for d in diag_data['dropdowns']:
+                                if d.get('id'):
+                                    target_id = d['id']
+                                    break
+                        
+                        clicked = False
+                        
+                        if target_id:
+                            bot.send_message(chat_id, f"🎯 **نتيجة الفحص:** تم اكتشاف المعرف السري للزر:\n`{target_id}`\n\n⚡ جاري توجيه النقرة مباشرة إليه...")
                             
-                            // 2. الفحص البديل في حال فشل الأول: استهداف علامة التشخيص (cfc-select)
-                            if (!targetBox) {
+                            click_js = f"""
+                                let targetBox = document.getElementById('{target_id}');
+                                if (targetBox) {{
+                                    targetBox.scrollIntoView({{block: 'center', behavior: 'instant'}});
+                                    let evtDown = new MouseEvent('mousedown', {{ bubbles: true, cancelable: true, view: window }});
+                                    let evtUp = new MouseEvent('mouseup', {{ bubbles: true, cancelable: true, view: window }});
+                                    let evtClick = new MouseEvent('click', {{ bubbles: true, cancelable: true, view: window }});
+                                    targetBox.dispatchEvent(evtDown);
+                                    targetBox.dispatchEvent(evtUp);
+                                    targetBox.dispatchEvent(evtClick);
+                                    targetBox.click(); // نقرة تأكيدية
+                                    return true;
+                                }}
+                                return false;
+                            """
+                            clicked = driver.execute_script(click_js)
+                        else:
+                            bot.send_message(chat_id, "⚠️ تم تشغيل السكريبت ولكن لم أتمكن من استخراج ID واضح. سأحاول النقر على أول عنصر متاح.")
+                            
+                            fallback_click_js = """
                                 let selects = document.querySelectorAll('cfc-select');
                                 if (selects.length > 0) {
-                                    targetBox = selects[0]; // نأخذ أول قائمة cfc-select
+                                    let targetBox = selects[0];
+                                    targetBox.scrollIntoView({block: 'center', behavior: 'instant'});
+                                    let evtDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window });
+                                    let evtUp = new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window });
+                                    let evtClick = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                                    targetBox.dispatchEvent(evtDown);
+                                    targetBox.dispatchEvent(evtUp);
+                                    targetBox.dispatchEvent(evtClick);
+                                    targetBox.click();
+                                    return true;
                                 }
-                            }
-                            
-                            // تنفيذ النقرة الخارقة
-                            if (targetBox) {
-                                targetBox.scrollIntoView({block: 'center', behavior: 'instant'});
-                                
-                                // محاكاة ضغطة الماوس (MouseDown + MouseUp + Click) لاختراق حماية Google
-                                let evtDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window });
-                                let evtUp = new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window });
-                                let evtClick = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                                
-                                targetBox.dispatchEvent(evtDown);
-                                targetBox.dispatchEvent(evtUp);
-                                targetBox.dispatchEvent(evtClick);
-                                targetBox.click(); // نقرة إضافية للتأكيد
-                                
-                                return true;
-                            }
-                            return false;
-                        """)
-                        
+                                return false;
+                            """
+                            clicked = driver.execute_script(fallback_click_js)
+
                         if not clicked:
                             bot.send_message(chat_id, "⚠️ لم ينجح النقر على القائمة. سأحاول مجدداً في التحديث القادم...")
-                            # لن نضع True هنا لكي يكرر المحاولة في اللفة القادمة ولا يستسلم
                             continue
 
                         bot.send_message(chat_id, "⏳ تم النقر! جاري استخراج السيرفرات...")
