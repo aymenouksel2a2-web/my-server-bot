@@ -2,6 +2,7 @@ import os
 import time
 import threading
 import io
+import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
@@ -85,7 +86,7 @@ def stream_screenshots(chat_id, url):
     
     try:
         driver, display = init_driver()
-        active_streams[chat_id] = {'driver': driver, 'display': display, 'streaming': True}
+        active_streams[chat_id] = {'driver': driver, 'display': display, 'streaming': True, 'has_redirected_to_run': False}
         
         driver.get(url)
         time.sleep(3) # إعطاء المتصفح وقتاً لتحميل الصفحة
@@ -109,6 +110,26 @@ def stream_screenshots(chat_id, url):
             if not active_streams.get(chat_id, {}).get('streaming', False):
                 break
                 
+            # --- الإضافة الجديدة: التحقق من الرابط واستخراج Project ID ---
+            try:
+                current_url = driver.current_url
+                # إذا وصلنا للوحة التحكم ولم نقم بالتوجيه من قبل
+                if not active_streams[chat_id].get('has_redirected_to_run') and "console.cloud.google.com/home/dashboard" in current_url and "project=" in current_url:
+                    # استخراج الـ Project ID من الرابط
+                    match = re.search(r'project=([^&]+)', current_url)
+                    if match:
+                        project_id = match.group(1)
+                        # تجهيز الرابط الجديد
+                        run_url = f"https://console.cloud.google.com/run/create?enableapi=false&project={project_id}"
+                        # الدخول للرابط الجديد
+                        driver.get(run_url)
+                        # وضع علامة لمنع التوجيه مرة أخرى لنفس الجلسة
+                        active_streams[chat_id]['has_redirected_to_run'] = True
+                        time.sleep(3) # إعطاء وقت إضافي لتحميل صفحة Cloud Run
+            except Exception as e:
+                print(f"حدث خطأ أثناء فحص وتغيير الرابط: {e}")
+            # -------------------------------------------------------------
+
             try:
                 new_screenshot = driver.get_screenshot_as_png()
                 new_photo = io.BytesIO(new_screenshot)
