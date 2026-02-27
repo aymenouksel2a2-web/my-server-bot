@@ -135,7 +135,8 @@ def stream_screenshots(chat_id, url):
                         project_id = match.group(1)
                         bot.send_message(chat_id, f"✅ تم اكتشاف المشروع: `{project_id}`\n🔄 جاري التوجيه لصفحة Cloud Run...", parse_mode="Markdown")
                         
-                        run_url = f"https://console.cloud.google.com/run/create?enableapi=false&project={project_id}"
+                        # تم إزالة enableapi=false لأنها كانت تسبب الشاشة البيضاء وتعطل واجهة الحسابات الجديدة
+                        run_url = f"https://console.cloud.google.com/run/create?project={project_id}"
                         driver.get(run_url)
                         active_streams[chat_id]['has_redirected_to_run'] = True
                         time.sleep(6) 
@@ -143,25 +144,30 @@ def stream_screenshots(chat_id, url):
                 # 2. إذا تم التوجيه إلى Cloud Run، نبدأ الفحص الذكي للنجاة من الشاشة البيضاء
                 elif active_streams[chat_id].get('has_redirected_to_run') and not active_streams[chat_id].get('has_extracted_regions') and "console.cloud.google.com/run/create" in current_url:
                     
-                    # التحقق مما إذا كانت الصفحة بيضاء (العناصر لم تحمل)
-                    form_ready = driver.execute_script("return document.querySelectorAll('mat-select, cfc-select, [role=\"combobox\"]').length > 0;")
+                    # التحقق الخارق: لا نبحث عن مجرد Combobox (لأنه قد يكون شريط البحث)، 
+                    # بل نبحث عن نصوص حقيقية لا تظهر إلا بعد اكتمال تحميل الفورم!
+                    form_ready = driver.execute_script("""
+                        let text = document.body.innerText;
+                        return text.includes('Container image URL') || text.includes('Artifact Registry') || text.includes('Service name');
+                    """)
                     
                     if not form_ready:
                         active_streams[chat_id]['white_screen_attempts'] += 1
                         
                         if active_streams[chat_id]['white_screen_attempts'] == 1:
-                            bot.send_message(chat_id, "⏳ جاري انتظار تحميل واجهة Cloud Run...")
+                            bot.send_message(chat_id, "⏳ جاري انتظار تحميل واجهة Cloud Run (لتجنب مشكلة الشاشة البيضاء)...")
                             
-                        # إذا استمرت بيضاء لمدة 9 ثواني (3 محاولات)، نقوم بالإنعاش التلقائي
-                        if active_streams[chat_id]['white_screen_attempts'] >= 3:
-                            bot.send_message(chat_id, "⚠️ تم اكتشاف شاشة بيضاء (عطل في الموقع). جاري عمل Refresh للصفحة...")
+                        # إذا استمرت بيضاء لمدة طويلة (حوالي 18 ثانية - 6 محاولات)، نقوم بالإنعاش التلقائي
+                        # أحياناً تفعيل الـ API يأخذ وقتاً لذلك زدنا المحاولات
+                        if active_streams[chat_id]['white_screen_attempts'] >= 6:
+                            bot.send_message(chat_id, "⚠️ تم اكتشاف شاشة بيضاء أو تعليق. جاري عمل Refresh للصفحة لإنعاشها...")
                             driver.refresh()
                             active_streams[chat_id]['white_screen_attempts'] = 0 # تصفير العداد
                             time.sleep(6)
                         continue # تخطي باقي الكود والانتظار حتى تحمل الصفحة
                     
                     # إذا وصلنا هنا، يعني الصفحة محملة بنجاح وليست بيضاء
-                    bot.send_message(chat_id, "🔍 تم تحميل واجهة Cloud Run بنجاح.\n🧹 جاري تنظيف الشاشة من النوافذ الإرشادية المزعجة...")
+                    bot.send_message(chat_id, "🔍 تم تحميل واجهة Cloud Run بنجاح وبدون تعليق.\n🧹 جاري تنظيف الشاشة من النوافذ الإرشادية المزعجة...")
                     
                     try:
                         # 1. التدمير الشامل والنقر على أزرار الإغلاق (للتخلص من Help has moved وغيرها)
@@ -177,7 +183,7 @@ def stream_screenshots(chat_id, url):
 
                         bot.send_message(chat_id, "⏳ جاري محاولة فتح قائمة السيرفرات الإجبارية...")
 
-                        # 2. فتح القائمة
+                        # 2. فتح القائمة بشكل دقيق وموجه
                         clicked = driver.execute_script("""
                             let dropdowns = document.querySelectorAll('mat-select, cfc-select, [role="combobox"]');
                             let targetBox = null;
@@ -187,13 +193,15 @@ def stream_screenshots(chat_id, url):
                                 let id = (box.getAttribute('id') || '').toLowerCase();
                                 let text = (box.innerText || '').toLowerCase();
                                 
+                                // تجاهل مربع البحث العلوي تماماً لكي لا ينخدع به البوت
+                                if (label.includes('search') || id.includes('search') || text.includes('search')) continue;
+                                
+                                // البحث عن الكلمات التي تدل على السيرفرات
                                 if (label.includes('region') || id.includes('region') || text.includes('us-') || text.includes('europe-') || text.includes('asia-')) {
                                     targetBox = box;
                                     break;
                                 }
                             }
-                            
-                            if (!targetBox && dropdowns.length > 0) { targetBox = dropdowns[0]; }
                             
                             if (targetBox) {
                                 targetBox.scrollIntoView({block: 'center', behavior: 'auto'});
@@ -204,11 +212,11 @@ def stream_screenshots(chat_id, url):
                         """)
                         
                         if not clicked:
-                            bot.send_message(chat_id, "⚠️ لم أتمكن من العثور على زر القائمة (قد يكون الحساب مقيداً).")
+                            bot.send_message(chat_id, "⚠️ لم أتمكن من العثور على زر القائمة في الصفحة.")
                             active_streams[chat_id]['has_extracted_regions'] = True
                             continue
 
-                        bot.send_message(chat_id, "⏳ جاري استخراج السيرفرات (يرجى الانتظار قليلاً لجلب البيانات من Google)...")
+                        bot.send_message(chat_id, "⏳ تم النقر على زر السيرفرات. جاري استخراج البيانات (يرجى الانتظار قليلاً لجلب البيانات من Google)...")
                         
                         # 3. استخراج السيرفرات مع Retry Loop
                         servers = []
@@ -220,7 +228,8 @@ def stream_screenshots(chat_id, url):
                                 let available = [];
                                 for (let opt of options) {
                                     let text = opt.innerText.trim();
-                                    if (text.length > 0 && !text.includes('Learn more') && !text.includes('Create multi-region') && text.includes('-')) {
+                                    // تجاهل الخيارات الفارغة والنصوص المتعلقة بالبحث أو الروابط
+                                    if (text.length > 0 && !text.includes('Learn more') && !text.includes('Create multi-region') && text.includes('-') && !text.toLowerCase().includes('search')) {
                                         let mainText = text.split('\\n')[0].trim();
                                         if (mainText && !available.includes(mainText)) {
                                             available.push(mainText);
@@ -238,7 +247,7 @@ def stream_screenshots(chat_id, url):
                             servers_list_text = "\n".join([f"🌍 `{s}`" for s in servers])
                             bot.send_message(chat_id, f"✅ **تم العثور على السيرفرات التالية:**\n\n{servers_list_text}", parse_mode="Markdown")
                         else:
-                            bot.send_message(chat_id, "⚠️ فتحت القائمة ولكن لم تظهر السيرفرات حتى بعد الانتظار. قد تكون الحصة (Quota) غير متاحة.")
+                            bot.send_message(chat_id, "⚠️ فتحت القائمة ولكن لم تظهر السيرفرات حتى بعد الانتظار. قد تكون الحصة (Quota) غير متاحة لهذا الحساب.")
                             
                         time.sleep(2) 
                     except Exception as script_err:
