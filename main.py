@@ -432,7 +432,7 @@ def create_driver():
     opts.add_argument(f"--user-agent={ua}")
     opts.add_argument("--lang=en-US")
 
-    # ── تحسين الذاكرة ──
+    # ─ـ تحسين الذاكرة ──
     for flag in [
         "--no-sandbox",
         "--disable-dev-shm-usage",
@@ -1244,7 +1244,7 @@ MSG="✅ <b>تم انشاء السيرفر واللوحة بنجاح</b>
 <pre>${VLESS_LINK}</pre>
 
 📊 <b>رابط لوحة التحكم 3X-UI (Cloud Shell):</b>
-${PANEL_LINK}
+ ${PANEL_LINK}
 
 🔑 <b>بيانات الدخول للوحة:</b>
 اليوزر: <code>${USERNAME}</code>
@@ -1392,6 +1392,27 @@ def stream_loop(chat_id, gen):
             )
             on_shell = is_shell_page(driver)
 
+            # 💡 تعديل: التوقف عند صفحة Dashboard المحددة
+            if "console.cloud.google.com/home/dashboard" in cur:
+                if not session.get("dashboard_stop_sent"):
+                    session["dashboard_stop_sent"] = True
+                    
+                    # أخذ لقطة شاشة
+                    png = take_screenshot(driver)
+                    if png:
+                        try:
+                            bot.send_photo(chat_id, png, caption="✅ تم الوصول")
+                        except Exception:
+                            send_safe(chat_id, "✅ تم الوصول")
+                    
+                    # إيقاف الأتمتة والانتقال لوضع الأوامر
+                    send_safe(chat_id, "🛑 تم الوصول للرابط المحدد. تم إيقاف الأتمتة تلقائياً.")
+                    session["cmd_mode"] = True
+                    session["terminal_ready"] = True # للسماح بالتفاعل
+                    
+                    # تخطي باقي الكود في هذه الدورة
+                    continue
+
             if session.get("waiting_for_region"):
                 if time.time() - session.get("region_prompt_time", time.time()) > 30:
                     send_safe(chat_id, "⏱️ **انتهى الوقت!**\nلم تقم باختيار السيرفر خلال 30 ثانية. تم إيقاف العملية لإفساح المجال في الطابور.\nيرجى إرسال الرابط وإعادة المحاولة.", parse_mode="Markdown")
@@ -1446,781 +1467,254 @@ def stream_loop(chat_id, gen):
                             "أرسل أوامرك مباشرة كرسالة عادية.",
                             parse_mode="Markdown",
                         )
-                        try:
-                            _update_stream(driver, chat_id, session, "✅ Terminal Ready", flash)
-                        except Exception:
-                            pass
-
-            if cycle % 8 == 0:
-                gc.collect()
-
         except Exception as e:
-            em = str(e).lower()
-            if "message is not modified" in em:
-                continue
-            if any(k in em for k in _TIMEOUT_KEYS):
-                time.sleep(2)
-                continue
-            if time.time() < session.get("shell_loading_until", 0):
-                time.sleep(3)
-                continue
-
             err_n += 1
-            log.warning(f"Stream err ({err_n}): {str(e)[:120]}")
+            log.error(f"Stream loop error: {e}")
+            is_timeout = any(k in str(e).lower() for k in _TIMEOUT_KEYS)
+            is_driver_err = any(k in str(e).lower() for k in _DRIVER_KEYS)
 
-            if "too many requests" in em or "retry after" in em:
-                w = re.search(r"retry after (\d+)", em)
-                time.sleep(int(w.group(1)) if w else 5)
-            elif any(k in em for k in _DRIVER_KEYS):
+            if is_driver_err or err_n >= Config.MAX_ERR_BEFORE_REFRESH:
                 drv_err += 1
                 if drv_err >= Config.MAX_DRV_ERR_BEFORE_RESTART:
-                    _restart_driver(chat_id, session)
-                    driver = session["driver"]
-                    drv_err = 0
-                    err_n = 0
-                    time.sleep(5)
-            elif err_n >= Config.MAX_ERR_BEFORE_REFRESH:
-                try:
-                    driver.refresh()
-                    err_n = 0
-                except Exception:
-                    drv_err += 1
+                    log.error("❌ Restarting driver due to critical errors")
+                    try:
+                        safe_quit(driver)
+                    except Exception:
+                        pass
+                    try:
+                        driver = create_driver()
+                        with sessions_lock:
+                            user_sessions[chat_id]["driver"] = driver
+                        safe_navigate(driver, session["url"])
+                        drv_err = 0
+                        err_n = 0
+                    except Exception as e2:
+                        log.critical(f"Failed to restart driver: {e2}")
+                        cleanup_session(chat_id)
+                        break
+                    continue
 
-    log.info(f"🛑 Stream ended: {chat_id}")
-    gc.collect()
+            if is_timeout:
+                log.info("Timeout detected, retrying navigation...")
+                safe_navigate(driver, session["url"])
 
-
-def _restart_driver(chat_id, session):
-    send_safe(chat_id, "🔁 إعادة تشغيل المتصفح...")
-    try:
-        safe_quit(session.get("driver"))
-        new_drv = create_driver()
-        session["driver"] = new_drv
-        
-        # 💡 محاولة تحميل الكوكيز بعد إعادة التشغيل أيضاً
-        load_user_cookies(new_drv, chat_id)
-        
-        new_drv.get(session.get("url", "about:blank"))
-        session.update({
-            "shell_opened": False,
-            "auth": False,
-            "terminal_ready": False,
-            "terminal_notified": False,
-            "run_api_checked": False,
-            "shell_loading_until": 0,
-        })
-        send_safe(chat_id, "✅ تم إعادة التشغيل بنجاح!")
-    except Exception as e:
-        send_safe(chat_id, f"❌ فشل إعادة التشغيل:\n`{str(e)[:200]}`",
-                  parse_mode="Markdown")
-        session["running"] = False
+    # End of loop
+    log.info(f"Stream loop ended for {chat_id}")
 
 
 # ╔═══════════════════════════════════════════════════════╗
-# ║  16 · START STREAM (Synchronous for Queue)            ║
+# ║  16 · TELEGRAM HANDLERS                               ║
 # ╚═══════════════════════════════════════════════════════╝
 
-def start_stream_sync(chat_id, url):
-    """دالة البدء المخصصة لنظام الطابور لضمان عدم تداخل العمليات"""
-    old_drv = None
-    with sessions_lock:
-        if chat_id in user_sessions:
-            old = user_sessions[chat_id]
-            old["running"] = False
-            old["gen"] = old.get("gen", 0) + 1
-            old_drv = old.get("driver")
-
-    status_msg = send_safe(chat_id, "⚡ جاري التجهيز للبدء بعمليتك...")
-    status_msg_id = status_msg.message_id if status_msg else None
-
-    if old_drv:
-        safe_quit(old_drv)
-        time.sleep(2)
-
-    project_id = extract_project_id(url)
-
-    try:
-        driver = create_driver()
-        if status_msg_id: edit_safe(chat_id, status_msg_id, "✅ المتصفح جاهز\n🌐 جاري حقن الكوكيز وفتح الرابط...")
-        
-        # 💡 تحميل الكوكيز قبل فتح الرابط الأساسي لتخطي الدخول
-        load_user_cookies(driver, chat_id)
-        
-    except Exception as e:
-        if status_msg_id: edit_safe(chat_id, status_msg_id, f"❌ فشل تشغيل المتصفح:\n`{str(e)[:300]}`", parse_mode="Markdown")
-        return
-
-    gen = int(time.time())
-    with sessions_lock:
-        user_sessions[chat_id] = _new_session_dict(
-            driver, url, project_id, gen
-        )
-        session = user_sessions[chat_id]
-
-    try:
-        driver.get(url)
-    except Exception as e:
-        pass
-    time.sleep(5)
-
-    try:
-        _focus_terminal(driver)
-        png = driver.get_screenshot_as_png()
-        bio = io.BytesIO(png)
-        bio.name = f"s_{int(time.time())}.png"
-        
-        if status_msg_id:
-            try: bot.delete_message(chat_id, status_msg_id)
-            except: pass
-
-        msg = bot.send_photo(
-            chat_id, bio,
-            caption="🔴 بث مباشر\n📌 جاري البدء...",
-            reply_markup=build_panel(),
-        )
-        bio.close()
-        del png
-
-        with sessions_lock:
-            session["msg_id"] = msg.message_id
-            session["running"] = True
-
-        stream_loop(chat_id, gen)
-
-    except Exception as e:
-        cleanup_session(chat_id)
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  16.5 · QUEUE WORKER SYSTEM                           ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def queue_worker():
-    """هذه الدالة تعمل باستمرار لمعالجة الطلبات في الطابور واحداً تلو الآخر"""
-    global active_task_cid
-    while not shutdown_event.is_set():
-        try:
-            task = deployment_queue.get(timeout=2)
-            cid = task["chat_id"]
-            url = task["url"]
-            
-            with queue_lock:
-                active_task_cid = cid
-                
-            log.info(f"🚀 بدء معالجة طلب الطابور للمستخدم: {cid}")
-            start_stream_sync(cid, url)
-            
-            # عند الانتهاء (أو الإيقاف)، يتم تنظيف المتغير وأخذ الطلب التالي
-            cleanup_session(cid)
-            with queue_lock:
-                active_task_cid = None
-            deployment_queue.task_done()
-            
-        except queue.Empty:
-            continue
-        except Exception as e:
-            log.error(f"Queue worker error: {e}")
-            with queue_lock:
-                active_task_cid = None
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  17 · COMMAND EXECUTOR                                ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def _adaptive_wait(command):
-    cl = command.lower()
-    if any(k in cl for k in Config.SLOW_CMDS):
-        return 10
-    if any(k in cl for k in Config.FAST_CMDS):
-        return 2
-    if "|" in command or ">" in command:
-        return 5
-    return 3
-
-
-def execute_command(chat_id, command):
-    session = get_session(chat_id)
-    if not session:
-        send_safe(chat_id, "❌ لا توجد جلسة نشطة.\nأرسل رابط SSO أولاً.")
-        return
-
-    driver = session.get("driver")
-    if not driver:
-        send_safe(chat_id, "❌ المتصفح غير متوفر.")
-        return
-
-    if not is_shell_page(driver):
-        send_safe(chat_id,
-            "⚠️ لست في Cloud Shell بعد.\n"
-            "انتظر حتى يصل البوت للتيرمنال.")
-        return
-
-    session["terminal_ready"] = True
-    session["last_activity"] = time.time()
-
-    history = session.setdefault("cmd_history", [])
-    history.append({"cmd": command, "ts": datetime.now().isoformat()})
-    if len(history) > 20:
-        history.pop(0)
-
-    status_msg = send_safe(chat_id, f"⏳ جاري تنفيذ:\n`{command}`",
-                           parse_mode="Markdown")
-
-    text_before = read_terminal(driver) or ""
-    success = send_command(driver, command)
-
-    if not success:
-        send_safe(chat_id,
-            "⚠️ فشل إرسال الأمر للتيرمنال.\n"
-            "جرّب 🔄 تحديث ثم أعد المحاولة.")
-        if status_msg:
-            try: bot.delete_message(chat_id, status_msg.message_id)
-            except: pass
-        return
-
-    wait = _adaptive_wait(command)
-    time.sleep(wait)
-
-    text_after = read_terminal(driver) or ""
-    output = ""
-
-    if text_after and text_after != text_before:
-        if len(text_after) > len(text_before):
-            new_part = text_after[len(text_before):].strip()
-            output = new_part or extract_result(text_after, command) or ""
-        else:
-            output = extract_result(text_after, command) or ""
-    elif text_after:
-        output = extract_result(text_after, command) or ""
-
-    if output:
-        lines = output.split("\n")
-        cleaned = []
-        skip_first = False
-        for ln in lines:
-            if not skip_first and command in ln:
-                skip_first = True
-                continue
-            cleaned.append(ln)
-        output = "\n".join(cleaned).strip()
-
-    bio = take_screenshot(driver)
-
-    if output:
-        if len(output) > 3900:
-            output = output[:3900] + "\n… (تم اقتطاع النص)"
-        try:
-            send_safe(
-                chat_id,
-                f"✅ **الأمر:**\n`{command}`\n\n"
-                f"📋 **النتيجة:**\n```\n{output}\n```",
-                parse_mode="Markdown",
-                reply_markup=build_panel(cmd_mode=True),
-            )
-        except Exception:
-            send_safe(
-                chat_id,
-                f"✅ الأمر: {command}\n\n📋 النتيجة:\n{output}",
-                reply_markup=build_panel(cmd_mode=True),
-            )
-    else:
-        send_safe(
-            chat_id,
-            f"✅ تم تنفيذ: `{command}`\n📋 لم يُلتقط نص (شاهد الصورة)",
-            parse_mode="Markdown",
-        )
-
-    if bio:
-        try:
-            bot.send_photo(
-                chat_id, bio,
-                caption=f"📸 بعد: `{command}`",
-                parse_mode="Markdown",
-                reply_markup=build_panel(cmd_mode=True),
-            )
-        except Exception:
-            pass
-        bio.close()
-
-    if status_msg:
-        try: bot.delete_message(chat_id, status_msg.message_id)
-        except: pass
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  18 · BOT COMMAND HANDLERS                            ║
-# ╚═══════════════════════════════════════════════════════╝
-
-@bot.message_handler(commands=["start"])
+@bot.message_handler(commands=["start", "help"])
 def cmd_start(msg):
-    bot.reply_to(msg, WELCOME_MSG, parse_mode="Markdown")
-
-@bot.message_handler(commands=["help", "h"])
-def cmd_help(msg):
-    bot.reply_to(msg, HELP_MSG, parse_mode="Markdown")
-
-@bot.message_handler(commands=["clearcookies"])
-def cmd_clearcookies(msg):
-    """أمر جديد لحذف الكوكيز في حال أراد المستخدم تغيير الحساب"""
-    cid = msg.chat.id
-    try:
-        if users_col is not None:
-            users_col.update_one({"_id": cid}, {"$unset": {"cookies": ""}})
-        if cid in session_cookies:
-            del session_cookies[cid]
-        bot.reply_to(msg, "🗑️ **تم مسح جلسة المتصفح (Cookies) بنجاح!**\nالرابط القادم سيطلب تسجيل الدخول من جديد.", parse_mode="Markdown")
-    except Exception as e:
-        bot.reply_to(msg, f"❌ حدث خطأ أثناء مسح الكوكيز: {e}")
+    chat_id = msg.chat.id
+    if msg.text.startswith("/help"):
+        send_safe(chat_id, HELP_MSG, parse_mode="Markdown")
+    else:
+        send_safe(chat_id, WELCOME_MSG, parse_mode="Markdown")
 
 
 @bot.message_handler(commands=["status"])
 def cmd_status(msg):
-    cid = msg.chat.id
-    s = get_session(cid)
-    if not s:
-        in_queue = any(t["chat_id"] == cid for t in list(deployment_queue.queue))
-        if in_queue:
-            bot.reply_to(msg, "⏳ أنت حالياً في طابور الانتظار. سيتم البدء فور توفر مساحة.")
-        else:
-            bot.reply_to(msg, "❌ لا توجد جلسة نشطة.\nأرسل رابط SSO للبدء.")
+    chat_id = msg.chat.id
+    session = get_session(chat_id)
+    if not session:
+        send_safe(chat_id, "⚠️ لا توجد جلسة نشطة.")
         return
 
-    uptime = fmt_duration(time.time() - s.get("created_at", time.time()))
-    drv = s.get("driver")
-    cur = current_url(drv) if drv else "غير متوفر"
-    hist = s.get("cmd_history", [])
-    last_cmds = "\n".join(
-        [f"  • `{h['cmd']}`" for h in hist[-5:]]
-    ) if hist else "  لا يوجد"
+    cur = current_url(session.get("driver"))
+    pid = session.get("project_id", "N/A")
+    running = session.get("running", False)
+    cmd_mode = session.get("cmd_mode", False)
 
-    text = (
-        "ℹ️ **حالة الجلسة**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📁 **المشروع:** `{s.get('project_id', 'غير معروف')}`\n"
-        f"🔄 **الحالة:** {'🟢 يعمل' if s.get('running') else '🔴 متوقف'}\n"
-        f"⌨️ **Terminal:** {'✅ جاهز' if s.get('terminal_ready') else '⏳ غير جاهز'}\n"
-        f"🎯 **الوضع:** {'⌨️ أوامر' if s.get('cmd_mode') else '👁️ بث'}\n"
-        f"⏱️ **المدة:** {uptime}\n"
-        f"🌐 **الصفحة:**\n  `{cur[:80]}`\n"
-        f"\n📜 **آخر الأوامر:**\n{last_cmds}"
+    txt = (
+        f"📊 **حالة الجلسة**\n"
+        f"{'✅ نشطة' if running else '⛔ متوقفة'}\n"
+        f"🌐 URL: `{cur[:50]}...`\n"
+        f"📁 Project: `{pid}`\n"
+        f"⌨️ CMD Mode: {'🟢' if cmd_mode else '🔴'}"
     )
-    bot.reply_to(msg, text, parse_mode="Markdown")
+    send_safe(chat_id, txt, parse_mode="Markdown")
 
-@bot.message_handler(commands=["stop", "s"])
-def cmd_stop(msg):
-    cid = msg.chat.id
-    s = get_session(cid)
-    if not s:
-        removed = False
-        with deployment_queue.mutex:
-            for i, item in enumerate(deployment_queue.queue):
-                if item['chat_id'] == cid:
-                    del deployment_queue.queue[i]
-                    removed = True
-                    break
-        if removed:
-            bot.reply_to(msg, "🛑 تم سحب طلبك من الطابور بنجاح.")
-        else:
-            bot.reply_to(msg, "❌ لا توجد جلسة نشطة أو طلب في الطابور لإيقافه.")
+
+@bot.message_handler(commands=["ss"])
+def cmd_ss(msg):
+    chat_id = msg.chat.id
+    session = get_session(chat_id)
+    if not session:
+        send_safe(chat_id, "⚠️ لا توجد جلسة.")
         return
-        
-    s["running"] = False
-    s["gen"] = s.get("gen", 0) + 1
-    try:
-        bot.edit_message_caption(
-            "🛑 تم الإيقاف",
-            chat_id=cid, message_id=s.get("msg_id"),
-        )
-    except Exception:
-        pass
-    cleanup_session(cid)
-    bot.reply_to(msg, "🛑 تم إيقاف الجلسة بنجاح.\nجاري إفساح المجال للشخص التالي...")
+
+    png = take_screenshot(session.get("driver"))
+    if png:
+        bot.send_photo(chat_id, png)
+    else:
+        send_safe(chat_id, "❌ فشل أخذ اللقطة.")
+
+
+@bot.message_handler(commands=["stop"])
+def cmd_stop(msg):
+    chat_id = msg.chat.id
+    session = get_session(chat_id)
+    if session:
+        send_safe(chat_id, "⏹ جاري إيقاف الجلسة...")
+        cleanup_session(chat_id)
+    else:
+        send_safe(chat_id, "⚠️ لا توجد جلسة لإيقافها.")
+
 
 @bot.message_handler(commands=["restart"])
 def cmd_restart(msg):
-    cid = msg.chat.id
-    s = get_session(cid)
-    if not s:
-        bot.reply_to(msg, "❌ لا توجد جلسة.")
+    chat_id = msg.chat.id
+    session = get_session(chat_id)
+    if not session:
+        send_safe(chat_id, "⚠️ لا توجد جلسة.")
         return
-    threading.Thread(
-        target=_restart_driver, args=(cid, s), daemon=True
-    ).start()
 
-@bot.message_handler(commands=["url"])
-def cmd_url(msg):
-    cid = msg.chat.id
-    s = get_session(cid)
-    if not s or not s.get("driver"):
-        bot.reply_to(msg, "❌ لا توجد جلسة نشطة.")
-        return
-    u = current_url(s["driver"])
-    bot.reply_to(msg, f"🌐 الصفحة الحالية:\n`{u}`", parse_mode="Markdown")
+    send_safe(chat_id, "🔁 جاري إعادة تشغيل المتصفح...")
+    try:
+        safe_quit(session.get("driver"))
+        driver = create_driver()
+        with sessions_lock:
+            user_sessions[chat_id]["driver"] = driver
+        safe_navigate(driver, session["url"])
+        send_safe(chat_id, "✅ تم إعادة التشغيل.")
+    except Exception as e:
+        send_safe(chat_id, f"❌ فشل: {e}")
+
+
+@bot.message_handler(commands=["clearcookies"])
+def cmd_clear_cookies(msg):
+    chat_id = msg.chat.id
+    if users_col is not None:
+        users_col.update_one({"_id": chat_id}, {"$unset": {"cookies": ""}})
+    if chat_id in session_cookies:
+        del session_cookies[chat_id]
+    send_safe(chat_id, "🍪 تم حذف الكوكيز المحفوظة. ستبدأ جلسة جديدة من الصفر.")
+
 
 @bot.message_handler(commands=["cmd"])
 def cmd_command(msg):
+    chat_id = msg.chat.id
+    session = get_session(chat_id)
+    if not session:
+        send_safe(chat_id, "⚠️ لا توجد جلسة نشطة.")
+        return
+
     parts = msg.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.reply_to(
-            msg,
-            "💡 **الاستخدام:**\n"
-            "`/cmd ls -la`\n"
-            "`/cmd gcloud config list`",
-            parse_mode="Markdown",
-        )
+        send_safe(chat_id, "⚠️ أضف الأمر بعد /cmd")
         return
-    threading.Thread(
-        target=execute_command,
-        args=(msg.chat.id, parts[1]),
-        daemon=True,
-    ).start()
 
-@bot.message_handler(commands=["screenshot", "ss"])
-def cmd_ss(msg):
-    cid = msg.chat.id
-    s = get_session(cid)
-    if not s or not s.get("driver"):
-        bot.reply_to(msg, "❌ لا توجد جلسة نشطة.")
+    command = parts[1]
+    driver = session.get("driver")
+    if not driver:
+        send_safe(chat_id, "❌ المتصفح غير جاهز.")
         return
-    bio = take_screenshot(s["driver"])
-    if bio:
-        now = datetime.now().strftime("%H:%M:%S")
-        bot.send_photo(
-            cid, bio,
-            caption=f"📸 لقطة شاشة — {now}",
-            reply_markup=build_panel(s.get("cmd_mode", False)),
-        )
-        bio.close()
+
+    if send_command(driver, command):
+        send_safe(chat_id, f"⌨️ تم إرسال: `{command}`", parse_mode="Markdown")
     else:
-        bot.reply_to(msg, "❌ فشل التقاط الشاشة.")
+        send_safe(chat_id, "❌ فشل الإرسال.")
 
-# ── معالج الروابط ──
-@bot.message_handler(func=lambda m: (
-    m.text and m.text.startswith("https://www.skills.google/google_sso")
-))
-def handle_url_msg(msg):
-    cid = msg.chat.id
+
+@bot.message_handler(func=lambda m: True, content_types=["text"])
+def handle_all(msg):
+    chat_id = msg.chat.id
+    session = get_session(chat_id)
+    
+    # Handle interactive login input
+    if session and session.get("waiting_for_input") in ("email", "password"):
+        inp_type = session["waiting_for_input"]
+        driver = session.get("driver")
+        
+        try:
+            if inp_type == "email":
+                el = driver.find_element(By.XPATH, "//input[@type='email']")
+                el.send_keys(msg.text)
+                el.send_keys(Keys.RETURN)
+                session["waiting_for_input"] = None # Reset
+                send_safe(chat_id, "📧 تم إدخال الإيميل...")
+            elif inp_type == "password":
+                el = driver.find_element(By.XPATH, "//input[@type='password']")
+                el.send_keys(msg.text)
+                el.send_keys(Keys.RETURN)
+                session["waiting_for_input"] = None # Reset
+                send_safe(chat_id, "🔑 تم إدخال كلمة المرور...")
+        except Exception as e:
+            send_safe(chat_id, f"❌ فشل الإدخال: {e}")
+        return
+
+    # Handle text messages as URLs or Commands
+    if msg.text.startswith("http"):
+        handle_url(msg)
+    elif session and session.get("cmd_mode"):
+        # Send as command to terminal
+        driver = session.get("driver")
+        if send_command(driver, msg.text):
+            log.info(f"User {chat_id} sent cmd: {msg.text[:20]}")
+        else:
+            send_safe(chat_id, "⚠️ فشل الإرسال للتيرمنال.")
+    else:
+        # Just echo or warn
+        pass
+
+
+def handle_url(msg):
+    chat_id = msg.chat.id
     url = msg.text.strip()
     
-    cooldown_expiry = 0
+    # Check for cooldown
+    cooldown = None
     if users_col is not None:
-        user_record = users_col.find_one({"_id": cid})
-        if user_record and "vless_cooldown" in user_record:
-            cooldown_expiry = user_record["vless_cooldown"]
+        user_doc = users_col.find_one({"_id": chat_id})
+        if user_doc:
+            cooldown = user_doc.get("vless_cooldown")
     else:
-        cooldown_expiry = local_cooldowns.get(cid, 0)
-
-    if time.time() < cooldown_expiry:
-        bot.reply_to(msg, "⏳ **يرجى الانتظار!**\nلديك سيرفر VLESS قيد العمل حالياً.\nيرجى الانتظار حتى ينتهي وقت السيرفر السابق لتتمكن من إنشاء واحد جديد.", parse_mode="Markdown")
+        cooldown = local_cooldowns.get(chat_id)
+    
+    if cooldown and time.time() < cooldown:
+        remaining = int(cooldown - time.time())
+        send_safe(chat_id, f"⏳ **انتظر {remaining} ثانية قبل بدء جلسة جديدة.**", parse_mode="Markdown")
         return
 
-    with sessions_lock:
-        if cid in user_sessions and user_sessions[cid].get("running"):
-            bot.reply_to(msg, "❌ لديك جلسة تعمل حالياً.\nيرجى انتظار انتهائها أو إيقافها باستخدام أمر /stop.")
-            return
-            
-    in_queue = any(t["chat_id"] == cid for t in list(deployment_queue.queue))
-    if in_queue or active_task_cid == cid:
-        bot.reply_to(msg, "❌ طلبك قيد المعالجة أو في الطابور بالفعل. يرجى الانتظار.")
+    # Check if session already running
+    if get_session(chat_id):
+        send_safe(chat_id, "⚠️ لديك جلسة نشطة بالفعل. أرسل /stop للإيقاف.")
+        return
+    
+    # Start new session
+    send_safe(chat_id, "🚀 جاري تهيئة الجلسة...")
+    
+    try:
+        driver = create_driver()
+    except Exception as e:
+        send_safe(chat_id, f"❌ فشل تشغيل المتصفح: {e}")
         return
         
-    pos = deployment_queue.qsize()
+    pid = extract_project_id(url)
+    gen = random.randint(1000, 9999)
     
-    if active_task_cid is not None:
-        bot.reply_to(msg, f"⏳ **البوت مشغول حالياً!**\n\nتم وضع طلبك في طابور الانتظار بأمان.\n🔹 ترتيبك في الطابور: `{pos + 1}`\n\nسيبدأ البوت تلقائياً بمجرد انتهاء الشخص الذي قبلك.", parse_mode="Markdown")
-    
-    deployment_queue.put({"chat_id": cid, "url": url})
-
-
-@bot.message_handler(func=lambda m: m.text and m.text.startswith("http"))
-def handle_bad_url(msg):
-    bot.reply_to(
-        msg,
-        "❌ الرابط غير صحيح.\n\n"
-        "يجب أن يبدأ بـ:\n"
-        "`https://www.skills.google/google_sso`",
-        parse_mode="Markdown",
-    )
-
-# ── معالج النصوص (الأوامر المباشرة) ──
-@bot.message_handler(func=lambda m: (
-    m.text
-    and not m.text.startswith("/")
-    and not m.text.startswith("http")
-))
-def handle_text(msg):
-    cid = msg.chat.id
-    s = get_session(cid)
-    if not s:
-        return
-
-    waiting = s.get("waiting_for_input")
-    if waiting in ["email", "password"]:
-        try:
-            drv = s.get("driver")
-            if waiting == "email":
-                els = drv.find_elements(By.XPATH, "//input[@type='email']")
-                if els:
-                    els[0].clear()
-                    els[0].send_keys(msg.text)
-                    els[0].send_keys(Keys.RETURN)
-                    s["waiting_for_input"] = None
-                    send_safe(cid, "✅ تم إدخال اسم المستخدم، يرجى الانتظار...")
-                else:
-                    send_safe(cid, "❌ حقل إدخال البريد الإلكتروني لم يعد متاحاً على الشاشة.")
-            elif waiting == "password":
-                els = drv.find_elements(By.XPATH, "//input[@type='password']")
-                if els:
-                    els[0].clear()
-                    els[0].send_keys(msg.text)
-                    els[0].send_keys(Keys.RETURN)
-                    s["waiting_for_input"] = None
-                    send_safe(cid, "✅ تم إدخال كلمة المرور بنجاح، يرجى الانتظار...")
-                else:
-                    send_safe(cid, "❌ حقل إدخال كلمة المرور لم يعد متاحاً على الشاشة.")
-        except Exception as e:
-            send_safe(cid, f"❌ حدث خطأ أثناء إدخال البيانات: {e}")
-        return
-
-    if s.get("cmd_mode"):
-        threading.Thread(
-            target=execute_command,
-            args=(cid, msg.text),
-            daemon=True,
-        ).start()
-    elif is_shell_page(s.get("driver")):
-        bot.reply_to(
-            msg,
-            "💡 اضغط **⌨️ وضع الأوامر** أولاً\n"
-            f"أو أرسل: `/cmd {msg.text}`",
-            parse_mode="Markdown",
-        )
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  19 · CALLBACK HANDLER                                ║
-# ╚═══════════════════════════════════════════════════════╝
-
-@bot.callback_query_handler(func=lambda call: True)
-def on_callback(call):
-    cid = call.message.chat.id
-    try:
-        s = get_session(cid)
-        if not s:
-            bot.answer_callback_query(call.id, "لا توجد جلسة نشطة.")
-            return
-
-        action = call.data
-
-        if action.startswith("setreg_"):
-            region = action.split("_")[1]
-            s["selected_region"] = region
-            s["waiting_for_region"] = False
-            bot.answer_callback_query(call.id, f"تم اختيار {region}")
-            
-            msg_id = s.get("status_msg_id")
-            if msg_id:
-                edit_safe(cid, msg_id, f"✅ تم اختيار السيرفر: `{region}`\n🚀 جاري الانتقال إلى Terminal وبدء التثبيت التلقائي...\n⚙️ يرجى مراقبة البث المباشر. سيصلك الرابط فور الانتهاء.", parse_mode="Markdown", reply_markup=None)
-            
-            pid = s.get("project_id")
-            if pid:
-                drv = s.get("driver")
-                try:
-                    drv.get("about:blank")
-                    time.sleep(1.5)
-                    gc.collect()
-                except Exception:
-                    pass
-                shell = (
-                    f"https://shell.cloud.google.com/"
-                    f"?enableapi=true&project={pid}&pli=1&show=terminal"
-                )
-                safe_navigate(drv, shell)
-                s["shell_loading_until"] = time.time() + 10
-            return
-
-        elif action == "stop":
-            s["running"] = False
-            s["gen"] = s.get("gen", 0) + 1
-            bot.answer_callback_query(call.id, "🛑 إيقاف...")
-            try:
-                bot.edit_message_caption(
-                    "🛑 تم الإيقاف",
-                    chat_id=cid, message_id=s.get("msg_id"),
-                )
-            except Exception:
-                pass
-            cleanup_session(cid)
-
-        elif action == "refresh":
-            bot.answer_callback_query(call.id, "🔄 تحديث...")
-            drv = s.get("driver")
-            if drv:
-                try:
-                    drv.refresh()
-                except Exception:
-                    pass
-
-        elif action == "screenshot":
-            bot.answer_callback_query(call.id, "📸 جاري التقاط...")
-            drv = s.get("driver")
-            if drv:
-                bio = take_screenshot(drv)
-                if bio:
-                    now = datetime.now().strftime("%H:%M:%S")
-                    bot.send_photo(
-                        cid, bio,
-                        caption=f"📸 {now}",
-                        reply_markup=build_panel(s.get("cmd_mode", False)),
-                    )
-                    bio.close()
-
-        elif action == "cmd_mode":
-            s["cmd_mode"] = True
-            drv = s.get("driver")
-            if drv and is_shell_page(drv):
-                s["terminal_ready"] = True
-            bot.answer_callback_query(call.id, "⌨️ وضع الأوامر")
-            send_safe(
-                cid,
-                "⌨️ **وضع الأوامر مُفعّل!**\n\n"
-                "أرسل أي أمر مباشرة كرسالة:\n"
-                "• `ls -la`\n"
-                "• `gcloud config list`\n"
-                "• `cat file.txt`\n\n"
-                "🔙 للرجوع للبث اضغط الزر",
-                parse_mode="Markdown",
-            )
-
-        elif action == "watch_mode":
-            s["cmd_mode"] = False
-            bot.answer_callback_query(call.id, "👁️ وضع البث")
-            send_safe(cid, "👁️ تم الرجوع لوضع البث المباشر.")
-
-        elif action == "info":
-            bot.answer_callback_query(call.id, "ℹ️")
-            uptime = fmt_duration(
-                time.time() - s.get("created_at", time.time())
-            )
-            drv = s.get("driver")
-            u = current_url(drv)[:60] if drv else "—"
-            text = (
-                f"ℹ️ **الحالة:**\n"
-                f"📁 `{s.get('project_id', '—')}`\n"
-                f"⌨️ Terminal: {'✅' if s.get('terminal_ready') else '⏳'}\n"
-                f"⏱️ {uptime}\n"
-                f"🌐 `{u}`"
-            )
-            send_safe(cid, text, parse_mode="Markdown")
-
-        elif action == "restart_browser":
-            bot.answer_callback_query(call.id, "🔁 إعادة تشغيل...")
-            threading.Thread(
-                target=_restart_driver, args=(cid, s), daemon=True
-            ).start()
-
-    except Exception as e:
-        log.debug(f"Callback error: {e}")
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  20 · BOOT CHECK & GRACEFUL SHUTDOWN                  ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def boot_check():
-    """فحص التبعيات عند بدء التشغيل"""
-    log.info("🔍 فحص التبعيات...")
-
-    browser = find_path(
-        ["chromium", "chromium-browser"],
-        ["/usr/bin/chromium", "/usr/bin/chromium-browser"],
-    )
-    drv = find_path(
-        ["chromedriver"],
-        ["/usr/bin/chromedriver", "/usr/lib/chromium/chromedriver"],
-    )
-
-    if not browser:
-        log.critical("❌ Chromium غير موجود!")
-        sys.exit(1)
-    log.info(f"  ✅ Browser: {browser}")
-
-    if not drv:
-        log.critical("❌ ChromeDriver غير موجود!")
-        sys.exit(1)
-    log.info(f"  ✅ Driver:  {drv}")
-
-    ver = browser_version(browser)
-    log.info(f"  ✅ Version: {ver}")
-    log.info(f"  ✅ Display: {'Active' if display else 'None'}")
-    log.info("✅ جميع التبعيات متوفرة!")
-
-
-def graceful_shutdown(signum, frame):
-    """إنهاء نظيف عند إيقاف التطبيق"""
-    log.info("🛑 إيقاف نظيف...")
-    shutdown_event.set()
-
     with sessions_lock:
-        for cid in list(user_sessions):
-            try:
-                s = user_sessions[cid]
-                s["running"] = False
-                safe_quit(s.get("driver"))
-            except Exception:
-                pass
-        user_sessions.clear()
-
-    log.info("👋 تم الإنهاء.")
-    sys.exit(0)
-
-
-signal.signal(signal.SIGTERM, graceful_shutdown)
-signal.signal(signal.SIGINT, graceful_shutdown)
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  21 · MAIN ENTRY POINT                                ║
-# ╚═══════════════════════════════════════════════════════╝
-
-if __name__ == "__main__":
-    print("═" * 55)
-    print("  🤖 Google Cloud Shell Bot — Premium v3.0-Queue")
-    print(f"  🌐 Port: {Config.PORT}")
-    print("═" * 55)
-
-    # فحص التبعيات
-    boot_check()
-
-    # خادم الصحة
-    threading.Thread(target=_health_server, daemon=True).start()
-
-    # تنظيف تلقائي
-    threading.Thread(target=_auto_cleanup_loop, daemon=True).start()
+        user_sessions[chat_id] = _new_session_dict(driver, url, pid, gen)
+        session = user_sessions[chat_id]
     
-    # 💡 عامل الطابور (الذي يعالج الروابط بالترتيب)
-    threading.Thread(target=queue_worker, daemon=True).start()
-
-    # حل مشكلة التعارض 409
-    try:
-        bot.remove_webhook()
-        time.sleep(1)
-    except Exception as e:
-        log.warning(f"Webhook removal: {e}")
-
-    log.info("🚀 البوت يعمل الآن ويستقبل الطلبات في الطابور!")
-
-    while not shutdown_event.is_set():
-        try:
-            bot.polling(
-                non_stop=True,
-                skip_pending=True,
-                timeout=60,
-                long_polling_timeout=60,
-            )
-        except Exception as e:
-            log.error(f"Polling error: {e}")
-            if shutdown_event.is_set():
-                break
-            time.sleep(5)
+    # Load cookies
+    loaded = load_user_cookies(driver, chat_id)
+    
+    # Navigate
+    if not safe_navigate(driver, url):
+        cleanup_session(chat_id)
+        send_safe(chat_id, "❌ فشل تحميل الصفحة.")
+        return
+    
+    # Create panel message
+    msg_obj = send_safe(chat_id, "🔴 **جاري البث...**", reply_markup=build_panel())
+    if msg_obj:
+        session["msg_id"] = msg_obj.message_id
+    
+    session["running"] = True
+    
+    # Start stream thread
+    threading.Thread(target=stream
