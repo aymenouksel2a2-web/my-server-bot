@@ -58,6 +58,7 @@ def init_driver():
     chrome_options.add_argument('--disable-dev-shm-usage')
     chrome_options.add_argument('--disable-gpu')
     chrome_options.add_argument('--disable-blink-features=AutomationControlled') # لتقليل فرص حظر البوت
+    chrome_options.add_argument('--incognito') # فتح المتصفح في الوضع الخفي لتجنب شاشة تأكيد الحساب
     
     driver = webdriver.Chrome(options=chrome_options)
     # تعيين حجم النافذة لتطابق الشاشة الوهمية
