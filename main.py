@@ -30,7 +30,6 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             
-    # كتم سجلات الخادم حتى لا تزعجنا في الـ Console
     def log_message(self, format, *args):
         pass
 
@@ -38,18 +37,14 @@ def run_health_server():
     server = HTTPServer(('0.0.0.0', 8080), HealthCheckHandler)
     server.serve_forever()
 
-# تشغيل خادم الصحة في Thread منفصل لكي لا يوقف عمل البوت
 threading.Thread(target=run_health_server, daemon=True).start()
-
 
 # ---------------------------------------------------------
 # 2. إعدادات Selenium والبث المباشر
 # ---------------------------------------------------------
-# قاموس لحفظ الجلسات النشطة لكل مستخدم لتجنب التداخل
 active_streams = {}
 
 def init_driver():
-    """تهيئة المتصفح الوهمي (Virtual Display) و Chrome"""
     display = Display(visible=0, size=(1280, 720))
     display.start()
     
@@ -66,7 +61,6 @@ def init_driver():
     return driver, display
 
 def stop_stream(chat_id):
-    """إيقاف البث وإغلاق المتصفح للمستخدم"""
     if chat_id in active_streams:
         active_streams[chat_id]['streaming'] = False
         try:
@@ -80,12 +74,10 @@ def stop_stream(chat_id):
         del active_streams[chat_id]
 
 def stream_screenshots(chat_id, url):
-    """العملية التي تقوم بفتح الرابط وتحديث الصورة كل 3 ثوانٍ"""
     msg = bot.send_message(chat_id, "⚙️ جاري تهيئة المتصفح وفتح الرابط... يرجى الانتظار.")
     
     try:
         driver, display = init_driver()
-        # إضافة متغير white_screen_attempts لمراقبة الشاشة البيضاء
         active_streams[chat_id] = {
             'driver': driver, 'display': display, 'streaming': True, 
             'has_redirected_to_run': False, 'has_extracted_regions': False, 
@@ -113,7 +105,7 @@ def stream_screenshots(chat_id, url):
             try:
                 current_url = driver.current_url
                 
-                # 0. تخطي شاشة "Verify it's you" بقوة
+                # 0. تخطي شاشة التأكيد
                 if "accounts.google.com" in current_url:
                     try:
                         driver.execute_script("""
@@ -128,120 +120,82 @@ def stream_screenshots(chat_id, url):
                     except:
                         pass
                 
-                # 1. إذا وصلنا للوحة التحكم ولم نقم بالتوجيه من قبل
+                # 1. التوجيه إلى Cloud Run
                 if not active_streams[chat_id].get('has_redirected_to_run') and "console.cloud.google.com/home/dashboard" in current_url and "project=" in current_url:
                     match = re.search(r'project=([^&]+)', current_url)
                     if match:
                         project_id = match.group(1)
                         bot.send_message(chat_id, f"✅ تم اكتشاف المشروع: `{project_id}`\n🔄 جاري التوجيه لصفحة Cloud Run...", parse_mode="Markdown")
                         
-                        # السر الخفي: وضعنا enableapi=true لإجبار جوجل على تفعيل السيرفرات ومنع انهيار الشاشة
                         run_url = f"https://console.cloud.google.com/run/create?enableapi=true&project={project_id}"
                         driver.get(run_url)
                         active_streams[chat_id]['has_redirected_to_run'] = True
                         time.sleep(6) 
                         
-                # 2. إذا تم التوجيه إلى Cloud Run، نبدأ الفحص الذكي للنجاة من الشاشة البيضاء
+                # 2. الفحص الذكي للصفحة بناءً على التشخيص
                 elif active_streams[chat_id].get('has_redirected_to_run') and not active_streams[chat_id].get('has_extracted_regions') and "console.cloud.google.com/run/create" in current_url:
                     
-                    # التحقق الخارق 2.0: نبحث عن عنصر قائمة "Region" بشكل فعلي وهندسي في الصفحة للتأكد من أنها لم تنهار
                     form_ready = driver.execute_script("""
-                        let dropdowns = document.querySelectorAll('mat-select, cfc-select, [role="combobox"]');
-                        for (let box of dropdowns) {
-                            let label = (box.getAttribute('aria-label') || '').toLowerCase();
-                            let id = (box.getAttribute('id') || '').toLowerCase();
-                            let text = (box.innerText || '').toLowerCase();
-                            if (label.includes('search') || id.includes('search')) continue;
-                            if (label.includes('region') || id.includes('region') || text.includes('us-') || text.includes('europe-') || text.includes('asia-')) return true;
-                        }
-                        // فحص بديل إذا تغيرت خصائص القائمة: البحث بجوار نص Region
-                        let labels = document.querySelectorAll('label');
+                        let labels = document.querySelectorAll('label, .cfc-form-field-label-text');
                         for (let l of labels) {
-                            if (l.innerText.toLowerCase().includes('region')) {
-                                let p = l.parentElement;
-                                while(p && p.tagName !== 'BODY') {
-                                    if (p.querySelector('mat-select, cfc-select, [role="combobox"]')) return true;
-                                    p = p.parentElement;
-                                }
+                            if (l.innerText && l.innerText.toLowerCase().includes('region')) {
+                                let targetId = l.getAttribute('for');
+                                if (targetId && document.getElementById(targetId)) return true;
                             }
                         }
-                        return false;
+                        let text = document.body.innerText;
+                        return text.includes('Container image URL');
                     """)
                     
                     if not form_ready:
                         active_streams[chat_id]['white_screen_attempts'] += 1
-                        
                         if active_streams[chat_id]['white_screen_attempts'] == 1:
-                            bot.send_message(chat_id, "⏳ جاري انتظار بناء واجهة Cloud Run (يتم تخطي الانهيار الوهمي)...")
-                            
-                        # إذا استمرت بيضاء لمدة طويلة (حوالي 15 ثانية - 5 محاولات)، نقوم بالإنعاش التلقائي
+                            bot.send_message(chat_id, "⏳ جاري انتظار بناء واجهة Cloud Run...")
                         if active_streams[chat_id]['white_screen_attempts'] >= 5:
                             bot.send_message(chat_id, "⚠️ تم اكتشاف شاشة بيضاء. جاري عمل Refresh للصفحة لإنعاشها...")
                             driver.refresh()
-                            active_streams[chat_id]['white_screen_attempts'] = 0 # تصفير العداد
+                            active_streams[chat_id]['white_screen_attempts'] = 0
                             time.sleep(6)
-                        continue # تخطي باقي الكود والانتظار حتى تحمل الصفحة
+                        continue
                     
-                    # إذا وصلنا هنا، يعني الصفحة محملة بنجاح وليست بيضاء
-                    bot.send_message(chat_id, "🔍 تم تحميل واجهة Cloud Run بنجاح وبدون تعليق.\n🧹 جاري تنظيف الشاشة من النوافذ الإرشادية المزعجة...")
+                    bot.send_message(chat_id, "🔍 تم تحميل الواجهة بنجاح.\n🧹 جاري تنظيف الشاشة من النوافذ الإرشادية...")
                     
                     try:
-                        # 1. التدمير الشامل والنقر على أزرار الإغلاق (للتخلص من Help has moved وغيرها)
                         driver.execute_script("""
-                            // محاولة الضغط على أزرار الإغلاق العادية أولاً
                             document.querySelectorAll('button[aria-label="Close"], button[aria-label="Close tutorial"], .cfc-coachmark-close, .close-button').forEach(btn => btn.click());
-                            
-                            // ثم حذف الحاويات من الجذور
-                            let garbage = document.querySelectorAll('cfc-coachmark, cfc-tooltip, mat-tooltip-component, .cfc-coachmark-container, [role="dialog"], .guided-tour, cfc-panel');
-                            garbage.forEach(el => el.remove());
+                            document.querySelectorAll('cfc-coachmark, cfc-tooltip, mat-tooltip-component, .cfc-coachmark-container, [role="dialog"], .guided-tour, cfc-panel').forEach(el => el.remove());
                         """)
                         time.sleep(2)
 
-                        bot.send_message(chat_id, "⏳ جاري محاولة فتح قائمة السيرفرات الإجبارية...")
+                        bot.send_message(chat_id, "⏳ جاري محاولة فتح القائمة الإجبارية (بالاعتماد على الـ ID الدقيق)...")
 
-                        # 2. فتح القائمة بشكل دقيق وموجه
+                        # القناص: تحديد العنصر بناءً على بيانات التشخيص
                         clicked = driver.execute_script("""
-                            let dropdowns = document.querySelectorAll('mat-select, cfc-select, [role="combobox"]');
                             let targetBox = null;
                             
-                            for (let box of dropdowns) {
-                                let label = (box.getAttribute('aria-label') || '').toLowerCase();
-                                let id = (box.getAttribute('id') || '').toLowerCase();
-                                let text = (box.innerText || '').toLowerCase();
-                                
-                                // تجاهل مربع البحث العلوي تماماً لكي لا ينخدع به البوت
-                                if (label.includes('search') || id.includes('search') || text.includes('search')) continue;
-                                
-                                // البحث عن الكلمات التي تدل على السيرفرات
-                                if (label.includes('region') || id.includes('region') || text.includes('us-') || text.includes('europe-') || text.includes('asia-')) {
-                                    targetBox = box;
-                                    break;
+                            // 1. البحث باستخدام الـ Label الذي وجدناه في التشخيص
+                            let labels = document.querySelectorAll('label, .cfc-form-field-label-text');
+                            for (let l of labels) {
+                                if (l.innerText && l.innerText.toLowerCase().includes('region')) {
+                                    let targetId = l.getAttribute('for');
+                                    if (targetId) {
+                                        targetBox = document.getElementById(targetId);
+                                        if (targetBox) break;
+                                    }
                                 }
                             }
                             
-                            // البحث الهندسي البديل إذا لم يجدها بالخصائص
+                            // 2. الفحص البديل في حال فشل الأول: استهداف علامة التشخيص (cfc-select)
                             if (!targetBox) {
-                                let labels = document.querySelectorAll('label');
-                                for (let l of labels) {
-                                    if (l.innerText.toLowerCase().includes('region')) {
-                                        let p = l.parentElement;
-                                        while(p && p.tagName !== 'BODY') {
-                                            let combo = p.querySelector('mat-select, cfc-select, [role="combobox"]');
-                                            if (combo) {
-                                                targetBox = combo;
-                                                break;
-                                            }
-                                            p = p.parentElement;
-                                        }
-                                        if (targetBox) break;
-                                    }
+                                let selects = document.querySelectorAll('cfc-select');
+                                if (selects.length > 0) {
+                                    targetBox = selects[0]; // نأخذ أول قائمة cfc-select لأنها التي ظهرت في التشخيص
                                 }
                             }
                             
                             if (targetBox) {
                                 targetBox.scrollIntoView({block: 'center', behavior: 'smooth'});
                                 targetBox.click();
-                                // إطلاق حدث الماوس للتأكيد واختراق أي طبقة شفافة
                                 let evt = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
                                 targetBox.dispatchEvent(evt);
                                 return true;
@@ -250,23 +204,20 @@ def stream_screenshots(chat_id, url):
                         """)
                         
                         if not clicked:
-                            bot.send_message(chat_id, "⚠️ لم أتمكن من العثور على زر القائمة في الصفحة بشكل نهائي.")
+                            bot.send_message(chat_id, "⚠️ لم أتمكن من العثور على القائمة باستخدام الهندسة العكسية.")
                             active_streams[chat_id]['has_extracted_regions'] = True
                             continue
 
-                        bot.send_message(chat_id, "⏳ تم النقر على زر السيرفرات. جاري استخراج البيانات (يرجى الانتظار قليلاً لجلب البيانات من Google)...")
+                        bot.send_message(chat_id, "⏳ تم النقر على زر السيرفرات. جاري استخراج البيانات...")
                         
-                        # 3. استخراج السيرفرات مع Retry Loop لضمان جلبها بعد تحميل واجهة الـ API
                         servers = []
-                        for _ in range(5): # زدت المحاولات لـ 5 لضمان جلبها
+                        for _ in range(5):
                             time.sleep(3) 
-                            
                             servers = driver.execute_script("""
                                 let options = document.querySelectorAll('mat-option, cfc-option, [role="option"], .mat-mdc-option');
                                 let available = [];
                                 for (let opt of options) {
                                     let text = opt.innerText.trim();
-                                    // تجاهل الخيارات الفارغة والنصوص المتعلقة بالبحث أو الروابط
                                     if (text.length > 0 && !text.includes('Learn more') && !text.includes('Create multi-region') && text.includes('-') && !text.toLowerCase().includes('search')) {
                                         let mainText = text.split('\\n')[0].trim();
                                         if (mainText && !available.includes(mainText)) {
@@ -285,7 +236,7 @@ def stream_screenshots(chat_id, url):
                             servers_list_text = "\n".join([f"🌍 `{s}`" for s in servers])
                             bot.send_message(chat_id, f"✅ **تم العثور على السيرفرات التالية:**\n\n{servers_list_text}", parse_mode="Markdown")
                         else:
-                            bot.send_message(chat_id, "⚠️ فتحت القائمة ولكن لم تظهر السيرفرات حتى بعد الانتظار. قد تكون الحصة (Quota) غير متاحة لهذا الحساب.")
+                            bot.send_message(chat_id, "⚠️ فتحت القائمة ولكن لم تظهر السيرفرات. الحصة (Quota) غير متاحة.")
                             
                         time.sleep(2) 
                     except Exception as script_err:
@@ -318,13 +269,9 @@ def stream_screenshots(chat_id, url):
     finally:
         stop_stream(chat_id)
 
-
-# ---------------------------------------------------------
-# 3. أوامر بوت تيليغرام
-# ---------------------------------------------------------
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "مرحباً بك! 👋\n\nأرسل لي أي رابط (يبدأ بـ http أو https) وسأقوم بفتحه وإرسال بث مباشر لصورته كل 3 ثوانٍ.")
+    bot.reply_to(message, "مرحباً بك! 👋\n\nأرسل لي أي رابط وسأقوم بفتحه وإرسال بث مباشر لصورته.")
 
 @bot.message_handler(func=lambda message: message.text and message.text.startswith('http'))
 def handle_url(message):
@@ -332,7 +279,7 @@ def handle_url(message):
     url = message.text
     
     if chat_id in active_streams:
-        bot.reply_to(message, "⚠️ لديك بث يعمل حالياً. الرجاء إيقافه أولاً عن طريق الزر في رسالة البث.")
+        bot.reply_to(message, "⚠️ لديك بث يعمل حالياً. الرجاء إيقافه أولاً.")
         return
         
     threading.Thread(target=stream_screenshots, args=(chat_id, url), daemon=True).start()
@@ -340,22 +287,13 @@ def handle_url(message):
 @bot.callback_query_handler(func=lambda call: call.data == "stop_stream")
 def callback_stop(call):
     chat_id = call.message.chat.id
-    
     if chat_id in active_streams:
         stop_stream(chat_id)
         bot.answer_callback_query(call.id, "تم إيقاف البث بنجاح.")
-        bot.edit_message_caption(
-            "⚫️ تم إيقاف البث.", 
-            chat_id=chat_id, 
-            message_id=call.message.message_id,
-            reply_markup=None
-        )
+        bot.edit_message_caption("⚫️ تم إيقاف البث.", chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
     else:
         bot.answer_callback_query(call.id, "البث متوقف بالفعل.")
 
-# ---------------------------------------------------------
-# 4. تشغيل البوت
-# ---------------------------------------------------------
 if __name__ == '__main__':
     print("البوت يعمل الآن... يتم الاستماع للرسائل.")
     bot.infinity_polling()
