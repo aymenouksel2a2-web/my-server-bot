@@ -51,7 +51,7 @@ class Config:
     TOKEN = os.environ.get("BOT_TOKEN")
     PORT = int(os.environ.get("PORT", 8080))
     MONGO_URI = os.environ.get("MONGO_URI", "")
-    VERSION = "3.1-Stable-Queue-Cookies"
+    VERSION = "3.0-VLESS-Queue-Cookies"
 
     # ── المتصفح ──
     PAGE_LOAD_TIMEOUT = 45
@@ -128,17 +128,8 @@ queue_lock = threading.Lock()
 
 
 # ╔═══════════════════════════════════════════════════════╗
-# ║  3 · COOKIES MANAGEMENT & MEMORY CLEANUP              ║
+# ║  3 · COOKIES MANAGEMENT (NEW)                         ║
 # ╚═══════════════════════════════════════════════════════╝
-
-def force_kill_zombie_processes():
-    """قتل عمليات المتصفح المعلقة لتحرير الذاكرة في Railway"""
-    try:
-        os.system("pkill -9 -f chromium || true")
-        os.system("pkill -9 -f chromedriver || true")
-        log.info("🧹 تم تنظيف العمليات المعلقة (Zombies).")
-    except:
-        pass
 
 def save_user_cookies(driver, chat_id):
     """حفظ ملفات تعريف الارتباط (Cookies) لتخطي تسجيل الدخول في المرات القادمة"""
@@ -563,11 +554,6 @@ def _auto_cleanup_loop():
             except Exception:
                 pass
             cleanup_session(cid)
-        
-        # تنظيف العمليات المعلقة إذا كان الطابور فارغاً ولا توجد جلسات
-        if deployment_queue.empty() and not user_sessions:
-            force_kill_zombie_processes()
-            
         gc.collect()
 
 
@@ -895,28 +881,14 @@ def handle_google_pages(driver, session, chat_id):
 
     bl = body.lower()
 
-    # 💡 تخطي نوافذ التنبيهات المزعجة (Cloud Hub)
-    if "visibility" in bl and ("cloud hub" in bl or "no longer updated" in bl):
-        _click_if_visible(driver, [
-            "//button[@aria-label='Close']",
-            "//button[contains(@aria-label, 'Close')]"
-        ], 0.2, 1)
-
-    # 💡 اكتشاف طلب استرداد الإيميل (Recovery Email)
-    if "confirm your recovery email" in bl or "تأكيد عنوان البريد" in bl:
-        if session.get("waiting_for_input") != "recovery":
-            session["waiting_for_input"] = "recovery"
-            send_safe(chat_id, "⚠️ **جوجل تطلب تأكيد الإيميل الاحتياطي (Recovery Email)!**\n\n👉 يرجى إرسال الإيميل الاحتياطي كرسالة نصية هنا، أو إرسال رابط SSO جديد.")
-        return "🔐 بانتظار الإيميل الاحتياطي..."
-
     # 💡 تسجيل الدخول التفاعلي (Interactive Login) - اسم المستخدم وكلمة المرور
     try:
         email_inputs = driver.find_elements(By.XPATH, "//input[@type='email']")
         if email_inputs and any(el.is_displayed() for el in email_inputs):
             if session.get("waiting_for_input") != "email":
                 session["waiting_for_input"] = "email"
-                send_safe(chat_id, "⚠️ **تسجيل الدخول مطلوب!**\n\nيبدو أن الجلسة السابقة انتهت أو الكوكيز غير صالحة.\n👉 لديك خياران:\n1️⃣ أرسل **اسم المستخدم (Username)** كرسالة نصية.\n2️⃣ **أو الأسهل:** أرسل **رابط SSO جديد** من المختبر لبدء جلسة جديدة فوراً.")
-            return "🔐 بانتظار إرسال اسم المستخدم أو الرابط..."
+                send_safe(chat_id, "⚠️ **تسجيل الدخول مطلوب!**\n\nلم يتم تسجيل الدخول تلقائياً بالرابط (أو الكوكيز غير صالحة).\n👉 يرجى نسخ **اسم المستخدم (Username)** من صفحة المختبر وإرساله هنا كرسالة نصية:")
+            return "🔐 بانتظار إرسال اسم المستخدم..."
     except Exception:
         pass
 
@@ -926,10 +898,11 @@ def handle_google_pages(driver, session, chat_id):
             if session.get("waiting_for_input") != "email":
                 if session.get("waiting_for_input") != "password":
                     session["waiting_for_input"] = "password"
-                    send_safe(chat_id, "🔐 **الخطوة التالية:**\n\n👉 يرجى نسخ **كلمة المرور (Password)** من صفحة المختبر وإرسالها هنا كرسالة نصية،\nأو إرسال **رابط SSO جديد**.")
+                    send_safe(chat_id, "🔐 **الخطوة التالية:**\n\n👉 يرجى نسخ **كلمة المرور (Password)** من صفحة المختبر وإرسالها هنا كرسالة نصية:")
                 return "🔐 بانتظار إرسال كلمة المرور..."
     except Exception:
         pass
+
 
     if "agree and continue" in bl and "terms of service" in bl:
         try:
@@ -1018,13 +991,6 @@ def handle_google_pages(driver, session, chat_id):
         ]):
             return "✅ Trust"
 
-    if "api" in bl and ("enable" in bl or "تفعيل" in bl):
-        if _click_if_visible(driver, [
-            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'enable')]",
-            "//button[contains(.,'تفعيل')]"
-        ], 0.5, 3):
-            return "✅ جاري تفعيل API"
-
     try:
         u = driver.current_url
     except Exception:
@@ -1044,52 +1010,42 @@ def handle_google_pages(driver, session, chat_id):
 # ║  14 · CLOUD RUN REGION EXTRACTION                     ║
 # ╚═══════════════════════════════════════════════════════╝
 
-# 💡 تحديث جذري لقراءة السيرفرات ليتعامل مع عناصر cfc-select و Shadow DOM الجديدة من جوجل
 REGION_JS = """
 var callback = arguments[arguments.length - 1];
 setTimeout(function() {
     try {
         var clicked = false;
-        var labels = document.querySelectorAll('label, mat-label');
-        for (var i = 0; i < labels.length; i++) {
-            if (labels[i].innerText && labels[i].innerText.toLowerCase().includes('region')) {
-                var container = labels[i].closest('.mat-mdc-form-field, .mat-form-field, .cfc-form-field');
-                if (container) {
-                    var cb = container.querySelector('[role="combobox"], cfc-select, mat-select');
-                    var trigger = container.querySelector('.cfc-select-trigger, .mat-mdc-select-trigger');
-                    if (trigger) { trigger.click(); clicked = true; break; }
-                    if (cb) { cb.click(); clicked = true; break; }
-                }
-                labels[i].click(); 
-                clicked = true; 
-                break;
+        var dd = document.querySelectorAll('mat-select, [role="combobox"]');
+        for (var i = 0; i < dd.length; i++) {
+            var a = (dd[i].getAttribute('aria-label') || '').toLowerCase();
+            var id = (dd[i].getAttribute('id') || '').toLowerCase();
+            if (a.indexOf('region') !== -1 || id.indexOf('region') !== -1) {
+                dd[i].click(); clicked = true; break;
             }
         }
-        
         if (!clicked) {
-            var cbs = document.querySelectorAll('[role="combobox"], cfc-select');
-            for(var i=0; i<cbs.length; i++) {
-                if((cbs[i].innerText||'').includes('us-')) {
-                    cbs[i].click(); clicked = true; break;
+            var lbl = document.querySelectorAll('label, .mat-form-field-label');
+            for (var j = 0; j < lbl.length; j++) {
+                if (lbl[j].innerText && lbl[j].innerText.indexOf('Region') !== -1) {
+                    lbl[j].click(); clicked = true; break;
                 }
             }
         }
-        
         if (!clicked) { callback('NO_DROPDOWN'); return; }
-
         setTimeout(function() {
-            var opts = document.querySelectorAll('mat-option, cfc-option, [role="option"], li[role="option"]');
+            var opts = document.querySelectorAll('mat-option, [role="option"]');
             var res = [];
             for (var k = 0; k < opts.length; k++) {
                 var o = opts[k];
                 var r = o.getBoundingClientRect();
                 var s = window.getComputedStyle(o);
-                if (r.width === 0 || r.height === 0 || s.display === 'none' || s.visibility === 'hidden') continue;
-                if (o.classList.contains('mat-option-disabled') || o.getAttribute('aria-disabled') === 'true') continue;
+                if (r.width === 0 || r.height === 0 ||
+                    s.display === 'none' || s.visibility === 'hidden') continue;
+                if (o.classList.contains('mat-option-disabled') ||
+                    o.getAttribute('aria-disabled') === 'true') continue;
                 var t = (o.innerText || '').trim().split('\\n')[0];
-                if (t && t.indexOf('-') !== -1 && t.toLowerCase().indexOf('learn') === -1) {
-                    res.push(t.split(' ')[0]);
-                }
+                if (t && t.indexOf('-') !== -1 &&
+                    t.toLowerCase().indexOf('learn') === -1) res.push(t);
             }
             document.dispatchEvent(new KeyboardEvent('keydown', {'key':'Escape'}));
             var bk = document.querySelector('.cdk-overlay-backdrop');
@@ -1097,7 +1053,7 @@ setTimeout(function() {
             callback(res.length ? res.join('\\n') : 'NO_REGIONS');
         }, 1500);
     } catch(e) { callback('ERROR:' + e); }
-}, 3500);
+}, 4000);
 """
 
 
@@ -1108,144 +1064,55 @@ def do_cloud_run_extraction(driver, chat_id, session):
 
     cur = current_url(driver)
 
-    # 1. إذا كنا في صفحة تفعيل API أو الفوترة، ننتظر ولا نعيد التوجيه
-    if "apis/" in cur or "billing" in cur:
-        if session.get("status_msg_id"):
-            edit_safe(chat_id, session["status_msg_id"], "⚙️ جاري تفعيل واجهات الـ API الضرورية...")
-        return False
-
-    # 2. إذا لم يكن الرابط الحالي يحتوي على run/create نقوم بتوجيهه
     if "run/create" not in cur:
-        # 💡 تجنب التوجيه المتكرر والمزعج (ننتظر 15 ثانية على الأقل قبل المحاولة مرة أخرى)
-        if time.time() - session.get("run_navigate_time", 0) < 15:
-            return False
-            
         if not session.get("status_msg_id"):
-            msg = send_safe(chat_id, "⚙️ جاري الانتقال لصفحة Cloud Run لاستخراج السيرفرات...")
+            msg = send_safe(chat_id, "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...")
             if msg: session["status_msg_id"] = msg.message_id
         else:
-            edit_safe(chat_id, session["status_msg_id"], "⚙️ جاري الانتقال لصفحة Cloud Run لاستخراج السيرفرات...")
+            edit_safe(chat_id, session["status_msg_id"], "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...")
             
         safe_navigate(
             driver,
             f"https://console.cloud.google.com/run/create"
             f"?enableapi=true&project={pid}",
         )
-        session["run_navigate_time"] = time.time()
         return False
 
-    # 3. الانتظار حتى يتم تحميل الصفحة بشكل كامل
-    # 💡 إصلاح جذري للحلقة المفرغة التي تتسبب بتعليق البوت في 0 ثانية 
-    if "run_navigate_time" not in session:
-        session["run_navigate_time"] = time.time()
-        
-    elapsed = time.time() - session["run_navigate_time"]
-    if elapsed < 12:  # ننتظر 12 ثانية بدلاً من 10 لضمان التحميل الكامل
-        return False
-
-    # 4. تحديث رسالة الحالة
-    if not session.get("extracting_started"):
-        if session.get("status_msg_id"):
-            edit_safe(chat_id, session["status_msg_id"], "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
-        session["extracting_started"] = True
+    if session.get("status_msg_id"):
+        edit_safe(chat_id, session["status_msg_id"], "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
 
     try:
         driver.set_script_timeout(Config.SCRIPT_TIMEOUT)
         result = driver.execute_async_script(REGION_JS)
 
         if result is None or result == "NO_DROPDOWN" or result == "NO_REGIONS" or result.startswith("ERROR:"):
-            # إعطاء فرصة أخرى للمحاولة إذا كانت الصفحة ثقيلة
-            retry_count = session.get("run_extract_retries", 0)
-            if retry_count < 3:
-                session["run_extract_retries"] = retry_count + 1
-                session["run_navigate_time"] = time.time() - 5 # انتظر 5 ثوانٍ أخرى للمحاولة
-                return False
-                
-            # 💡 بعد الفشل المتكرر، نستخدم السيرفرات الافتراضية
-            regions = [
-                "us-central1", "us-east1", "us-west1", "us-east4",
-                "europe-west1", "europe-west4", "europe-north1",
-                "asia-east1", "asia-southeast1", "australia-southeast1",
-                "me-central1", "southamerica-east1"
-            ]
-            msg_text_prefix = "⚠️ **تعذر جلب السيرفرات تلقائياً (ربما بسبب تحديث في جوجل).**\n\nقمنا بتوفير قائمة احتياطية بالسيرفرات الأكثر شيوعاً كبديل، يرجى الاختيار:\n\n"
+            if session.get("status_msg_id"):
+                edit_safe(chat_id, session["status_msg_id"], "⚠️ تعذر جلب السيرفرات، سيتم تخطي الخطوة.")
         else:
             regions = [r.strip() for r in result.split("\n") if r.strip()]
-            msg_text_prefix = "🌍 **السيرفرات المسموحة للإنشاء:**\nتم تنظيم السيرفرات لتسهيل الاختيار، اختر السيرفر الذي تريده لبناء VLESS:\n\n"
             
-        # تصنيف السيرفرات حسب القارات
-        categories = {
-            "🇺🇸 الأمريكتين": [],
-            "🇪🇺 أوروبا": [],
-            "🌏 آسيا": [],
-            "🐪 الشرق الأوسط": [],
-            "🦘 أستراليا": [],
-            "🌍 أفريقيا": [],
-            "🌐 أخرى": []
-        }
+            mk = InlineKeyboardMarkup(row_width=2)
+            buttons = [InlineKeyboardButton(r, callback_data=f"setreg_{r.split()[0]}") for r in regions]
+            mk.add(*buttons)
 
-        for r in regions:
-            rl = r.lower()
-            if rl.startswith("us-") or rl.startswith("northamerica-") or rl.startswith("southamerica-"):
-                categories["🇺🇸 الأمريكتين"].append(r)
-            elif rl.startswith("europe-"):
-                categories["🇪🇺 أوروبا"].append(r)
-            elif rl.startswith("asia-"):
-                categories["🌏 آسيا"].append(r)
-            elif rl.startswith("me-") or rl.startswith("mid-"):
-                categories["🐪 الشرق الأوسط"].append(r)
-            elif rl.startswith("australia-"):
-                categories["🦘 أستراليا"].append(r)
-            elif rl.startswith("africa-"):
-                categories["🌍 أفريقيا"].append(r)
+            if session.get("status_msg_id"):
+                edit_safe(
+                    chat_id, session["status_msg_id"],
+                    "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:\n\n⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*",
+                    reply_markup=mk,
+                    parse_mode="Markdown"
+                )
             else:
-                categories["🌐 أخرى"].append(r)
-
-        mk = InlineKeyboardMarkup()
-        
-        # بناء الأزرار مع العناوين
-        for cat_name, cat_regions in categories.items():
-            if cat_regions:
-                # زر كعنوان للقارة (غير قابل للضغط الفعلي)
-                mk.row(InlineKeyboardButton(f"▬▬ {cat_name} ▬▬", callback_data="ignore"))
-                
-                # ترتيب سيرفرات هذه القارة (زرين في كل صف)
-                row = []
-                for r in cat_regions:
-                    row.append(InlineKeyboardButton(r, callback_data=f"setreg_{r.split()[0]}"))
-                    if len(row) == 2:
-                        mk.row(*row)
-                        row = []
-                if row: # إذا تبقى زر فردي
-                    mk.row(*row)
-
-        msg_text = msg_text_prefix + "⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*"
-
-        if session.get("status_msg_id"):
-            edit_safe(
-                chat_id, session["status_msg_id"],
-                msg_text,
-                reply_markup=mk,
-                parse_mode="Markdown"
-            )
-        else:
-            msg = send_safe(chat_id, msg_text, reply_markup=mk, parse_mode="Markdown")
-            if msg: session["status_msg_id"] = msg.message_id
-        
-        session["waiting_for_region"] = True
-        session["region_prompt_time"] = time.time()
+                msg = send_safe(chat_id, "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:\n\n⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*", reply_markup=mk, parse_mode="Markdown")
+                if msg: session["status_msg_id"] = msg.message_id
+            
+            session["waiting_for_region"] = True
+            session["region_prompt_time"] = time.time()
             
     except Exception as e:
         if session.get("status_msg_id"):
-            edit_safe(chat_id, session["status_msg_id"], f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:100]}`\nسيتم توجيهك للتيرمنال مباشرة...", parse_mode="Markdown")
-        
-        # 💡 في حال حدوث خطأ كارثي برمجي، يجب أن لا نترك المستخدم عالقاً
-        pid = session.get("project_id")
-        if pid:
-            shell = f"https://shell.cloud.google.com/?enableapi=true&project={pid}&pli=1&show=terminal"
-            safe_navigate(driver, shell)
-            session["shell_loading_until"] = time.time() + 10
-            
+            edit_safe(chat_id, session["status_msg_id"], f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:100]}`", parse_mode="Markdown")
+
     return True
 
 
@@ -1340,9 +1207,6 @@ sudo pkill -9 xray 2>/dev/null; sudo pkill -9 x-ui 2>/dev/null; sudo fuser -k 80
 wget -qO install.sh https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh
 echo -e "y\n8080\n2\n\n\n" | sudo bash install.sh > /dev/null 2>&1
 sudo pkill -9 xray 2>/dev/null; sudo pkill -9 x-ui 2>/dev/null; sudo fuser -k 8080/tcp 2>/dev/null; sudo fuser -k 2096/tcp 2>/dev/null
-
-# التأكد من التثبيت قبل التشغيل
-sleep 2
 nohup sudo /usr/local/x-ui/x-ui > /dev/null 2>&1 &
 
 echo "⏳ انتظار تشغيل خادم اللوحة وتهيئة قاعدة البيانات لتجنب أخطاء 500..."
@@ -1526,12 +1390,6 @@ def stream_loop(chat_id, gen):
                     "console.cloud.google.com", "myaccount.google.com"
                 )
             )
-            
-            # 💡 حفظ الكوكيز مبكراً بمجرد تخطي صفحة تسجيل الدخول بنجاح
-            if "accounts.google.com" not in cur and not session.get("cookies_saved_early") and session.get("waiting_for_input") is None:
-                save_user_cookies(driver, chat_id)
-                session["cookies_saved_early"] = True
-
             on_shell = is_shell_page(driver)
 
             if session.get("waiting_for_region"):
@@ -1564,7 +1422,7 @@ def stream_loop(chat_id, gen):
                     session["terminal_notified"] = True
                     session["cmd_mode"] = True
 
-                    # 💡 حفظ الكوكيز بمجرد الوصول للتيرمنال (تأكيد إضافي)
+                    # 💡 حفظ الكوكيز بمجرد الوصول للتيرمنال بنجاح
                     if not cookies_saved:
                         save_user_cookies(driver, chat_id)
                         cookies_saved = True
@@ -2059,21 +1917,8 @@ def handle_url_msg(msg):
 
     with sessions_lock:
         if cid in user_sessions and user_sessions[cid].get("running"):
-            s = user_sessions[cid]
-            # 💡 التحديث الذكي والمنقذ: إذا كان البوت يطلب تسجيل الدخول أو عالقاً، والمستخدم أرسل رابط جديد، نقبله كحل للمشكلة ونجبر المتصفح عليه
-            if s.get("waiting_for_input") is not None or "accounts.google.com" in current_url(s.get("driver")):
-                s["url"] = url
-                s["waiting_for_input"] = None
-                s["auth"] = False 
-                bot.reply_to(msg, "🔄 **تم استلام رابط SSO جديد لحل المشكلة!**\nجاري فرض الرابط الجديد على المتصفح وتخطي تسجيل الدخول...", parse_mode="Markdown")
-                try:
-                    s["driver"].get(url)
-                except Exception:
-                    pass
-                return
-            else:
-                bot.reply_to(msg, "❌ لديك جلسة تعمل بشكل سليم حالياً.\nيرجى انتظار انتهائها أو إيقافها باستخدام أمر /stop ثم إرسال الرابط الجديد.")
-                return
+            bot.reply_to(msg, "❌ لديك جلسة تعمل حالياً.\nيرجى انتظار انتهائها أو إيقافها باستخدام أمر /stop.")
+            return
             
     in_queue = any(t["chat_id"] == cid for t in list(deployment_queue.queue))
     if in_queue or active_task_cid == cid:
@@ -2111,71 +1956,25 @@ def handle_text(msg):
         return
 
     waiting = s.get("waiting_for_input")
-    if waiting in ["email", "password", "recovery"]:
+    if waiting in ["email", "password"]:
         try:
             drv = s.get("driver")
-            
-            # معالجة الإيميل الاحتياطي
-            if waiting == "recovery":
+            if waiting == "email":
                 els = drv.find_elements(By.XPATH, "//input[@type='email']")
                 if els:
                     els[0].clear()
                     els[0].send_keys(msg.text)
                     els[0].send_keys(Keys.RETURN)
                     s["waiting_for_input"] = None
-                    send_safe(cid, "✅ تم إدخال الإيميل الاحتياطي، يرجى الانتظار...")
-                else:
-                    send_safe(cid, "❌ حقل الإدخال لم يعد متاحاً على الشاشة.")
-                return
-
-            # معالجة الإيميل العادي
-            if waiting == "email":
-                els = drv.find_elements(By.XPATH, "//input[@type='email']")
-                if els:
-                    els[0].clear()
-                    els[0].send_keys(msg.text)
-                    time.sleep(0.5)
-                    # 💡 النقر القوي المحسن لتخطي الشاشة
-                    try:
-                        drv.execute_script("""
-                            var btns = document.querySelectorAll('button, div[role="button"]');
-                            for(var i=0; i<btns.length; i++) {
-                                var txt = (btns[i].innerText || '').toLowerCase();
-                                if(txt.includes('next') || txt.includes('التالي') || txt.includes('continue')) {
-                                    btns[i].click(); return;
-                                }
-                            }
-                        """)
-                    except:
-                        pass
-                    try: els[0].send_keys(Keys.RETURN)
-                    except: pass
-                    s["waiting_for_input"] = None
                     send_safe(cid, "✅ تم إدخال اسم المستخدم، يرجى الانتظار...")
                 else:
                     send_safe(cid, "❌ حقل إدخال البريد الإلكتروني لم يعد متاحاً على الشاشة.")
-            
-            # معالجة الباسورد
             elif waiting == "password":
                 els = drv.find_elements(By.XPATH, "//input[@type='password']")
                 if els:
                     els[0].clear()
                     els[0].send_keys(msg.text)
-                    time.sleep(0.5)
-                    try:
-                        drv.execute_script("""
-                            var btns = document.querySelectorAll('button, div[role="button"]');
-                            for(var i=0; i<btns.length; i++) {
-                                var txt = (btns[i].innerText || '').toLowerCase();
-                                if(txt.includes('next') || txt.includes('التالي') || txt.includes('continue')) {
-                                    btns[i].click(); return;
-                                }
-                            }
-                        """)
-                    except:
-                        pass
-                    try: els[0].send_keys(Keys.RETURN)
-                    except: pass
+                    els[0].send_keys(Keys.RETURN)
                     s["waiting_for_input"] = None
                     send_safe(cid, "✅ تم إدخال كلمة المرور بنجاح، يرجى الانتظار...")
                 else:
@@ -2213,11 +2012,6 @@ def on_callback(call):
             return
 
         action = call.data
-
-        # 💡 تجاهل الضغط على أزرار العناوين (القارات)
-        if action == "ignore":
-            bot.answer_callback_query(call.id)
-            return
 
         if action.startswith("setreg_"):
             region = action.split("_")[1]
@@ -2377,8 +2171,6 @@ def graceful_shutdown(signum, frame):
             except Exception:
                 pass
         user_sessions.clear()
-        
-    force_kill_zombie_processes()
 
     log.info("👋 تم الإنهاء.")
     sys.exit(0)
@@ -2394,7 +2186,7 @@ signal.signal(signal.SIGINT, graceful_shutdown)
 
 if __name__ == "__main__":
     print("═" * 55)
-    print("  🤖 Google Cloud Shell Bot — Premium v3.1-Stable")
+    print("  🤖 Google Cloud Shell Bot — Premium v3.0-Queue")
     print(f"  🌐 Port: {Config.PORT}")
     print("═" * 55)
 
