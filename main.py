@@ -4,11 +4,11 @@ import threading
 import io
 import re
 import json
+import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from selenium import webdriver
-# تم تغيير الاستيراد ليصبح لمتصفح فايرفوكس
 from selenium.webdriver.firefox.options import Options
 from pyvirtualdisplay import Display
 
@@ -42,7 +42,7 @@ def run_health_server():
 threading.Thread(target=run_health_server, daemon=True).start()
 
 # ---------------------------------------------------------
-# 2. إعدادات Selenium والبث المباشر (باستخدام Firefox)
+# 2. إعدادات Selenium والبث المباشر
 # ---------------------------------------------------------
 active_streams = {}
 
@@ -50,17 +50,13 @@ def init_driver():
     display = Display(visible=0, size=(1280, 720))
     display.start()
     
-    # إعدادات متصفح فايرفوكس الجبار
     firefox_options = Options()
-    firefox_options.add_argument('-private') # التصفح الخفي لتخطي شاشات التأكيد
-    
-    # تفضيلات إضافية لمنع انهيار الذاكرة وتسريع المتصفح
+    firefox_options.add_argument('-private')
     firefox_options.set_preference("browser.cache.disk.enable", False)
     firefox_options.set_preference("browser.cache.memory.enable", False)
     firefox_options.set_preference("browser.cache.offline.enable", False)
     firefox_options.set_preference("network.http.use-cache", False)
     
-    # مكتبة Selenium 4.18 تقوم تلقائياً بتحميل Geckodriver، لا داعي للقلق حوله!
     driver = webdriver.Firefox(options=firefox_options)
     driver.set_window_size(1280, 720) 
     driver.implicitly_wait(3)
@@ -100,7 +96,9 @@ def stream_screenshots(chat_id, url):
         markup.add(InlineKeyboardButton("إيقاف البث 🛑", callback_data="stop_stream"))
         
         bot.delete_message(chat_id, msg.message_id)
-        photo_msg = bot.send_photo(chat_id, photo, caption="🔴 بث مباشر للصفحة...", reply_markup=markup)
+        current_time = datetime.datetime.now().strftime("%H:%M:%S")
+        caption_text = f"🔴 بث مباشر للصفحة...\n⏱ آخر تحديث: {current_time}"
+        photo_msg = bot.send_photo(chat_id, photo, caption=caption_text, reply_markup=markup)
         
         while active_streams.get(chat_id, {}).get('streaming', False):
             time.sleep(3) 
@@ -142,10 +140,7 @@ def stream_screenshots(chat_id, url):
                 elif active_streams[chat_id].get('has_redirected_to_run') and not active_streams[chat_id].get('has_prepared_view') and "console.cloud.google.com/run/create" in current_url:
                     
                     form_ready = driver.execute_script("""
-                        // الفحص 1: هل الشاشة بيضاء تماماً؟
                         if (document.body.innerText.trim().length < 50) return false;
-
-                        // الفحص 2: هل زر قائمة السيرفرات (cfc-select) موجود ومرئي بوضوح على الشاشة؟
                         let selects = document.querySelectorAll('cfc-select');
                         for (let s of selects) {
                             let rect = s.getBoundingClientRect();
@@ -168,7 +163,6 @@ def stream_screenshots(chat_id, url):
                     bot.send_message(chat_id, "🔍 تم تحميل الواجهة بنجاح.\n🧹 جاري تنظيف الشاشة وتجهيز العرض لك...")
                     
                     try:
-                        # تنظيف الشاشة من النوافذ المنبثقة
                         driver.execute_script("""
                             document.querySelectorAll('button[aria-label="Close"], button[aria-label="Close tutorial"], .cfc-coachmark-close, .close-button').forEach(btn => btn.click());
                             document.querySelectorAll('cfc-coachmark, cfc-tooltip, mat-tooltip-component, .cfc-coachmark-container, [role="dialog"], .guided-tour, cfc-panel').forEach(el => el.remove());
@@ -177,7 +171,6 @@ def stream_screenshots(chat_id, url):
 
                         bot.send_message(chat_id, "👀 جاري تمرير الشاشة (Scroll) إلى قسم Region...")
 
-                        # التمرير برفق حتى يكون قسم Region في منتصف الشاشة
                         driver.execute_script("""
                             let targetElement = null;
                             let labels = document.querySelectorAll('label, .cfc-form-field-label-text');
@@ -199,7 +192,6 @@ def stream_screenshots(chat_id, url):
                             if (targetElement) {
                                 targetElement.scrollIntoView({block: 'center', behavior: 'smooth'});
                             } else {
-                                // إذا لم يجده، ينزل لمنتصف الصفحة تقريباً
                                 window.scrollTo(0, document.body.scrollHeight / 2.5);
                             }
                         """)
@@ -220,14 +212,19 @@ def stream_screenshots(chat_id, url):
                 new_screenshot = driver.get_screenshot_as_png()
                 new_photo = io.BytesIO(new_screenshot)
                 
+                # إضافة الوقت للتعليق (Caption) لضمان أن النص مختلف في كل ثانية
+                current_time = datetime.datetime.now().strftime("%H:%M:%S")
+                caption_text = f"🔴 بث مباشر للصفحة...\n⏱ آخر تحديث: {current_time}"
+                
                 bot.edit_message_media(
                     chat_id=chat_id,
                     message_id=photo_msg.message_id,
-                    media=InputMediaPhoto(new_photo, caption="🔴 بث مباشر للصفحة...\n(يتم التحديث كل 3 ثوانٍ)"),
+                    media=InputMediaPhoto(new_photo, caption=caption_text),
                     reply_markup=markup
                 )
             except Exception as e:
                 error_msg = str(e).lower()
+                # الآن نادراً جداً ما يحدث هذا الخطأ لأن الوقت يختلف دائماً
                 if "message is not modified" in error_msg:
                     continue
                 elif "too many requests" in error_msg:
