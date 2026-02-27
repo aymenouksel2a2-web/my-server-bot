@@ -1044,42 +1044,52 @@ def handle_google_pages(driver, session, chat_id):
 # ║  14 · CLOUD RUN REGION EXTRACTION                     ║
 # ╚═══════════════════════════════════════════════════════╝
 
+# 💡 تحديث جذري لقراءة السيرفرات ليتعامل مع عناصر cfc-select و Shadow DOM الجديدة من جوجل
 REGION_JS = """
 var callback = arguments[arguments.length - 1];
 setTimeout(function() {
     try {
         var clicked = false;
-        var dd = document.querySelectorAll('mat-select, [role="combobox"], [aria-haspopup="listbox"]');
-        for (var i = 0; i < dd.length; i++) {
-            var a = (dd[i].getAttribute('aria-label') || '').toLowerCase();
-            var id = (dd[i].getAttribute('id') || '').toLowerCase();
-            if (a.indexOf('region') !== -1 || id.indexOf('region') !== -1) {
-                dd[i].click(); clicked = true; break;
+        var labels = document.querySelectorAll('label, mat-label');
+        for (var i = 0; i < labels.length; i++) {
+            if (labels[i].innerText && labels[i].innerText.toLowerCase().includes('region')) {
+                var container = labels[i].closest('.mat-mdc-form-field, .mat-form-field, .cfc-form-field');
+                if (container) {
+                    var cb = container.querySelector('[role="combobox"], cfc-select, mat-select');
+                    var trigger = container.querySelector('.cfc-select-trigger, .mat-mdc-select-trigger');
+                    if (trigger) { trigger.click(); clicked = true; break; }
+                    if (cb) { cb.click(); clicked = true; break; }
+                }
+                labels[i].click(); 
+                clicked = true; 
+                break;
             }
         }
+        
         if (!clicked) {
-            var lbl = document.querySelectorAll('label, .mat-form-field-label');
-            for (var j = 0; j < lbl.length; j++) {
-                if (lbl[j].innerText && lbl[j].innerText.toLowerCase().indexOf('region') !== -1) {
-                    lbl[j].click(); clicked = true; break;
+            var cbs = document.querySelectorAll('[role="combobox"], cfc-select');
+            for(var i=0; i<cbs.length; i++) {
+                if((cbs[i].innerText||'').includes('us-')) {
+                    cbs[i].click(); clicked = true; break;
                 }
             }
         }
+        
         if (!clicked) { callback('NO_DROPDOWN'); return; }
+
         setTimeout(function() {
-            var opts = document.querySelectorAll('mat-option, [role="option"], li[role="option"]');
+            var opts = document.querySelectorAll('mat-option, cfc-option, [role="option"], li[role="option"]');
             var res = [];
             for (var k = 0; k < opts.length; k++) {
                 var o = opts[k];
                 var r = o.getBoundingClientRect();
                 var s = window.getComputedStyle(o);
-                if (r.width === 0 || r.height === 0 ||
-                    s.display === 'none' || s.visibility === 'hidden') continue;
-                if (o.classList.contains('mat-option-disabled') ||
-                    o.getAttribute('aria-disabled') === 'true') continue;
+                if (r.width === 0 || r.height === 0 || s.display === 'none' || s.visibility === 'hidden') continue;
+                if (o.classList.contains('mat-option-disabled') || o.getAttribute('aria-disabled') === 'true') continue;
                 var t = (o.innerText || '').trim().split('\\n')[0];
-                if (t && t.indexOf('-') !== -1 &&
-                    t.toLowerCase().indexOf('learn') === -1) res.push(t);
+                if (t && t.indexOf('-') !== -1 && t.toLowerCase().indexOf('learn') === -1) {
+                    res.push(t.split(' ')[0]);
+                }
             }
             document.dispatchEvent(new KeyboardEvent('keydown', {'key':'Escape'}));
             var bk = document.querySelector('.cdk-overlay-backdrop');
@@ -1087,7 +1097,7 @@ setTimeout(function() {
             callback(res.length ? res.join('\\n') : 'NO_REGIONS');
         }, 1500);
     } catch(e) { callback('ERROR:' + e); }
-}, 4000);
+}, 3500);
 """
 
 
@@ -1107,7 +1117,6 @@ def do_cloud_run_extraction(driver, chat_id, session):
     # 2. إذا لم يكن الرابط الحالي يحتوي على run/create نقوم بتوجيهه
     if "run/create" not in cur:
         # 💡 تجنب التوجيه المتكرر والمزعج (ننتظر 15 ثانية على الأقل قبل المحاولة مرة أخرى)
-        # هذا يحل مشكلة تعارض الـ SSO Redirect مع توجيه البوت
         if time.time() - session.get("run_navigate_time", 0) < 15:
             return False
             
@@ -1126,8 +1135,12 @@ def do_cloud_run_extraction(driver, chat_id, session):
         return False
 
     # 3. الانتظار حتى يتم تحميل الصفحة بشكل كامل
-    elapsed = time.time() - session.get("run_navigate_time", time.time())
-    if elapsed < 10: 
+    # 💡 إصلاح جذري للحلقة المفرغة التي تتسبب بتعليق البوت في 0 ثانية 
+    if "run_navigate_time" not in session:
+        session["run_navigate_time"] = time.time()
+        
+    elapsed = time.time() - session["run_navigate_time"]
+    if elapsed < 12:  # ننتظر 12 ثانية بدلاً من 10 لضمان التحميل الكامل
         return False
 
     # 4. تحديث رسالة الحالة
@@ -1148,7 +1161,7 @@ def do_cloud_run_extraction(driver, chat_id, session):
                 session["run_navigate_time"] = time.time() - 5 # انتظر 5 ثوانٍ أخرى للمحاولة
                 return False
                 
-            # 💡 بعد الفشل المتكرر، نستخدم السيرفرات الافتراضية بدلاً من ترك المستخدم معلقاً
+            # 💡 بعد الفشل المتكرر، نستخدم السيرفرات الافتراضية
             regions = [
                 "us-central1", "us-east1", "us-west1", "us-east4",
                 "europe-west1", "europe-west4", "europe-north1",
