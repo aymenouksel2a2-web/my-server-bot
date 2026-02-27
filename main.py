@@ -64,6 +64,8 @@ def init_driver():
     driver = webdriver.Chrome(options=chrome_options)
     # تعيين حجم النافذة لتطابق الشاشة الوهمية
     driver.set_window_size(1280, 720) 
+    # إضافة انتظار ضمني للبحث عن العناصر
+    driver.implicitly_wait(3)
     return driver, display
 
 def stop_stream(chat_id):
@@ -86,8 +88,7 @@ def stream_screenshots(chat_id, url):
     
     try:
         driver, display = init_driver()
-        # تم تغيير المتغير ليكون has_extracted_regions بدلاً من has_selected_region
-        active_streams[chat_id] = {'driver': driver, 'display': display, 'streaming': True, 'has_redirected_to_run': False, 'has_extracted_regions': False}
+        active_streams[chat_id] = {'driver': driver, 'display': display, 'streaming': True, 'has_redirected_to_run': False, 'has_extracted_regions': False, 'region_attempts': 0}
         
         driver.get(url)
         time.sleep(3) # إعطاء المتصفح وقتاً لتحميل الصفحة
@@ -111,59 +112,83 @@ def stream_screenshots(chat_id, url):
             if not active_streams.get(chat_id, {}).get('streaming', False):
                 break
                 
-            # --- الإضافة الجديدة: إرسال تحديثات للمستخدم والتفاعل مع الصفحة ---
+            # --- الإضافة الجديدة: النظام الخارق للتعامل مع الصفحة ---
             try:
                 current_url = driver.current_url
+                
+                # 0. تخطي شاشة "Verify it's you" إن ظهرت
+                if "accounts.google.com" in current_url:
+                    try:
+                        driver.execute_script("""
+                            let btns = document.querySelectorAll('button, span, div');
+                            for (let b of btns) {
+                                if (b.innerText === 'Continue' || b.innerText === 'متابعة') {
+                                    b.click();
+                                    break;
+                                }
+                            }
+                        """)
+                    except:
+                        pass
                 
                 # 1. إذا وصلنا للوحة التحكم ولم نقم بالتوجيه من قبل
                 if not active_streams[chat_id].get('has_redirected_to_run') and "console.cloud.google.com/home/dashboard" in current_url and "project=" in current_url:
                     match = re.search(r'project=([^&]+)', current_url)
                     if match:
                         project_id = match.group(1)
-                        # إرسال رسالة تخبر المستخدم بما يحدث
                         bot.send_message(chat_id, f"✅ تم اكتشاف المشروع: `{project_id}`\n🔄 جاري التوجيه لصفحة Cloud Run...", parse_mode="Markdown")
                         
                         run_url = f"https://console.cloud.google.com/run/create?enableapi=false&project={project_id}"
                         driver.get(run_url)
                         active_streams[chat_id]['has_redirected_to_run'] = True
-                        time.sleep(4) # إعطاء وقت إضافي لتحميل صفحة Cloud Run
+                        time.sleep(6) # انتظار طويل لضمان تحميل واجهة Cloud Run بالكامل
                         
                 # 2. إذا وصلنا لصفحة إنشاء Cloud Run ولم نقم بفتح قائمة السيرفرات واستخراجها بعد
                 elif active_streams[chat_id].get('has_redirected_to_run') and not active_streams[chat_id].get('has_extracted_regions') and "console.cloud.google.com/run/create" in current_url:
                     
-                    bot.send_message(chat_id, "🔍 تم الوصول لصفحة Cloud Run.\n⏳ جاري محاولة فتح قائمة السيرفرات (Region)...")
+                    bot.send_message(chat_id, "🔍 تم الوصول لصفحة Cloud Run.\n🧹 جاري تنظيف الشاشة من النوافذ الإرشادية...")
                     
                     try:
-                        # 1. إغلاق النوافذ الإرشادية (Tooltips) التي قد تمنع النقر وتغطية الشاشة
+                        # 1. التدمير الشامل لأي نوافذ منبثقة أو إرشادية (حذفها من الكود المصدري)
                         driver.execute_script("""
-                            let closeButtons = document.querySelectorAll('button[aria-label="Close"], button[aria-label="Close tutorial"], .cfc-coachmark-close, .close-button');
-                            closeButtons.forEach(btn => btn.click());
+                            let garbage = document.querySelectorAll('cfc-coachmark, cfc-tooltip, mat-tooltip-component, .cfc-coachmark-container, [role="dialog"], .guided-tour, cfc-panel');
+                            garbage.forEach(el => el.remove());
                         """)
-                        time.sleep(1)
+                        time.sleep(2)
 
-                        # 2. النزول بالصفحة وفتح القائمة المنسدلة
+                        bot.send_message(chat_id, "⏳ جاري محاولة فتح القائمة الإجبارية...")
+
+                        # 2. البحث عن القائمة المنسدلة وفتحها بقوة (Force Click)
                         clicked = driver.execute_script("""
-                            let dropdowns = document.querySelectorAll('[role="combobox"], mat-select, cfc-select');
+                            let dropdowns = document.querySelectorAll('mat-select, cfc-select, [role="combobox"]');
+                            let targetBox = null;
+                            
                             for (let box of dropdowns) {
                                 let label = (box.getAttribute('aria-label') || '').toLowerCase();
                                 let id = (box.getAttribute('id') || '').toLowerCase();
                                 let text = (box.innerText || '').toLowerCase();
                                 
-                                // البحث عن الكلمات المفتاحية
+                                // التركيز على الكلمات التي تدل على قائمة السيرفرات
                                 if (label.includes('region') || id.includes('region') || text.includes('us-') || text.includes('europe-') || text.includes('asia-')) {
-                                    box.scrollIntoView({block: 'center', behavior: 'smooth'});
-                                    box.click();
-                                    return true;
+                                    targetBox = box;
+                                    break;
                                 }
                             }
                             
-                            // محاولة بديلة إذا لم يتعرف عليها من الكلمات (غالباً تكون أول قائمة منسدلة)
-                            if (dropdowns.length > 0) {
-                                dropdowns[0].scrollIntoView({block: 'center', behavior: 'smooth'});
-                                dropdowns[0].click();
-                                return true;
+                            // إذا لم نجدها بالكلمات، نأخذ أول قائمة منسدلة في الصفحة كخيار بديل
+                            if (!targetBox && dropdowns.length > 0) {
+                                targetBox = dropdowns[0];
                             }
                             
+                            if (targetBox) {
+                                targetBox.scrollIntoView({block: 'center', behavior: 'auto'});
+                                // محاولة النقر العادي
+                                targetBox.click();
+                                // محاولة النقر عبر MouseEvent لضمان اختراق أي طبقات شفافة
+                                let evt = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
+                                targetBox.dispatchEvent(evt);
+                                return true;
+                            }
                             return false;
                         """)
                         
@@ -172,21 +197,27 @@ def stream_screenshots(chat_id, url):
                             active_streams[chat_id]['has_extracted_regions'] = True
                             continue
 
-                        time.sleep(3) # انتظار القائمة حتى تفتح بشكل كامل وتظهر السيرفرات
+                        # انتظار القائمة حتى تفتح وتجلب البيانات من سيرفرات جوجل
+                        time.sleep(4) 
                         
-                        bot.send_message(chat_id, "⏳ جاري استخراج السيرفرات المتاحة...")
+                        bot.send_message(chat_id, "⏳ جاري استخراج السيرفرات المتاحة من الكود المصدري...")
                         
-                        # استخراج السيرفرات المتاحة وإرجاعها للبايثون
+                        # 3. استخراج السيرفرات ببحث شامل في الـ Body كله
                         servers = driver.execute_script("""
-                            let options = document.querySelectorAll('mat-option, [role="option"]');
+                            // البحث في كامل المستند عن أي خيار متاح
+                            let options = document.querySelectorAll('mat-option, [role="option"], .mat-mdc-option');
                             let available = [];
                             for (let opt of options) {
                                 let text = opt.innerText.trim();
-                                // تجاهل الخيارات الفارغة أو الخيارات الخاصة بالمعلومات (مثل Learn more)
-                                if (text.length > 0 && !text.includes('Learn more') && !text.includes('Create multi-region')) {
-                                    // أخذ السطر الأول من اسم السيرفر لتجاهل التفاصيل الإضافية
+                                
+                                // شروط صارمة: يجب أن يحتوي النص على اسم سيرفر (مثل us- أو europe- أو asia-)
+                                // وتجاهل الخيارات الفارغة أو روابط المساعدة
+                                if (text.length > 0 && !text.includes('Learn more') && !text.includes('Create multi-region') && text.includes('-')) {
+                                    
+                                    // استخراج السطر الأول فقط (اسم المنطقة)
                                     let mainText = text.split('\\n')[0].trim();
-                                    // تجنب التكرار
+                                    
+                                    // التأكد من عدم التكرار
                                     if (mainText && !available.includes(mainText)) {
                                         available.push(mainText);
                                     }
@@ -202,7 +233,7 @@ def stream_screenshots(chat_id, url):
                             servers_list_text = "\n".join([f"🌍 `{s}`" for s in servers])
                             bot.send_message(chat_id, f"✅ **تم العثور على السيرفرات التالية:**\n\n{servers_list_text}", parse_mode="Markdown")
                         else:
-                            bot.send_message(chat_id, "⚠️ فتحت القائمة ولكن لم أعثر على أي سيرفرات ظاهرة. قد لا يحتوي الحساب على صلاحيات حالية أو يحتاج لوقت أطول.")
+                            bot.send_message(chat_id, "⚠️ فتحت القائمة بنجاح، ولكن الكود المصدري لم يعرض أي سيرفرات. قد يكون החساب تحت المراجعة أو لا يمتلك حصة (Quota) حالية.")
                             
                         time.sleep(2) # إعطاء السيرفر وقتاً للاستجابة وعرض القائمة المفتوحة في البث
                     except Exception as script_err:
