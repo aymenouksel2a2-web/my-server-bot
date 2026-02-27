@@ -158,7 +158,7 @@ def stream_screenshots(chat_id, url):
 
                         bot.send_message(chat_id, "⏳ جاري محاولة فتح القائمة الإجبارية...")
 
-                        # 2. البحث عن القائمة المنسدلة وفتحها بقوة (Force Click)
+                        # 2. البحث عن القائمة المنسدلة وفتحها بقوة بنقرة واحدة دقيقة
                         clicked = driver.execute_script("""
                             let dropdowns = document.querySelectorAll('mat-select, cfc-select, [role="combobox"]');
                             let targetBox = null;
@@ -182,11 +182,8 @@ def stream_screenshots(chat_id, url):
                             
                             if (targetBox) {
                                 targetBox.scrollIntoView({block: 'center', behavior: 'auto'});
-                                // محاولة النقر العادي
+                                // نقرة واحدة ثابتة لكي لا تغلق القائمة فور فتحها
                                 targetBox.click();
-                                // محاولة النقر عبر MouseEvent لضمان اختراق أي طبقات شفافة
-                                let evt = new MouseEvent('click', { bubbles: true, cancelable: true, view: window });
-                                targetBox.dispatchEvent(evt);
                                 return true;
                             }
                             return false;
@@ -197,34 +194,39 @@ def stream_screenshots(chat_id, url):
                             active_streams[chat_id]['has_extracted_regions'] = True
                             continue
 
-                        # انتظار القائمة حتى تفتح وتجلب البيانات من سيرفرات جوجل
-                        time.sleep(4) 
+                        bot.send_message(chat_id, "⏳ جاري استخراج السيرفرات (قد يستغرق بضع ثوانٍ للتحميل من واجهة Google)...")
                         
-                        bot.send_message(chat_id, "⏳ جاري استخراج السيرفرات المتاحة من الكود المصدري...")
-                        
-                        # 3. استخراج السيرفرات ببحث شامل في الـ Body كله
-                        servers = driver.execute_script("""
-                            // البحث في كامل المستند عن أي خيار متاح
-                            let options = document.querySelectorAll('mat-option, [role="option"], .mat-mdc-option');
-                            let available = [];
-                            for (let opt of options) {
-                                let text = opt.innerText.trim();
-                                
-                                // شروط صارمة: يجب أن يحتوي النص على اسم سيرفر (مثل us- أو europe- أو asia-)
-                                // وتجاهل الخيارات الفارغة أو روابط المساعدة
-                                if (text.length > 0 && !text.includes('Learn more') && !text.includes('Create multi-region') && text.includes('-')) {
+                        # 3. استخراج السيرفرات مع محاولات متكررة (Retry Loop) لضمان تحميل البيانات
+                        servers = []
+                        for _ in range(4): # سيحاول 4 مرات
+                            time.sleep(3) # إعطاء القائمة وقتاً كافياً لتظهر وتجلب البيانات من الـ API
+                            
+                            servers = driver.execute_script("""
+                                // البحث في كامل المستند عن أي خيار متاح
+                                let options = document.querySelectorAll('mat-option, cfc-option, [role="option"], .mat-mdc-option');
+                                let available = [];
+                                for (let opt of options) {
+                                    let text = opt.innerText.trim();
                                     
-                                    // استخراج السطر الأول فقط (اسم المنطقة)
-                                    let mainText = text.split('\\n')[0].trim();
-                                    
-                                    // التأكد من عدم التكرار
-                                    if (mainText && !available.includes(mainText)) {
-                                        available.push(mainText);
+                                    // شروط صارمة: يجب أن يحتوي النص على اسم سيرفر (مثل us- أو europe- أو asia-)
+                                    // وتجاهل الخيارات الفارغة أو روابط المساعدة
+                                    if (text.length > 0 && !text.includes('Learn more') && !text.includes('Create multi-region') && text.includes('-')) {
+                                        
+                                        // استخراج السطر الأول فقط (اسم المنطقة)
+                                        let mainText = text.split('\\n')[0].trim();
+                                        
+                                        // التأكد من عدم التكرار
+                                        if (mainText && !available.includes(mainText)) {
+                                            available.push(mainText);
+                                        }
                                     }
                                 }
-                            }
-                            return available;
-                        """)
+                                return available;
+                            """)
+                            
+                            # إذا وجد السيرفرات، يتوقف عن المحاولة
+                            if servers and len(servers) > 0:
+                                break
                         
                         active_streams[chat_id]['has_extracted_regions'] = True
                         
@@ -233,7 +235,7 @@ def stream_screenshots(chat_id, url):
                             servers_list_text = "\n".join([f"🌍 `{s}`" for s in servers])
                             bot.send_message(chat_id, f"✅ **تم العثور على السيرفرات التالية:**\n\n{servers_list_text}", parse_mode="Markdown")
                         else:
-                            bot.send_message(chat_id, "⚠️ فتحت القائمة بنجاح، ولكن الكود المصدري لم يعرض أي سيرفرات. قد يكون החساب تحت المراجعة أو لا يمتلك حصة (Quota) حالية.")
+                            bot.send_message(chat_id, "⚠️ فتحت القائمة بنجاح، ولكن لم تظهر السيرفرات حتى بعد الانتظار. قد تكون الحصة (Quota) غير متاحة.")
                             
                         time.sleep(2) # إعطاء السيرفر وقتاً للاستجابة وعرض القائمة المفتوحة في البث
                     except Exception as script_err:
