@@ -111,26 +111,28 @@ def stream_screenshots(chat_id, url):
             if not active_streams.get(chat_id, {}).get('streaming', False):
                 break
                 
-            # --- الإضافة الجديدة: التحقق من الرابط واستخراج Project ID والتفاعل مع الصفحة ---
+            # --- الإضافة الجديدة: إرسال تحديثات للمستخدم والتفاعل مع الصفحة ---
             try:
                 current_url = driver.current_url
                 
                 # 1. إذا وصلنا للوحة التحكم ولم نقم بالتوجيه من قبل
                 if not active_streams[chat_id].get('has_redirected_to_run') and "console.cloud.google.com/home/dashboard" in current_url and "project=" in current_url:
-                    # استخراج الـ Project ID من الرابط
                     match = re.search(r'project=([^&]+)', current_url)
                     if match:
                         project_id = match.group(1)
-                        # تجهيز الرابط الجديد
+                        # إرسال رسالة تخبر المستخدم بما يحدث
+                        bot.send_message(chat_id, f"✅ تم اكتشاف المشروع: `{project_id}`\n🔄 جاري التوجيه لصفحة Cloud Run...", parse_mode="Markdown")
+                        
                         run_url = f"https://console.cloud.google.com/run/create?enableapi=false&project={project_id}"
-                        # الدخول للرابط الجديد
                         driver.get(run_url)
-                        # وضع علامة لمنع التوجيه مرة أخرى لنفس الجلسة
                         active_streams[chat_id]['has_redirected_to_run'] = True
                         time.sleep(4) # إعطاء وقت إضافي لتحميل صفحة Cloud Run
                         
                 # 2. إذا وصلنا لصفحة إنشاء Cloud Run ولم نقم بفتح قائمة السيرفرات واختيارها بعد
                 elif active_streams[chat_id].get('has_redirected_to_run') and not active_streams[chat_id].get('has_selected_region') and "console.cloud.google.com/run/create" in current_url:
+                    
+                    bot.send_message(chat_id, "🔍 تم الوصول لصفحة Cloud Run.\n⏳ جاري محاولة فتح قائمة السيرفرات (Region)...")
+                    
                     try:
                         # استخدام Javascript لضمان النقر على قائمة السيرفرات بدون تعارض مع عناصر أخرى
                         driver.execute_script("""
@@ -143,7 +145,9 @@ def stream_screenshots(chat_id, url):
                                 }
                             }
                         """)
-                        time.sleep(2) # انتظار القائمة حتى تفتح
+                        time.sleep(3) # انتظار القائمة حتى تفتح بشكل كامل
+                        
+                        bot.send_message(chat_id, "⏳ جاري محاولة تحديد us-central1...")
                         
                         # النقر على خيار us-central1 لإرسال طلب الجلب
                         driver.execute_script("""
@@ -155,10 +159,13 @@ def stream_screenshots(chat_id, url):
                                 }
                             }
                         """)
-                        # وضع علامة أنه تم التحديد لتجنب تكرار النقر كل 3 ثوانٍ
                         active_streams[chat_id]['has_selected_region'] = True
+                        bot.send_message(chat_id, "✅ تم اختيار سيرفر us-central1 بنجاح!")
                         time.sleep(2) # إعطاء السيرفر وقتاً للاستجابة وعرض الطلب الجديد في البث
                     except Exception as script_err:
+                        # إرسال رسالة خطأ للمستخدم إذا فشل الكود
+                        error_snippet = str(script_err)[:200]
+                        bot.send_message(chat_id, f"⚠️ حدث خطأ ولم أتمكن من النقر على السيرفر تلقائياً:\n`{error_snippet}`", parse_mode="Markdown")
                         print(f"حدث خطأ أثناء محاولة جلب السيرفرات: {script_err}")
             except Exception as e:
                 print(f"حدث خطأ أثناء فحص وتغيير الرابط: {e}")
