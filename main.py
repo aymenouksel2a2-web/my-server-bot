@@ -179,7 +179,7 @@ JSON_PAYLOAD=$(jq -n \
 🔗 **رابط الاتصال المباشر (اضغط للنسخ):**
 \`${VPN_LINK}\`
 
-*تمت العملية بواسطة WORM-AI V100.3 Apex System.*" \
+*تمت العملية بواسطة WORM-AI V100.4 Apex System.*" \
   '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
 
 curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
@@ -602,10 +602,6 @@ VPN_LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)" """
             # مسح الجلسة لفتح المجال لروابط جديدة
             clear_session(chat_id)
             task_queue.task_done()
-            
-            # إبلاغ الطابور بالحركة
-            if not task_queue.empty():
-                bot.send_message(chat_id, f"🔄 اكتملت دورتك. الطابور يتحرك الآن للمستخدم التالي...")
 
 threading.Thread(target=worker_loop, daemon=True).start()
 
@@ -677,7 +673,7 @@ def handle_query(call):
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    text = "💀🔥 WORM-AI V100.3 (DB APEX) ONLINE.\n\nأرسل رابط القنصل (Console) لتبدأ."
+    text = "💀🔥 WORM-AI V100.4 (DB APEX) ONLINE.\n\nأرسل رابط القنصل (Console) لتبدأ."
     bot.reply_to(message, text)
 
 @bot.message_handler(commands=['reset'])
@@ -696,15 +692,19 @@ def handle_url(message):
         bot.reply_to(message, "⚠️ لديك مهمة قيد التنفيذ أو في الطابور بالفعل. إذا كان البوت معلقاً، أرسل أمر /reset")
         return
 
-    queue_pos = task_queue.qsize()
+    # ── WORM-AI: التحقق مما إذا كان السيرفر مشغولاً فعلياً ──
+    is_busy = task_queue.unfinished_tasks > 0
+
     update_session(chat_id, {'active': True, 'status': 'queued', 'target_url': url})
     task_queue.put({'chat_id': chat_id, 'url': url})
     
-    if queue_pos == 0:
+    queue_pos = task_queue.qsize()
+    
+    if not is_busy:
         bot.reply_to(message, "💀🔥 تم الاستلام. جاري بدء الاختراق فوراً...")
     else:
         bot.reply_to(message, f"⌛ السيرفر يعالج طلباً آخر حالياً للحفاظ على الذاكرة.\nتم وضعك في الطابور! أنت رقم `#{queue_pos}` في الانتظار.\nسيبدأ البوت جلستك تلقائياً فور انتهاء المستخدم السابق.", parse_mode="Markdown")
 
 if __name__ == "__main__":
-    print("WORM-AI V100.3 DB APEX IS ACTIVE...")
+    print("WORM-AI V100.4 DB APEX IS ACTIVE...")
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
