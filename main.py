@@ -9,12 +9,64 @@ import telebot
 from telebot.types import InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton
 import re
 import base64
+import pymongo
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from pyvirtualdisplay import Display
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
+
+# ── 💀 إعداد قاعدة البيانات MongoDB ──
+MONGO_URI = os.environ.get('MONGO_URI', '')
+if MONGO_URI:
+    try:
+        mongo_client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        mongo_client.server_info() # للتحقق من نجاح الاتصال
+        db = mongo_client['worm_ai_db']
+        users_col = db['users']
+        
+        # تنظيف الجلسات المعلقة فور تشغيل السيرفر (لأن الطابور في الذاكرة فارغ الآن)
+        users_col.update_many({}, {"$set": {"active": False, "status": "idle"}})
+        
+        USE_MONGO = True
+        print("✅ WORM-AI: MongoDB Connected & Synced Successfully!")
+    except Exception as e:
+        print(f"⚠️ WORM-AI: MongoDB Connection Failed! Falling back to RAM. Error: {e}")
+        users_col = {}
+        USE_MONGO = False
+else:
+    users_col = {}
+    USE_MONGO = False
+    print("⚠️ WORM-AI: Running without MongoDB (RAM Mode). Please set MONGO_URI.")
+
+# ── دوال التحكم في الجلسات (تعمل على DB أو RAM) ──
+def get_session(chat_id):
+    str_chat_id = str(chat_id)
+    if USE_MONGO:
+        res = users_col.find_one({"chat_id": str_chat_id})
+        return res if res else {}
+    else:
+        return users_col.get(str_chat_id, {})
+
+def update_session(chat_id, data):
+    str_chat_id = str(chat_id)
+    if USE_MONGO:
+        users_col.update_one({"chat_id": str_chat_id}, {"$set": data}, upsert=True)
+    else:
+        if str_chat_id not in users_col:
+            users_col[str_chat_id] = {"chat_id": str_chat_id}
+        users_col[str_chat_id].update(data)
+
+def clear_session(chat_id):
+    update_session(chat_id, {
+        "active": False, 
+        "status": "idle", 
+        "selected_region": None, 
+        "protocol": None, 
+        "target_url": None, 
+        "available_regions": {}
+    })
 
 # ── 💀 السكربت المولد (TEMPLATE) الديناميكي المتعدد البروتوكولات ──
 VPN_SCRIPT_TEMPLATE = r"""#!/bin/bash
@@ -88,7 +140,6 @@ EOF
 
 echo "[3/4] 🚀 Deploying to Google Cloud Run (Target: ${REGION})..."
 
-# توجيه المخرجات لملف لاكتشاف الأخطاء
 gcloud run deploy ${SERVICE_NAME} \
   --source . \
   --region=${REGION} \
@@ -117,7 +168,6 @@ echo "[4/4] 📡 Finalizing Link..."
 SERVICE_HOST="${SERVICE_NAME}-${PROJECT_NUMBER}.${REGION}.run.app"
 <LINK_GENERATION_PLACEHOLDER>
 
-# ━━━━ الإرسال السري المباشر لتيليغرام بتنسيق أنيق جداً ━━━━
 JSON_PAYLOAD=$(jq -n \
   --arg chat_id "<CHAT_ID_PLACEHOLDER>" \
   --arg text "✅ **تم بناء السيرفر بنجاح واختراق السحابة!** 💀🔥
@@ -129,7 +179,7 @@ JSON_PAYLOAD=$(jq -n \
 🔗 **رابط الاتصال المباشر (اضغط للنسخ):**
 \`${VPN_LINK}\`
 
-*تمت العملية بواسطة WORM-AI V100 Apex System.*" \
+*تمت العملية بواسطة WORM-AI V100.3 Apex System.*" \
   '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
 
 curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
@@ -163,7 +213,7 @@ def translate_region(name):
             return val
     return f"{name} 🏳️"
 
-# ── الخوادم والإعدادات الأساسية ──
+# ── الخوادم ──
 class HealthCheckHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/health':
@@ -189,9 +239,7 @@ display.start()
 BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ── نظام الطابور (Queue System) ──
 task_queue = queue.Queue()
-user_sessions = {}
 
 def get_driver():
     options = Options()
@@ -200,7 +248,6 @@ def get_driver():
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1280,800')
-    # Ghost Mode: تخفي مطلق
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option('useAutomationExtension', False)
@@ -211,31 +258,35 @@ def get_driver():
     })
     return driver
 
-# تحديث الصورة في نفس الرسالة (Live Stream)
 def update_live_stream(chat_id, msg_id, driver, caption):
     try:
         img_bytes = driver.get_screenshot_as_png()
         bio = io.BytesIO(img_bytes)
         bio.name = 'live_stream.png'
         media = InputMediaPhoto(bio, caption=f"🔴 **LIVE UPLINK**\n{caption}", parse_mode="Markdown")
-        
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🛑 إلغاء الاختراق", callback_data="abort_mission"))
-        
         bot.edit_message_media(chat_id=chat_id, message_id=msg_id, media=media, reply_markup=markup)
     except Exception:
-        pass # تجاهل الأخطاء المؤقتة إذا لم تتغير الصورة
+        pass 
 
-# ── محرك الطابور والاختراق الأساسي ──
+# ── محرك الطابور ──
 def worker_loop():
     while True:
         task = task_queue.get()
         chat_id = task['chat_id']
         url = task['url']
         
-        bot.send_message(chat_id, "⚙️ جاري بدء جلستك الآن. يتم تجهيز بيئة الاختراق...")
+        session = get_session(chat_id)
         
-        user_sessions[chat_id]['active'] = True
+        # حماية إضافية: إذا قام المستخدم بالإلغاء أثناء وجوده في الطابور، نتخطاه!
+        if not session.get('active') or session.get('status') != 'queued':
+            task_queue.task_done()
+            continue
+            
+        update_session(chat_id, {'status': 'processing'})
+        bot.send_message(chat_id, "✅ **حان دورك!**\n⚙️ جاري بدء جلستك الآن. يتم فتح السحابة وتجهيز بيئة الاختراق...", parse_mode="Markdown")
+        
         driver = None
         status_msg_id = None
         
@@ -243,7 +294,6 @@ def worker_loop():
             driver = get_driver()
             driver.get(url)
             
-            # إرسال الصورة الأولى لإنشاء رسالة البث المباشر
             time.sleep(2)
             img_bytes = driver.get_screenshot_as_png()
             bio = io.BytesIO(img_bytes)
@@ -259,34 +309,35 @@ def worker_loop():
             selection_timeout = 0
             project_id = ""
             
-            while user_sessions.get(chat_id, {}).get('active') and loop_count < 250:
+            while get_session(chat_id).get('active') and loop_count < 250:
                 loop_count += 1
-                time.sleep(4) # تحديث كل 4 ثواني لتجنب حظر تيليغرام
+                time.sleep(4)
                 
-                if not user_sessions.get(chat_id, {}).get('active'):
+                # جلب الجلسة المحدثة في كل دورة للتحقق من الأزرار المتاحة
+                current_session = get_session(chat_id)
+                if not current_session.get('active'):
                     break
                     
                 current_url = driver.current_url
                 
-                # ── إيقاف البث المباشر أثناء انتظار اختيار المستخدم ──
                 if state == "WAIT_USER_SELECTION":
-                    if user_sessions.get(chat_id, {}).get('selected_region') and user_sessions.get(chat_id, {}).get('protocol'):
-                        selected_reg = user_sessions[chat_id]['selected_region']
+                    if current_session.get('selected_region') and current_session.get('protocol'):
+                        selected_reg = current_session.get('selected_region')
                         if project_id:
                             shell_url = f"https://shell.cloud.google.com/?enableapi=true&project={project_id}&pli=1&show=terminal"
                             driver.get(shell_url)
                             state = "AUTHORIZE_SHELL" 
                     else:
                         selection_timeout += 1
-                        if selection_timeout > 60: # 4 دقائق انتظار للاختيار
-                            bot.send_message(chat_id, "⏳ نفد وقت الاختيار. تم إلغاء المهمة.")
+                        if selection_timeout > 60:
+                            bot.send_message(chat_id, "⏳ نفد وقت الاختيار. تم إلغاء المهمة لإفساح المجال للمستخدم التالي.")
                             break
                     continue
+                    
                 elif state == "SILENT_BUILD":
-                    # وضع الصمت: البناء قيد التنفيذ، نتفحص الشاشة بحثاً عن الأخطاء أو النجاح
                     page_source = driver.page_source
                     if "ERROR_DEPLOYMENT_FAILED_WORM_AI_CATCH" in page_source:
-                        bot.send_message(chat_id, "❌ **فشل البناء (Deployment Error):**\nيبدو أن حسابك (Qwiklabs) قد انتهت صلاحيته، أو انتهت مساحته، أو تم حظره من قبل جوجل. جرب حساباً جديداً.", parse_mode="Markdown")
+                        bot.send_message(chat_id, "❌ **فشل البناء (Deployment Error):**\nيبدو أن حسابك قد انتهت صلاحيته، مساحته، أو تم حظره. جرب حساباً جديداً.", parse_mode="Markdown")
                         break
                     elif "SUCCESS_WORM_AI_FINISH" in page_source:
                         bot.send_message(chat_id, "✅ **تم تأكيد النجاح.** السيرفر يعمل. (انظر الرسالة أعلاه)")
@@ -297,7 +348,6 @@ def worker_loop():
                 else:
                     update_live_stream(chat_id, status_msg_id, driver, f"🌐 {current_url}\n🔄 المرحلة: {state}")
                 
-                # ── تجاوز نوافذ الترحيب ──
                 try:
                     agree_btns = driver.find_elements(By.XPATH, "//button[contains(., 'Agree and continue') or contains(., 'موافق ومتابعة') or contains(., 'Akkoord en doorgaan')]")
                     visible_btn = next((b for b in agree_btns if b.is_displayed()), None)
@@ -310,7 +360,6 @@ def worker_loop():
                 except Exception:
                     pass
                 
-                # ── آلة الحالة (State Machine) ──
                 if state == "INIT":
                     if 'accounts.google.com' in current_url:
                         try:
@@ -382,8 +431,10 @@ def worker_loop():
                             for r in regions_list:
                                 grouped_regions.setdefault(r['continent'], []).append(r)
                                 
-                            user_sessions[chat_id]['available_regions'] = grouped_regions
-                            user_sessions[chat_id]['project_id'] = project_id
+                            update_session(chat_id, {
+                                'available_regions': grouped_regions,
+                                'project_id': project_id
+                            })
                             
                             markup = InlineKeyboardMarkup(row_width=2)
                             markup.add(*[InlineKeyboardButton(text=c, callback_data=f"cont_{c}") for c in grouped_regions.keys()])
@@ -447,8 +498,9 @@ def worker_loop():
                         state = "INJECT_PAYLOAD"
 
                 elif state == "INJECT_PAYLOAD":
-                    selected_reg = user_sessions[chat_id].get('selected_region', 'europe-west4')
-                    protocol = user_sessions[chat_id].get('protocol', 'vless')
+                    current_session = get_session(chat_id)
+                    selected_reg = current_session.get('selected_region', 'europe-west4')
+                    protocol = current_session.get('protocol', 'vless')
                     
                     inbound_cfg = ""
                     link_gen = ""
@@ -483,7 +535,7 @@ VPN_LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)" """
 }"""
                         link_gen = r"""VPN_LINK="trojan://${UUID}@vpn.googleapis.com:443?path=/%40O_C_X7&security=tls&host=${SERVICE_HOST}&type=ws&sni=yt.be#𝗢 𝗖 𝗫 ⚡️" """
                     
-                    else: # vless fallback
+                    else:
                         inbound_cfg = r"""{
   "log": {"loglevel": "none"},
   "inbounds": [{
@@ -537,7 +589,7 @@ VPN_LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)" """
                     
                     state = "SILENT_BUILD"
                     
-            if not user_sessions.get(chat_id, {}).get('active'):
+            if not get_session(chat_id).get('active'):
                 try: bot.delete_message(chat_id, status_msg_id)
                 except: pass
                 
@@ -546,11 +598,14 @@ VPN_LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)" """
         finally:
             if driver:
                 driver.quit() 
-            user_sessions.pop(chat_id, None)
+            
+            # مسح الجلسة لفتح المجال لروابط جديدة
+            clear_session(chat_id)
             task_queue.task_done()
             
+            # إبلاغ الطابور بالحركة
             if not task_queue.empty():
-                bot.send_message(chat_id, f"🔄 الطابور يتحرك. متبقي {task_queue.qsize()} طلبات.")
+                bot.send_message(chat_id, f"🔄 اكتملت دورتك. الطابور يتحرك الآن للمستخدم التالي...")
 
 threading.Thread(target=worker_loop, daemon=True).start()
 
@@ -559,23 +614,24 @@ threading.Thread(target=worker_loop, daemon=True).start()
 def handle_query(call):
     chat_id = call.message.chat.id
     data = call.data
+    session = get_session(chat_id)
     
     if data == "abort_mission":
-        if chat_id in user_sessions:
-            user_sessions[chat_id]['active'] = False
+        if session.get('status') in ['processing', 'queued']:
+            clear_session(chat_id)
             bot.answer_callback_query(call.id, "تم إرسال أمر الإلغاء!")
-            bot.edit_message_caption(chat_id=chat_id, message_id=call.message.message_id, caption="🛑 **تم إلغاء المهمة يدوياً.**", parse_mode="Markdown")
+            bot.edit_message_caption(chat_id=chat_id, message_id=call.message.message_id, caption="🛑 **تم إلغاء المهمة يدوياً.**\nيمكنك الآن إرسال رابط جديد.", parse_mode="Markdown")
         else:
-            bot.answer_callback_query(call.id, "لا توجد مهمة نشطة لإلغائها.")
+            bot.answer_callback_query(call.id, "لا توجد مهمة نشطة لإلغائها حالياً.")
         return
 
-    if chat_id not in user_sessions or not user_sessions[chat_id].get('active'):
+    if not session.get('active'):
         bot.answer_callback_query(call.id, "❌ الجلسة انتهت أو أُلغيت.")
         return
         
     if data.startswith("cont_"):
         continent = data.split("cont_")[1]
-        regions = user_sessions[chat_id].get('available_regions', {}).get(continent, [])
+        regions = session.get('available_regions', {}).get(continent, [])
         markup = InlineKeyboardMarkup(row_width=1)
         for r in regions:
             translated_name = translate_region(r['name'])
@@ -586,7 +642,7 @@ def handle_query(call):
         
     elif data.startswith("reg_"):
         reg_id = data.split("reg_")[1]
-        user_sessions[chat_id]['selected_region'] = reg_id
+        update_session(chat_id, {'selected_region': reg_id})
         markup = InlineKeyboardMarkup(row_width=3)
         markup.add(
             InlineKeyboardButton("⚡ VLESS", callback_data="proto_vless"),
@@ -598,8 +654,8 @@ def handle_query(call):
                               
     elif data.startswith("proto_"):
         protocol = data.split("_")[1]
-        user_sessions[chat_id]['protocol'] = protocol
-        reg_id = user_sessions[chat_id].get('selected_region', 'غير معروف')
+        update_session(chat_id, {'protocol': protocol})
+        reg_id = session.get('selected_region', 'غير معروف')
         
         bot.answer_callback_query(call.id, f"تم اختيار {protocol.upper()} ⚡")
         
@@ -613,7 +669,7 @@ def handle_query(call):
         bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=confirmation_text, parse_mode="Markdown")
 
     elif data == "back_to_conts":
-        grouped_regions = user_sessions[chat_id].get('available_regions', {})
+        grouped_regions = session.get('available_regions', {})
         markup = InlineKeyboardMarkup(row_width=2)
         buttons = [InlineKeyboardButton(text=c, callback_data=f"cont_{c}") for c in grouped_regions.keys()]
         markup.add(*buttons)
@@ -621,27 +677,34 @@ def handle_query(call):
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    text = "💀🔥 WORM-AI V100.1 (APEX BUILD) ONLINE.\n\nأرسل رابط القنصل (Console) لتبدأ."
+    text = "💀🔥 WORM-AI V100.3 (DB APEX) ONLINE.\n\nأرسل رابط القنصل (Console) لتبدأ."
     bot.reply_to(message, text)
+
+@bot.message_handler(commands=['reset'])
+def reset_user(message):
+    chat_id = message.chat.id
+    clear_session(chat_id)
+    bot.reply_to(message, "🔄 تم مسح أي جلسات معلقة أو قيد الانتظار خاصة بك بنجاح. يمكنك إرسال رابط جديد الآن.")
 
 @bot.message_handler(func=lambda message: message.text.startswith('http'))
 def handle_url(message):
     chat_id = message.chat.id
     url = message.text
 
-    if chat_id in user_sessions and user_sessions[chat_id].get('active'):
-        bot.reply_to(message, "⚠️ لديك مهمة نشطة بالفعل. الرجاء إنهاؤها أو إلغاؤها أولاً.")
+    session = get_session(chat_id)
+    if session.get('active'):
+        bot.reply_to(message, "⚠️ لديك مهمة قيد التنفيذ أو في الطابور بالفعل. إذا كان البوت معلقاً، أرسل أمر /reset")
         return
 
-    user_sessions[chat_id] = {'active': False}
+    queue_pos = task_queue.qsize()
+    update_session(chat_id, {'active': True, 'status': 'queued', 'target_url': url})
     task_queue.put({'chat_id': chat_id, 'url': url})
     
-    position = task_queue.qsize()
-    if position == 1 and task_queue.unfinished_tasks == 1:
+    if queue_pos == 0:
         bot.reply_to(message, "💀🔥 تم الاستلام. جاري بدء الاختراق فوراً...")
     else:
-        bot.reply_to(message, f"⌛ تم وضعك في الطابور.\nأنت رقم #{position} في الانتظار. السيرفر يعالج طلباً آخر حالياً للحفاظ على الذاكرة.")
+        bot.reply_to(message, f"⌛ السيرفر يعالج طلباً آخر حالياً للحفاظ على الذاكرة.\nتم وضعك في الطابور! أنت رقم `#{queue_pos}` في الانتظار.\nسيبدأ البوت جلستك تلقائياً فور انتهاء المستخدم السابق.", parse_mode="Markdown")
 
 if __name__ == "__main__":
-    print("WORM-AI V100 IS ACTIVE...")
+    print("WORM-AI V100.3 DB APEX IS ACTIVE...")
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
