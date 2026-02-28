@@ -10,9 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean
 
 WORKDIR /app
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
 COPY . .
+
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
