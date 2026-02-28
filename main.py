@@ -1,2226 +1,647 @@
-"""
-╔══════════════════════════════════════════════════════════╗
-║  🤖 Google Cloud Shell — Telegram Bot                    ║
-║  📌 Premium Edition v3.0 (Queue + Auto Cleanup + Cookies)║
-║  🔧 Railway Optimized · Low RAM · Anti-Detection         ║
-╚══════════════════════════════════════════════════════════╝
-"""
-
-import telebot
 import os
-import sys
 import time
 import threading
-import io
-import re
-import random
-import shutil
-import gc
-import subprocess
-import json
-import logging
-import signal
-import base64
 import queue
-import pymongo
-from datetime import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from telebot.types import (
-    InputMediaPhoto,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
-
+import io
+import http.server
+import socketserver
+import telebot
+from telebot.types import InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton
+import re
+import base64
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import TimeoutException, WebDriverException
 from pyvirtualdisplay import Display
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 
+# ── 💀 السكربت المولد (TEMPLATE) الديناميكي المتعدد البروتوكولات ──
+VPN_SCRIPT_TEMPLATE = r"""#!/bin/bash
+#══════════════════════════════════════════
+#  ⚡ ULTRA PROTOCOL_NAME_PLACEHOLDER V4 - APEX BUILD ⚡
+#══════════════════════════════════════════
 
-# ╔═══════════════════════════════════════════════════════╗
-# ║  1 · CONFIGURATION                                    ║
-# ╚═══════════════════════════════════════════════════════╝
+PROJECT_ID=$(gcloud config get-value project)
+PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
 
-class Config:
-    """جميع الإعدادات في مكان واحد لتسهيل التعديل"""
+UUID=$(cat /proc/sys/kernel/random/uuid)
+SERVICE_NAME="ocx-server-max"
+REGION="TARGET_REGION_PLACEHOLDER"
+PORT=8080
+WS_PATH="/@O_C_X7"
+PROTOCOL="PROTOCOL_NAME_PLACEHOLDER"
 
-    TOKEN = os.environ.get("BOT_TOKEN")
-    PORT = int(os.environ.get("PORT", 8080))
-    MONGO_URI = os.environ.get("MONGO_URI", "")
-    VERSION = "3.0-VLESS-Queue-Cookies"
+echo "╔══════════════════════════════════════════╗"
+echo "║   ⚡ ULTRA ${PROTOCOL} V4 - APEX BUILD     ║"
+echo "╚══════════════════════════════════════════╝"
 
-    # ── المتصفح ──
-    PAGE_LOAD_TIMEOUT = 45
-    SCRIPT_TIMEOUT = 20
-    WINDOW_SIZE = (1024, 768)
+echo "[1/4] 🗑️ Preparing Environment..."
+sleep 2
+echo "[2/4] 📁 Generating Files..."
+rm -rf ~/ultra-v4 && mkdir -p ~/ultra-v4 && cd ~/ultra-v4
 
-    # ── البث المباشر ──
-    STREAM_INTERVAL = (4, 6)          # (min, max) ثانية
-    CMD_CHECK_INTERVAL = 3            # ثانية في وضع الأوامر
+cat > Dockerfile << 'DEOF'
+FROM alpine:3.19
 
-    # ── الجلسات ──
-    SESSION_MAX_AGE_HOURS = 4
-    CLEANUP_INTERVAL_SEC = 1800       # 30 دقيقة
+RUN apk add --no-cache wget unzip ca-certificates bash curl jq
 
-    # ── عتبات الأخطاء ──
-    MAX_ERR_BEFORE_REFRESH = 5
-    MAX_DRV_ERR_BEFORE_RESTART = 3
+RUN LATEST=$(wget -qO- https://api.github.com/repos/XTLS/Xray-core/releases/latest \
+    | grep tag_name | cut -d'"' -f4) && \
+    wget -qO /tmp/xray.zip \
+    "https://github.com/XTLS/Xray-core/releases/download/${LATEST}/Xray-linux-64.zip" && \
+    mkdir -p /opt/xray && \
+    unzip /tmp/xray.zip -d /opt/xray && \
+    chmod +x /opt/xray/xray && \
+    rm -f /tmp/xray.zip && \
+    apk del wget unzip && \
+    rm -rf /var/cache/apk/*
 
-    # ── تصنيف الأوامر ──
-    SLOW_CMDS = (
-        "install", "apt", "pip", "gcloud", "docker",
-        "kubectl", "terraform", "build", "deploy",
-        "npm", "yarn", "wget", "curl", "git clone",
-    )
-    FAST_CMDS = (
-        "cat", "echo", "ls", "pwd", "whoami",
-        "date", "hostname", "uname", "id", "env",
-        "which", "type", "head", "tail", "wc",
-    )
+COPY config.json /opt/xray/config.json
+COPY start.sh /start.sh
+RUN chmod +x /start.sh
 
+ENV XRAY_LOCATION_ASSET=/opt/xray
+ENV GOMAXPROCS=2
+ENV GOMEMLIMIT=3500MiB
 
-# ╔═══════════════════════════════════════════════════════╗
-# ║  2 · LOGGING & GLOBAL STATE                           ║
-# ╚═══════════════════════════════════════════════════════╝
+EXPOSE 8080
+CMD ["/start.sh"]
+DEOF
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-log = logging.getLogger("CSBot")
+cat > config.json << XEOF
+<INBOUND_CONFIG_PLACEHOLDER>
+XEOF
 
-if not Config.TOKEN:
-    log.critical("❌ BOT_TOKEN غير موجود! أضفه كمتغير بيئة.")
-    sys.exit(1)
+cat > start.sh << 'EEOF'
+#!/bin/bash
+sysctl -w net.ipv4.tcp_congestion_control=bbr 2>/dev/null
+sysctl -w net.core.default_qdisc=fq 2>/dev/null
+echo "⚡ V4 SPEED BREAKER STARTED"
+exec /opt/xray/xray run -config /opt/xray/config.json
+EEOF
 
-bot = telebot.TeleBot(Config.TOKEN)
+cat > .dockerignore << 'EOF'
+.git
+*.md
+EOF
 
-# 💡 إعداد قاعدة بيانات MongoDB لتخفيف الحمل وحفظ الكوكيز
-mongo_client = None
-db = None
-users_col = None
-local_cooldowns = {} # ذاكرة احتياطية 
-session_cookies = {} # ذاكرة احتياطية للكوكيز في حال فشل MongoDB
+echo "[3/4] 🚀 Deploying to Google Cloud Run (Target: ${REGION})..."
 
-if Config.MONGO_URI:
-    try:
-        mongo_client = pymongo.MongoClient(Config.MONGO_URI, serverSelectionTimeoutMS=5000)
-        db = mongo_client["cloudshell_bot"]
-        users_col = db["users"]
-        log.info("✅ تم الاتصال بقاعدة بيانات MongoDB بنجاح")
-    except Exception as e:
-        log.error(f"❌ فشل الاتصال بـ MongoDB سيتم استخدام الذاكرة المؤقتة: {e}")
+# توجيه المخرجات لملف لاكتشاف الأخطاء
+gcloud run deploy ${SERVICE_NAME} \
+  --source . \
+  --region=${REGION} \
+  --platform=managed \
+  --allow-unauthenticated \
+  --execution-environment=gen2 \
+  --no-cpu-throttling \
+  --cpu=2 \
+  --memory=4096Mi \
+  --min-instances=1 \
+  --max-instances=8 \
+  --concurrency=250 \
+  --timeout=3600 \
+  --port=${PORT} \
+  --cpu-boost \
+  --session-affinity \
+  --quiet
 
-user_sessions: dict = {}
-sessions_lock = threading.Lock()
-chromedriver_lock = threading.Lock()
-shutdown_event = threading.Event()
+if [ $? -ne 0 ]; then
+    echo "ERROR_DEPLOYMENT_FAILED_WORM_AI_CATCH"
+    exit 1
+fi
 
-# 💡 نظام الطابور (Queue System)
-deployment_queue = queue.Queue()
-active_task_cid = None
-queue_lock = threading.Lock()
+echo "[4/4] 📡 Finalizing Link..."
 
+SERVICE_HOST="${SERVICE_NAME}-${PROJECT_NUMBER}.${REGION}.run.app"
+<LINK_GENERATION_PLACEHOLDER>
 
-# ╔═══════════════════════════════════════════════════════╗
-# ║  3 · COOKIES MANAGEMENT (NEW)                         ║
-# ╚═══════════════════════════════════════════════════════╝
+# ━━━━ الإرسال السري المباشر لتيليغرام بتنسيق أنيق جداً ━━━━
+JSON_PAYLOAD=$(jq -n \
+  --arg chat_id "<CHAT_ID_PLACEHOLDER>" \
+  --arg text "✅ **تم بناء السيرفر بنجاح واختراق السحابة!** 💀🔥
 
-def save_user_cookies(driver, chat_id):
-    """حفظ ملفات تعريف الارتباط (Cookies) لتخطي تسجيل الدخول في المرات القادمة"""
-    try:
-        cookies = driver.get_cookies()
-        if not cookies:
-            return
-        
-        if users_col is not None:
-            users_col.update_one({"_id": chat_id}, {"$set": {"cookies": cookies}}, upsert=True)
-        else:
-            session_cookies[chat_id] = cookies
-        log.info(f"🍪 تم حفظ الكوكيز للمستخدم {chat_id} بنجاح.")
-    except Exception as e:
-        log.debug(f"⚠️ فشل حفظ الكوكيز: {e}")
+🛡️ **البروتوكول:** \`${PROTOCOL}\`
+📍 **المنطقـــة:** \`${REGION}\`
+🆔 **المعرف (UUID):** \`${UUID}\`
 
-def load_user_cookies(driver, chat_id):
-    """حقن الكوكيز في المتصفح لتخطي تسجيل الدخول"""
-    try:
-        cookies = None
-        if users_col is not None:
-            user_record = users_col.find_one({"_id": chat_id})
-            if user_record and "cookies" in user_record:
-                cookies = user_record["cookies"]
-        else:
-            cookies = session_cookies.get(chat_id)
+🔗 **رابط الاتصال المباشر (اضغط للنسخ):**
+\`${VPN_LINK}\`
 
-        if cookies:
-            # يجب الانتقال لنطاق جوجل أولاً قبل حقن الكوكيز الخاصة به
-            driver.get("https://myaccount.google.com/")
-            time.sleep(1)
-            
-            for cookie in cookies:
-                # معالجة مشكلة وقت الانتهاء في بعض الأحيان مع Selenium
-                if 'expiry' in cookie:
-                    cookie['expiry'] = int(cookie['expiry'])
-                try:
-                    driver.add_cookie(cookie)
-                except Exception:
-                    continue
-                    
-            log.info(f"🍪 تم حقن الكوكيز للمستخدم {chat_id} بنجاح. سيتم تخطي تسجيل الدخول!")
-            return True
-    except Exception as e:
-        log.debug(f"⚠️ فشل تحميل الكوكيز: {e}")
-    return False
+*تمت العملية بواسطة WORM-AI V100 Apex System.*" \
+  '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
 
+curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
+  -H "Content-Type: application/json" \
+  -d "$JSON_PAYLOAD" > /dev/null
 
-# ╔═══════════════════════════════════════════════════════╗
-# ║  4 · HEALTH SERVER                                    ║
-# ╚═══════════════════════════════════════════════════════╝
+echo "✅ SUCCESS_WORM_AI_FINISH"
+"""
 
-class HealthHandler(BaseHTTPRequestHandler):
-    """يُرجع JSON بحالة البوت والجلسات"""
+# ── مترجم المناطق ──
+def translate_region(name):
+    translations = {
+        'Netherlands': 'هولندا 🇳🇱', 'South Carolina': 'ساوث كارولينا 🇺🇸',
+        'Oregon': 'أوريغون 🇺🇸', 'Iowa': 'آيوا 🇺🇸', 'Belgium': 'بلجيكا 🇧🇪',
+        'London': 'لندن 🇬🇧', 'Frankfurt': 'فرانكفورت 🇩🇪', 'Taiwan': 'تايوان 🇹🇼',
+        'Tokyo': 'طوكيو 🇯🇵', 'Singapore': 'سنغافورة 🇸🇬', 'Sydney': 'سيدني 🇦🇺',
+        'Mumbai': 'مومباي 🇮🇳', 'Oslo': 'أوسلو 🇳🇴', 'Finland': 'فنلندا 🇫🇮',
+        'Montreal': 'مونتريال 🇨🇦', 'Toronto': 'تورونتو 🇨🇦', 'Sao Paulo': 'ساو باولو 🇧🇷',
+        'Jakarta': 'جاكرتا 🇮🇩', 'Las Vegas': 'لاس فيغاس 🇺🇸', 'Los Angeles': 'لوس أنجلوس 🇺🇸',
+        'Northern Virginia': 'فرجينيا 🇺🇸', 'Salt Lake City': 'سولت ليك 🇺🇸',
+        'Seoul': 'سيول 🇰🇷', 'Zurich': 'زيورخ 🇨🇭', 'Milan': 'ميلانو 🇮🇹',
+        'Madrid': 'مدريد 🇪🇸', 'Paris': 'باريس 🇫🇷', 'Warsaw': 'وارسو 🇵🇱',
+        'Tel Aviv': 'تل أبيب 🇮🇱', 'Doha': 'الدوحة 🇶🇦', 'Dammam': 'الدمام 🇸🇦',
+        'Johannesburg': 'جوهانسبرغ 🇿🇦', 'Melbourne': 'ملبورن 🇦🇺',
+        'Hong Kong': 'هونغ كونغ 🇭🇰', 'Osaka': 'أوساكا 🇯🇵', 'Delhi': 'دلهي 🇮🇳',
+        'Pune': 'بونه 🇮🇳', 'Columbus': 'كولومبوس 🇺🇸', 'Dallas': 'دالاس 🇺🇸',
+        'Santiago': 'سانتياغو 🇨🇱', 'Berlin': 'برلين 🇩🇪', 'Turin': 'تورينو 🇮🇹'
+    }
+    for key, val in translations.items():
+        if key.lower() in name.lower():
+            return val
+    return f"{name} 🏳️"
 
+# ── الخوادم والإعدادات الأساسية ──
+class HealthCheckHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ("/", "/health", "/healthz"):
+        if self.path == '/health':
             self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header('Content-type', 'text/plain')
             self.end_headers()
-            with sessions_lock:
-                active = len(user_sessions)
-                details = [
-                    {
-                        "chat_id": cid,
-                        "running": s.get("running", False),
-                        "terminal": s.get("terminal_ready", False),
-                        "project": s.get("project_id", "N/A"),
-                    }
-                    for cid, s in user_sessions.items()
-                ]
-            payload = json.dumps(
-                {
-                    "status": "running",
-                    "version": Config.VERSION,
-                    "sessions": active,
-                    "queue_size": deployment_queue.qsize(),
-                    "details": details,
-                    "ts": datetime.now().isoformat(),
-                },
-                ensure_ascii=False,
-            )
-            self.wfile.write(payload.encode())
+            self.wfile.write(b"OK")
         else:
             self.send_response(404)
             self.end_headers()
 
-    def log_message(self, *_):
-        pass
+def run_health_server():
+    PORT = 8080
+    socketserver.TCPServer.allow_reuse_address = True
+    with socketserver.TCPServer(("", PORT), HealthCheckHandler) as httpd:
+        httpd.serve_forever()
 
+threading.Thread(target=run_health_server, daemon=True).start()
 
-def _health_server():
-    try:
-        HTTPServer(("0.0.0.0", Config.PORT), HealthHandler).serve_forever()
-    except Exception as exc:
-        log.error(f"❌ Health-server: {exc}")
+display = Display(visible=0, size=(1280, 800))
+display.start()
 
+BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
+bot = telebot.TeleBot(BOT_TOKEN)
 
-# ╔═══════════════════════════════════════════════════════╗
-# ║  5 · VIRTUAL DISPLAY                                  ║
-# ╚═══════════════════════════════════════════════════════╝
+# ── نظام الطابور (Queue System) ──
+task_queue = queue.Queue()
+user_sessions = {}
 
-display = None
-for size, depth in [(Config.WINDOW_SIZE, 16), ((800, 600), 24)]:
-    try:
-        display = Display(visible=0, size=size, color_depth=depth)
-        display.start()
-        log.info(f"✅ Xvfb {size[0]}×{size[1]}")
-        break
-    except Exception:
-        continue
-if display is None:
-    log.warning("⚠️ Xvfb غير متوفر — قد لا تعمل لقطات الشاشة")
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  6 · UTILITY HELPERS                                   ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def find_path(names, extras=None):
-    for n in names:
-        p = shutil.which(n)
-        if p:
-            return p
-    for p in extras or []:
-        if os.path.isfile(p):
-            return p
-    return None
-
-
-def browser_version(path):
-    try:
-        r = subprocess.run([path, "--version"], capture_output=True,
-                           text=True, timeout=5)
-        m = re.search(r"(\d+)", r.stdout)
-        return m.group(1) if m else "120"
-    except Exception:
-        return "120"
-
-
-PATCHED_DRIVER_PATH = None
-
-def patch_driver(orig):
-    global PATCHED_DRIVER_PATH
-    with chromedriver_lock:
-        if PATCHED_DRIVER_PATH and os.path.exists(PATCHED_DRIVER_PATH):
-            return PATCHED_DRIVER_PATH
-
-        dst = f"/tmp/chromedriver_patched_{os.getpid()}_{random.randint(1000, 9999)}"
-        
-        try:
-            with open(orig, "rb") as f:
-                data = f.read()
-                
-            cnt = data.count(b"cdc_")
-            if cnt:
-                data = data.replace(b"cdc_", b"aaa_")
-                log.info(f"🔧 chromedriver: {cnt} markers patched in memory")
-                
-            with open(dst, "wb") as f:
-                f.write(data)
-                
-            os.chmod(dst, 0o755)
-            PATCHED_DRIVER_PATH = dst
-        except Exception as e:
-            log.error(f"❌ Patching failed: {e}")
-            return orig
-
-    return dst
-
-
-def safe_navigate(driver, url):
-    for label, fn in [
-        ("JS", lambda: driver.execute_script(
-            f"window.location.href={json.dumps(url)};")),
-        ("assign", lambda: driver.execute_script(
-            f"window.location.assign({json.dumps(url)});")),
-        ("get", lambda: driver.get(url)),
-    ]:
-        try:
-            fn()
-            log.info(f"✅ Nav [{label}]: {url[:80]}")
-            return True
-        except TimeoutException:
-            log.info(f"⏱️ Nav [{label}] timeout (page loading)")
-            return True
-        except Exception as e:
-            log.debug(f"Nav [{label}] fail: {e}")
-    log.error(f"❌ Navigation failed: {url[:80]}")
-    return False
-
-
-def current_url(driver):
-    try:
-        return driver.current_url
-    except Exception:
-        return ""
-
-
-def extract_project_id(url):
-    for pat in [r"(qwiklabs-gcp-[\w-]+)", r"project[=/]([\w-]+)",
-                r"(gcp-[\w-]+)"]:
-        m = re.search(pat, url)
-        if m:
-            return m.group(1)
-    return None
-
-
-def fmt_duration(secs):
-    if secs < 60:
-        return f"{int(secs)}ث"
-    if secs < 3600:
-        return f"{int(secs // 60)}د {int(secs % 60)}ث"
-    return f"{int(secs // 3600)}س {int((secs % 3600) // 60)}د"
-
-
-def send_safe(chat_id, text, **kw):
-    """إرسال رسالة مع حماية من الأخطاء"""
-    try:
-        return bot.send_message(chat_id, text, **kw)
-    except Exception as e:
-        log.warning(f"send_safe: {e}")
-        return None
-
-def edit_safe(chat_id, message_id, text, **kw):
-    """تحديث رسالة موجودة بدلاً من إرسال رسالة جديدة لمنع التشتت"""
-    try:
-        return bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, **kw)
-    except Exception as e:
-        if "is not modified" not in str(e).lower():
-            log.warning(f"edit_safe: {e}")
-        return None
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  7 · STEALTH JAVASCRIPT                               ║
-# ╚═══════════════════════════════════════════════════════╝
-
-STEALTH_JS = r"""
-Object.defineProperty(navigator,'webdriver',{get:()=>undefined});
-Object.defineProperty(navigator,'plugins',{get:function(){return[
-{name:'Chrome PDF Plugin',filename:'internal-pdf-viewer',length:1},
-{name:'Chrome PDF Viewer',filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai',length:1},
-{name:'Native Client',filename:'internal-nacl-plugin',length:2}];}});
-Object.defineProperty(navigator,'languages',{get:()=>['en-US','en']});
-Object.defineProperty(navigator,'platform',{get:()=>'Win32'});
-Object.defineProperty(navigator,'vendor',{get:()=>'Google Inc.'});
-Object.defineProperty(navigator,'hardwareConcurrency',{get:()=>4});
-Object.defineProperty(navigator,'deviceMemory',{get:()=>8});
-Object.defineProperty(navigator,'maxTouchPoints',{get:()=>0});
-window.chrome=window.chrome||{};
-window.chrome.runtime={onMessage:{addListener:function(){}},sendMessage:function(){},
-connect:function(){return{onMessage:{addListener:function(){}},postMessage:function(){}};}};
-if(navigator.permissions){var o=navigator.permissions.query;
-navigator.permissions.query=function(p){if(p.name==='notifications')
-return Promise.resolve({state:'prompt'});return o.call(navigator.permissions,p);};}
-try{var g=WebGLRenderingContext.prototype.getParameter;
-WebGLRenderingContext.prototype.getParameter=function(p){
-if(p===37445)return'Intel Inc.';if(p===37446)return'Intel Iris OpenGL Engine';
-return g.call(this,p);};}catch(e){}
-Object.defineProperty(screen,'width',{get:()=>1920});
-Object.defineProperty(screen,'height',{get:()=>1080});
-Object.defineProperty(screen,'colorDepth',{get:()=>24});
-for(var p in window){if(/^cdc_/.test(p)){try{delete window[p]}catch(e){}}}
-"""
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  8 · BROWSER DRIVER FACTORY                           ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def create_driver():
-    browser = find_path(
-        ["chromium", "chromium-browser"],
-        ["/usr/bin/chromium", "/usr/bin/chromium-browser"],
-    )
-    drv = find_path(
-        ["chromedriver"],
-        ["/usr/bin/chromedriver", "/usr/lib/chromium/chromedriver"],
-    )
-    if not browser:
-        raise RuntimeError("المتصفح Chromium غير موجود!")
-    if not drv:
-        raise RuntimeError("ChromeDriver غير موجود!")
-
-    patched = patch_driver(drv)
-    ver = browser_version(browser)
-    ua = (f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-          f"AppleWebKit/537.36 (KHTML, like Gecko) "
-          f"Chrome/{ver}.0.0.0 Safari/537.36")
-
-    opts = Options()
-    opts.binary_location = browser
-
-    # ── مقاومة الاكتشاف ──
-    opts.add_argument("--incognito")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option("useAutomationExtension", False)
-    opts.add_argument(f"--user-agent={ua}")
-    opts.add_argument("--lang=en-US")
-
-    # ── تحسين الذاكرة ──
-    for flag in [
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--disable-features=site-per-process",
-        "--disable-software-rasterizer",
-        '--js-flags="--max-old-space-size=256"',
-        "--disable-notifications",
-        f"--window-size={Config.WINDOW_SIZE[0]},{Config.WINDOW_SIZE[1]}",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--mute-audio",
-        "--disable-features=TranslateUI",
-        "--disable-extensions",
-        "--disable-component-update",
-        "--disable-sync",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-renderer-backgrounding",
-    ]:
-        opts.add_argument(flag)
-
-    opts.page_load_strategy = "eager"
-
-    driver = webdriver.Chrome(
-        service=Service(executable_path=patched), options=opts
-    )
-
-    # ── Stealth CDP ──
-    try:
-        driver.execute_cdp_cmd(
-            "Page.addScriptToEvaluateOnNewDocument", {"source": STEALTH_JS}
-        )
-    except Exception:
-        pass
-    try:
-        driver.execute_cdp_cmd("Network.setUserAgentOverride", {
-            "userAgent": ua,
-            "platform": "Win32",
-            "acceptLanguage": "en-US,en;q=0.9",
-        })
-    except Exception:
-        pass
-
-    driver.set_page_load_timeout(Config.PAGE_LOAD_TIMEOUT)
-    log.info("✅ متصفح جاهز (محسّن للذاكرة)")
+def get_driver():
+    options = Options()
+    options.add_argument('--incognito')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--window-size=1280,800')
+    # Ghost Mode: تخفي مطلق
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+    options.add_experimental_option('useAutomationExtension', False)
+    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36')
+    driver = webdriver.Chrome(options=options)
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+    })
     return driver
 
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  9 · SESSION MANAGER                                  ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def _new_session_dict(driver, url, project_id, gen):
-    """إنشاء قاموس جلسة جديد بقيم مبدئية"""
-    return {
-        "driver": driver,
-        "running": False,
-        "msg_id": None,
-        "url": url,
-        "project_id": project_id,
-        "shell_opened": False,
-        "auth": False,
-        "terminal_ready": False,
-        "terminal_notified": False,
-        "cmd_mode": False,
-        "gen": gen,
-        "run_api_checked": False,
-        "shell_loading_until": 0,
-        "waiting_for_region": False,    
-        "selected_region": None,        
-        "vless_installed": False,       
-        "status_msg_id": None,          # رسالة التحديثات
-        "created_at": time.time(),
-        "cmd_history": [],
-        "last_activity": time.time(),
-    }
-
-
-def safe_quit(driver):
-    if driver:
-        try:
-            driver.quit()
-        except Exception:
-            pass
-        gc.collect()
-
-
-def cleanup_session(chat_id):
-    with sessions_lock:
-        s = user_sessions.pop(chat_id, None)
-    if s:
-        s["running"] = False
-        safe_quit(s.get("driver"))
-        gc.collect()
-
-
-def get_session(chat_id):
-    with sessions_lock:
-        return user_sessions.get(chat_id)
-
-
-def _auto_cleanup_loop():
-    """حذف الجلسات القديمة تلقائياً كل 30 دقيقة"""
-    while not shutdown_event.is_set():
-        shutdown_event.wait(Config.CLEANUP_INTERVAL_SEC)
-        if shutdown_event.is_set():
-            break
-        cutoff = time.time() - Config.SESSION_MAX_AGE_HOURS * 3600
-        stale = []
-        with sessions_lock:
-            for cid, s in list(user_sessions.items()):
-                if s.get("created_at", 0) < cutoff:
-                    stale.append(cid)
-        for cid in stale:
-            log.info(f"🧹 Auto-cleanup session: {cid}")
-            try:
-                send_safe(cid, "⏰ تم إنهاء الجلسة تلقائياً (تجاوزت الحد الأقصى).")
-            except Exception:
-                pass
-            cleanup_session(cid)
-        gc.collect()
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  10 · UI COMPONENTS (Panels & Messages)                ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def build_panel(cmd_mode=False):
-    mk = InlineKeyboardMarkup(row_width=2)
-    if cmd_mode:
-        mk.row(
-            InlineKeyboardButton("📸 لقطة شاشة", callback_data="screenshot"),
-            InlineKeyboardButton("🔙 رجوع للبث", callback_data="watch_mode"),
-        )
-    else:
-        mk.row(
-            InlineKeyboardButton("⌨️ وضع الأوامر", callback_data="cmd_mode"),
-            InlineKeyboardButton("📸 لقطة شاشة", callback_data="screenshot"),
-        )
-    mk.row(
-        InlineKeyboardButton("🔄 تحديث الصفحة", callback_data="refresh"),
-        InlineKeyboardButton("ℹ️ حالة الجلسة", callback_data="info"),
-    )
-    mk.row(
-        InlineKeyboardButton("🔁 إعادة تشغيل", callback_data="restart_browser"),
-        InlineKeyboardButton("⏹ إيقاف", callback_data="stop"),
-    )
-    return mk
-
-
-# ── رسائل ثابتة ──
-
-WELCOME_MSG = """
-🤖 **مرحباً بك في بوت Cloud Shell!**
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📋 **طريقة الاستخدام:**
-1️⃣ أرسل رابط SSO من المختبر
-2️⃣ البوت يفتح المتصفح ويحقن الكوكيز تلقائياً
-3️⃣ يتخطى تسجيل الدخول ويتعامل مع صفحات Google
-4️⃣ يستخرج السيرفرات المتاحة ويبني VLESS
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-💡 **الأوامر:**
-`/help`  ← دليل كامل
-`/cmd ls`  ← تنفيذ أمر
-`/ss`  ← لقطة شاشة
-`/status`  ← حالة الجلسة
-`/clearcookies`  ← حذف الجلسة المحفوظة لبدء حساب جديد
-`/stop`  ← إيقاف
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🔗 **أرسل الرابط الآن للبدء!**
-"""
-
-HELP_MSG = """
-📖 **دليل الاستخدام الكامل**
-
-━━━ 🔗 **بدء جلسة** ━━━
-أرسل رابط SSO الخاص بالمختبر لبدء العمل.
-
-━━━ 🍪 **نظام الجلسات (الكوكيز)** ━━━
-البوت يحفظ جلستك تلقائياً لعدم طلب الإيميل في كل مرة ولتجنب الحظر (Error 400/500).
-إذا أردت استخدام حساب Qwiklabs مختلف، أرسل:
-`/clearcookies`
-
-━━━ ⌨️ **تنفيذ الأوامر** ━━━
-• في وضع الأوامر: اكتب مباشرة
-• `/cmd ls -la`
-
-━━━ 🔧 **التحكم** ━━━
-• `/stop` — إيقاف الجلسة
-• `/restart` — إعادة تشغيل المتصفح
-"""
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  11 · SHELL DETECTION                                 ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def is_shell_page(driver):
-    if not driver:
-        return False
+# تحديث الصورة في نفس الرسالة (Live Stream)
+def update_live_stream(chat_id, msg_id, driver, caption):
     try:
-        u = driver.current_url
-        return "shell.cloud.google.com" in u or "ide.cloud.google.com" in u
-    except Exception:
-        return False
-
-
-def is_terminal_ready(driver):
-    if not is_shell_page(driver):
-        return False
-    try:
-        return driver.execute_script("""
-            var rows = document.querySelectorAll('.xterm-rows > div');
-            if (!rows.length) return false;
-            for (var i = 0; i < rows.length; i++) {
-                var t = (rows[i].textContent || '');
-                if (t.indexOf('$') !== -1 || t.indexOf('@') !== -1
-                    || t.indexOf('#') !== -1) return true;
-            }
-            return false;
-        """)
-    except Exception:
-        return False
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  12 · TERMINAL INTERACTION                             ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def _focus_terminal(driver):
-    """حاول الدخول لآخر نافذة وإلغاء أي iframe"""
-    try:
-        handles = driver.window_handles
-        if handles:
-            driver.switch_to.window(handles[-1])
-            driver.switch_to.default_content()
-    except Exception:
-        pass
-
-
-def send_command(driver, command):
-    """إرسال أمر للتيرمنال مع حل جذري لضمان ضغط زر الإدخال (Enter)"""
-    if not driver:
-        return False
-
-    _focus_terminal(driver)
-    
-    command_clean = command.rstrip('\n')
-
-    js_paste = """
-    var text = arguments[0];
-    function getTa() {
-        var ta = document.querySelector('.xterm-helper-textarea');
-        if (ta) return ta;
-        var frames = document.querySelectorAll('iframe');
-        for (var i=0; i<frames.length; i++) {
-            try { ta = frames[i].contentDocument.querySelector('.xterm-helper-textarea'); if (ta) return ta; } catch(e) {}
-        }
-        return null;
-    }
-    var ta = getTa();
-    if (ta) {
-        ta.focus();
-        var dt = new DataTransfer();
-        dt.setData('text/plain', text + '\\n'); 
-        var ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true });
-        ta.dispatchEvent(ev);
-        return true;
-    }
-    return false;
-    """
-    
-    try:
-        success = driver.execute_script(js_paste, command_clean)
-        if success:
-            time.sleep(1) 
-            try:
-                driver.switch_to.default_content()
-                frames = driver.find_elements(By.TAG_NAME, "iframe")
-                entered = False
-                for f in frames:
-                    try:
-                        driver.switch_to.frame(f)
-                        el = driver.find_element(By.CSS_SELECTOR, '.xterm-helper-textarea')
-                        el.send_keys(Keys.RETURN)
-                        entered = True
-                        break
-                    except:
-                        driver.switch_to.default_content()
-                
-                driver.switch_to.default_content()
-                if not entered:
-                    try:
-                        el = driver.find_element(By.CSS_SELECTOR, '.xterm-helper-textarea')
-                        el.send_keys(Keys.RETURN)
-                    except:
-                        driver.switch_to.active_element.send_keys(Keys.RETURN)
-            except Exception as e:
-                log.debug(f"Extra Enter failed: {e}")
-
-            log.info(f"📋 [Paste + Enter] ← Injected {len(command_clean)} chars")
-            return True
-    except Exception as e:
-        log.debug(f"JS Paste failed: {e}")
-
-    # --- Fallback (الكتابة السريعة الآمنة) ---
-    try:
-        driver.switch_to.default_content()
-        frames = driver.find_elements(By.TAG_NAME, "iframe")
-        target_el = None
-        for f in frames:
-            try:
-                driver.switch_to.frame(f)
-                target_el = driver.find_element(By.CSS_SELECTOR, '.xterm-helper-textarea')
-                break
-            except:
-                driver.switch_to.default_content()
+        img_bytes = driver.get_screenshot_as_png()
+        bio = io.BytesIO(img_bytes)
+        bio.name = 'live_stream.png'
+        media = InputMediaPhoto(bio, caption=f"🔴 **LIVE UPLINK**\n{caption}", parse_mode="Markdown")
         
-        if not target_el:
-            driver.switch_to.default_content()
-            target_el = driver.find_element(By.CSS_SELECTOR, '.xterm-helper-textarea')
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🛑 إلغاء الاختراق", callback_data="abort_mission"))
+        
+        bot.edit_message_media(chat_id=chat_id, message_id=msg_id, media=media, reply_markup=markup)
+    except Exception:
+        pass # تجاهل الأخطاء المؤقتة إذا لم تتغير الصورة
 
-        chunk_size = 200
-        for i in range(0, len(command_clean), chunk_size):
-            target_el.send_keys(command_clean[i:i+chunk_size])
-            time.sleep(0.05)
-        target_el.send_keys(Keys.RETURN)
-        driver.switch_to.default_content()
-        log.info(f"⌨️ [Fallback keys] ← sent {len(command_clean)} chars")
-        return True
-    except Exception as e:
-        driver.switch_to.default_content()
-        log.error(f"Fallback send keys failed: {e}")
-        return False
-
-
-def read_terminal(driver):
-    if not driver:
-        return None
-
-    for js in [
-        """var rows=document.querySelectorAll('.xterm-rows > div');
-           if(!rows.length){var x=document.querySelector('.xterm');
-           if(x) rows=x.querySelectorAll('.xterm-rows > div');}
-           if(rows.length){var l=[];rows.forEach(function(r){
-           var t=(r.textContent||'');if(t.trim())l.push(t);});
-           return l.join('\\n');}return null;""",
-        """var s=document.querySelector('.xterm-screen');
-           if(s) return s.textContent||s.innerText;
-           var x=document.querySelector('.xterm');
-           if(x) return x.textContent||x.innerText;return null;""",
-        """var l=document.querySelector('[aria-live]');
-           if(l) return l.textContent||l.innerText;return null;""",
-    ]:
+# ── محرك الطابور والاختراق الأساسي ──
+def worker_loop():
+    while True:
+        task = task_queue.get()
+        chat_id = task['chat_id']
+        url = task['url']
+        
+        bot.send_message(chat_id, "⚙️ جاري بدء جلستك الآن. يتم تجهيز بيئة الاختراق...")
+        
+        user_sessions[chat_id]['active'] = True
+        driver = None
+        status_msg_id = None
+        
         try:
-            txt = driver.execute_script(js)
-            if txt and txt.strip():
-                return txt.strip()
-        except Exception:
-            continue
-    return None
-
-
-def extract_result(full_output, command):
-    if not full_output:
-        return None
-    lines = full_output.split("\n")
-    idx = -1
-    for i, ln in enumerate(lines):
-        if command in ln and any(c in ln for c in ("$", ">", "#")):
-            idx = i
-        elif ln.strip() == command:
-            idx = i
-
-    if idx == -1:
-        result_lines = lines[-20:]
-    else:
-        result_lines = []
-        for i in range(idx + 1, len(lines)):
-            ln = lines[i]
-            if re.match(r"^[\w\-_]+@[\w\-_]+.*\$\s*$", ln.strip()):
-                break
-            if ln.strip().endswith("$ ") and len(ln.strip()) > 2:
-                break
-            result_lines.append(ln)
-
-    result = "\n".join(result_lines).strip()
-    while "\n\n\n" in result:
-        result = result.replace("\n\n\n", "\n\n")
-    return result or None
-
-
-def take_screenshot(driver):
-    if not driver:
-        return None
-    try:
-        _focus_terminal(driver)
-        png = driver.get_screenshot_as_png()
-        bio = io.BytesIO(png)
-        bio.name = f"ss_{int(time.time())}_{random.randint(100,999)}.png"
-        del png
-        return bio
-    except Exception as e:
-        log.debug(f"Screenshot fail: {e}")
-        return None
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  13 · GOOGLE PAGES AUTO-HANDLER                       ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def _click_if_visible(driver, xpath_list, delay_before=0.5, delay_after=2):
-    for xp in xpath_list:
-        try:
-            btns = driver.find_elements(By.XPATH, xp)
-            for btn in btns:
-                try:
-                    if btn.is_displayed():
-                        time.sleep(delay_before)
-                        try:
-                            btn.click()
-                        except Exception:
-                            driver.execute_script("arguments[0].click();", btn)
-                        time.sleep(delay_after)
-                        return True
-                except Exception:
+            driver = get_driver()
+            driver.get(url)
+            
+            # إرسال الصورة الأولى لإنشاء رسالة البث المباشر
+            time.sleep(2)
+            img_bytes = driver.get_screenshot_as_png()
+            bio = io.BytesIO(img_bytes)
+            bio.name = 'init.png'
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("🛑 إلغاء الاختراق", callback_data="abort_mission"))
+            msg = bot.send_photo(chat_id, bio, caption="🔴 **LIVE UPLINK**\nجاري تهيئة المتصفح المخفي...", parse_mode="Markdown", reply_markup=markup)
+            status_msg_id = msg.message_id
+            
+            state = "INIT"
+            loop_count = 0
+            extract_retries = 0
+            selection_timeout = 0
+            project_id = ""
+            
+            while user_sessions.get(chat_id, {}).get('active') and loop_count < 250:
+                loop_count += 1
+                time.sleep(4) # تحديث كل 4 ثواني لتجنب حظر تيليغرام
+                
+                if not user_sessions.get(chat_id, {}).get('active'):
+                    break
+                    
+                current_url = driver.current_url
+                
+                # ── إيقاف البث المباشر أثناء انتظار اختيار المستخدم ──
+                if state == "WAIT_USER_SELECTION":
+                    if user_sessions.get(chat_id, {}).get('selected_region') and user_sessions.get(chat_id, {}).get('protocol'):
+                        selected_reg = user_sessions[chat_id]['selected_region']
+                        if project_id:
+                            shell_url = f"https://shell.cloud.google.com/?enableapi=true&project={project_id}&pli=1&show=terminal"
+                            driver.get(shell_url)
+                            state = "AUTHORIZE_SHELL" 
+                    else:
+                        selection_timeout += 1
+                        if selection_timeout > 60: # 4 دقائق انتظار للاختيار
+                            bot.send_message(chat_id, "⏳ نفد وقت الاختيار. تم إلغاء المهمة.")
+                            break
                     continue
-        except Exception:
-            continue
-    return False
-
-
-def handle_google_pages(driver, session, chat_id):
-    status = "مراقبة..."
-    try:
-        body = driver.find_element(By.TAG_NAME, "body").text[:5000]
-    except Exception:
-        return status
-
-    bl = body.lower()
-
-    # 💡 تسجيل الدخول التفاعلي (Interactive Login) - اسم المستخدم وكلمة المرور
-    try:
-        email_inputs = driver.find_elements(By.XPATH, "//input[@type='email']")
-        if email_inputs and any(el.is_displayed() for el in email_inputs):
-            if session.get("waiting_for_input") != "email":
-                session["waiting_for_input"] = "email"
-                send_safe(chat_id, "⚠️ **تسجيل الدخول مطلوب!**\n\nلم يتم تسجيل الدخول تلقائياً بالرابط (أو الكوكيز غير صالحة).\n👉 يرجى نسخ **اسم المستخدم (Username)** من صفحة المختبر وإرساله هنا كرسالة نصية:")
-            return "🔐 بانتظار إرسال اسم المستخدم..."
-    except Exception:
-        pass
-
-    try:
-        pass_inputs = driver.find_elements(By.XPATH, "//input[@type='password']")
-        if pass_inputs and any(el.is_displayed() for el in pass_inputs):
-            if session.get("waiting_for_input") != "email":
-                if session.get("waiting_for_input") != "password":
-                    session["waiting_for_input"] = "password"
-                    send_safe(chat_id, "🔐 **الخطوة التالية:**\n\n👉 يرجى نسخ **كلمة المرور (Password)** من صفحة المختبر وإرسالها هنا كرسالة نصية:")
-                return "🔐 بانتظار إرسال كلمة المرور..."
-    except Exception:
-        pass
-
-
-    if "agree and continue" in bl and "terms of service" in bl:
-        try:
-            for cb in driver.find_elements(By.XPATH,
-                    "//mat-checkbox|//input[@type='checkbox']|//*[@role='checkbox']"):
-                try:
-                    driver.execute_script("arguments[0].click();", cb)
-                except Exception:
-                    pass
-            time.sleep(1)
-        except Exception:
-            pass
-        if _click_if_visible(driver, [
-            "//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
-            "'abcdefghijklmnopqrstuvwxyz'),'agree and continue')]"
-        ], 0.5, 3):
-            log.info("✅ Terms accepted")
-            return "✅ تم قبول الشروط"
-
-    if "welcome to your new account" in bl or "i understand" in bl:
-        if _click_if_visible(driver, [
-            "//span[text()='I understand']",
-            "//button[contains(.,'I understand')]",
-            "//*[contains(text(),'I understand')]",
-            "//input[@value='I understand']",
-            "//input[@id='confirm']",
-        ], 1, 4):
-            return "✅ Welcome terms accepted"
-
-    if "authorize cloud shell" in bl:
-        if _click_if_visible(driver, [
-            "//button[normalize-space(.)='Authorize']",
-            "//button[contains(.,'Authorize')]",
-        ]):
-            session["auth"] = True
-            return "✅ تم التفويض"
-        return "🔐 بانتظار التفويض..."
-
-    if "cloud shell" in bl and "continue" in bl and "free" in bl:
-        if _click_if_visible(driver, [
-            "//a[contains(text(),'Continue')]",
-            "//button[contains(text(),'Continue')]",
-            "//button[.//span[contains(text(),'Continue')]]",
-            "//*[@role='button'][contains(.,'Continue')]",
-        ], 0.5, 3):
-            return "✅ Continue"
-        return "☁️ نافذة Cloud Shell..."
-
-    if "verify it" in bl:
-        if _click_if_visible(driver, [
-            "//button[contains(.,'Continue')]",
-            "//input[@value='Continue']",
-            "//div[@role='button'][contains(.,'Continue')]",
-        ]):
-            return "✅ Verify"
-        return "🔐 تحقق..."
-
-    if "couldn't sign you in" in bl:
-        try:
-            driver.delete_all_cookies()
-            time.sleep(1)
-            driver.get(session.get("url", "about:blank"))
-            time.sleep(5)
-        except Exception:
-            pass
-        return "⚠️ تم رفض الدخول — إعادة محاولة"
-
-    if "authorize" in bl and ("cloud" in bl or "google" in bl):
-        if _click_if_visible(driver, [
-            "//button[normalize-space(.)='Authorize']",
-            "//button[contains(.,'AUTHORIZE')]",
-        ]):
-            session["auth"] = True
-            return "✅ تم التفويض"
-
-    if "gemini" in bl and "dismiss" in bl:
-        _click_if_visible(driver, [
-            "//button[contains(.,'Dismiss')]",
-            "//a[contains(.,'Dismiss')]",
-        ], 0.3, 1)
-
-    if "trust this project" in bl or "trust project" in bl:
-        if _click_if_visible(driver, [
-            "//button[contains(.,'Trust')]",
-            "//button[contains(.,'Confirm')]",
-        ]):
-            return "✅ Trust"
-
-    try:
-        u = driver.current_url
-    except Exception:
-        return status
-
-    if "shell.cloud.google.com" in u or "ide.cloud.google.com" in u:
-        session["terminal_ready"] = True
-        return "✅ Terminal جاهز"
-    if "console.cloud.google.com" in u:
-        return "📊 Console"
-    if "accounts.google.com" in u:
-        return "🔐 تسجيل الدخول..."
-    return status
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  14 · CLOUD RUN REGION EXTRACTION                     ║
-# ╚═══════════════════════════════════════════════════════╝
-
-REGION_JS = """
-var callback = arguments[arguments.length - 1];
-setTimeout(function() {
-    try {
-        var clicked = false;
-        var dd = document.querySelectorAll('mat-select, [role="combobox"]');
-        for (var i = 0; i < dd.length; i++) {
-            var a = (dd[i].getAttribute('aria-label') || '').toLowerCase();
-            var id = (dd[i].getAttribute('id') || '').toLowerCase();
-            if (a.indexOf('region') !== -1 || id.indexOf('region') !== -1) {
-                dd[i].click(); clicked = true; break;
-            }
-        }
-        if (!clicked) {
-            var lbl = document.querySelectorAll('label, .mat-form-field-label');
-            for (var j = 0; j < lbl.length; j++) {
-                if (lbl[j].innerText && lbl[j].innerText.indexOf('Region') !== -1) {
-                    lbl[j].click(); clicked = true; break;
-                }
-            }
-        }
-        if (!clicked) { callback('NO_DROPDOWN'); return; }
-        setTimeout(function() {
-            var opts = document.querySelectorAll('mat-option, [role="option"]');
-            var res = [];
-            for (var k = 0; k < opts.length; k++) {
-                var o = opts[k];
-                var r = o.getBoundingClientRect();
-                var s = window.getComputedStyle(o);
-                if (r.width === 0 || r.height === 0 ||
-                    s.display === 'none' || s.visibility === 'hidden') continue;
-                if (o.classList.contains('mat-option-disabled') ||
-                    o.getAttribute('aria-disabled') === 'true') continue;
-                var t = (o.innerText || '').trim().split('\\n')[0];
-                if (t && t.indexOf('-') !== -1 &&
-                    t.toLowerCase().indexOf('learn') === -1) res.push(t);
-            }
-            document.dispatchEvent(new KeyboardEvent('keydown', {'key':'Escape'}));
-            var bk = document.querySelector('.cdk-overlay-backdrop');
-            if (bk) bk.click();
-            callback(res.length ? res.join('\\n') : 'NO_REGIONS');
-        }, 1500);
-    } catch(e) { callback('ERROR:' + e); }
-}, 4000);
-"""
-
-
-def do_cloud_run_extraction(driver, chat_id, session):
-    pid = session.get("project_id")
-    if not pid:
-        return True
-
-    cur = current_url(driver)
-
-    if "run/create" not in cur:
-        if not session.get("status_msg_id"):
-            msg = send_safe(chat_id, "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...")
-            if msg: session["status_msg_id"] = msg.message_id
-        else:
-            edit_safe(chat_id, session["status_msg_id"], "⚙️ جاري فتح صفحة Cloud Run لاستخراج السيرفرات...")
-            
-        safe_navigate(
-            driver,
-            f"https://console.cloud.google.com/run/create"
-            f"?enableapi=true&project={pid}",
-        )
-        return False
-
-    if session.get("status_msg_id"):
-        edit_safe(chat_id, session["status_msg_id"], "🔍 جاري قراءة السيرفرات المتوفرة والمسموحة...")
-
-    try:
-        driver.set_script_timeout(Config.SCRIPT_TIMEOUT)
-        result = driver.execute_async_script(REGION_JS)
-
-        if result is None or result == "NO_DROPDOWN" or result == "NO_REGIONS" or result.startswith("ERROR:"):
-            if session.get("status_msg_id"):
-                edit_safe(chat_id, session["status_msg_id"], "⚠️ تعذر جلب السيرفرات، سيتم تخطي الخطوة.")
-        else:
-            regions = [r.strip() for r in result.split("\n") if r.strip()]
-            
-            mk = InlineKeyboardMarkup(row_width=2)
-            buttons = [InlineKeyboardButton(r, callback_data=f"setreg_{r.split()[0]}") for r in regions]
-            mk.add(*buttons)
-
-            if session.get("status_msg_id"):
-                edit_safe(
-                    chat_id, session["status_msg_id"],
-                    "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:\n\n⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*",
-                    reply_markup=mk,
-                    parse_mode="Markdown"
-                )
-            else:
-                msg = send_safe(chat_id, "🌍 **السيرفرات المسموحة للإنشاء:**\nاختر السيرفر الذي تريده لبناء VLESS:\n\n⏱️ *تنبيه: لديك 30 ثانية فقط للاختيار*", reply_markup=mk, parse_mode="Markdown")
-                if msg: session["status_msg_id"] = msg.message_id
-            
-            session["waiting_for_region"] = True
-            session["region_prompt_time"] = time.time()
-            
-    except Exception as e:
-        if session.get("status_msg_id"):
-            edit_safe(chat_id, session["status_msg_id"], f"⚠️ فشل استخراج السيرفرات:\n`{str(e)[:100]}`", parse_mode="Markdown")
-
-    return True
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  14.5 · VLESS SCRIPT GENERATOR                        ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def _generate_vless_cmd(region, token, chat_id):
-    """توليد السكريبت بطريقة آمنة جداً (استبدال النصوص بدلاً من f-strings) لضمان عدم حدوث Syntax Error"""
-    
-    raw_script = """#!/bin/bash
-REGION="<<REGION>>"
-SERVICE_NAME="ocx-server-max"
-UUID=$(cat /proc/sys/kernel/random/uuid)
-
-echo "========================================="
-echo "🚀 جاري تنظيف البيئة وتجهيزها..."
-echo "========================================="
-mkdir -p ~/vless-cloudrun-final
-cd ~/vless-cloudrun-final
-
-cat << 'EOC' > config.json
-{
-    "inbounds": [
-        {
-            "port": 8080,
-            "protocol": "vless",
-            "settings": {
-                "clients": [
-                    {
-                        "id": "REPLACE_UUID",
-                        "level": 0
-                    }
-                ],
-                "decryption": "none"
-            },
-            "streamSettings": {
-                "network": "ws",
-                "wsSettings": {
-                    "path": "/@O_C_X7"
-                }
-            }
-        }
-    ],
-    "outbounds": [
-        {
-            "protocol": "freedom",
-            "settings": {}
-        }
-    ]
-}
-EOC
-sed -i "s/REPLACE_UUID/$UUID/g" config.json
-
-cat << 'EOF' > Dockerfile
-FROM teddysun/xray:latest
-COPY config.json /etc/xray/config.json
-EXPOSE 8080
-CMD ["xray", "-config", "/etc/xray/config.json"]
-EOF
-
-echo "========================================="
-echo "⚡ جاري بناء ونشر سيرفر VLESS القوي على Cloud Run..."
-echo "========================================="
-gcloud run deploy $SERVICE_NAME \
-    --source . \
-    --region=$REGION \
-    --allow-unauthenticated \
-    --timeout=3600 \
-    --no-cpu-throttling \
-    --execution-environment=gen2 \
-    --min-instances=1 \
-    --max-instances=8 \
-    --concurrency=250 \
-    --cpu=2 \
-    --memory=4096Mi \
-    --quiet
-
-PROJECT_ID=$(gcloud config get-value project)
-PROJECT_NUM=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
-DETERMINISTIC_HOST="${SERVICE_NAME}-${PROJECT_NUM}.${REGION}.run.app"
-DETERMINISTIC_URL="https://${DETERMINISTIC_HOST}"
-VLESS_LINK="vless://${UUID}@googlevideo.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${DETERMINISTIC_HOST}&type=ws&sni=googlevideo.com#𝗢 𝗖 𝗫 ⚡"
-
-echo "✅ تم إنشاء السيرفر بنجاح!"
-
-# --- 💡 دمج السكريبت الخاص بك لتثبيت لوحة 3X-UI محلياً 100% ---
-echo "======================================================="
-echo "⏳ جاري التثبيت، تنظيف المنافذ، وتجهيز الرابط للوحة..."
-echo "======================================================="
-sudo pkill -9 xray 2>/dev/null; sudo pkill -9 x-ui 2>/dev/null; sudo fuser -k 8080/tcp 2>/dev/null; sudo fuser -k 2096/tcp 2>/dev/null
-wget -qO install.sh https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh
-echo -e "y\n8080\n2\n\n\n" | sudo bash install.sh > /dev/null 2>&1
-sudo pkill -9 xray 2>/dev/null; sudo pkill -9 x-ui 2>/dev/null; sudo fuser -k 8080/tcp 2>/dev/null; sudo fuser -k 2096/tcp 2>/dev/null
-nohup sudo /usr/local/x-ui/x-ui > /dev/null 2>&1 &
-
-echo "⏳ انتظار تشغيل خادم اللوحة وتهيئة قاعدة البيانات لتجنب أخطاء 500..."
-for i in {1..20}; do
-    if curl -s http://127.0.0.1:8080 > /dev/null; then
-        echo "✅ اللوحة تعمل وتستجيب الآن."
-        break
-    fi
-    sleep 2
-done
-sleep 3 
-
-USERNAME=$(sudo sqlite3 /etc/x-ui/x-ui.db "SELECT value FROM settings WHERE key='username';" 2>/dev/null)
-PASSWORD=$(sudo sqlite3 /etc/x-ui/x-ui.db "SELECT value FROM settings WHERE key='password';" 2>/dev/null)
-BASEPATH=$(sudo sqlite3 /etc/x-ui/x-ui.db "SELECT value FROM settings WHERE key='webBasePath';" 2>/dev/null)
-CLEAN_PATH=$(echo "$BASEPATH" | tr -d '/')
-
-if [ -n "$WEB_HOST" ]; then
-    PANEL_LINK="https://8080-${WEB_HOST}/${CLEAN_PATH}/"
-else
-    CS_URL=$(cloudshell get-web-preview-url --port 8080 | sed 's|/$||')
-    PANEL_LINK="${CS_URL}/${CLEAN_PATH}/"
-fi
-
-echo "======================================================="
-echo "✅ تمت العملية بنجاح! اللوحة تعمل الآن في الخلفية."
-echo "👤 اسم المستخدم : $USERNAME"
-echo "🔑 كلمة المرور  : $PASSWORD"
-echo "🌐 الرابط       : $PANEL_LINK"
-echo "======================================================="
-
-MSG="✅ <b>تم انشاء السيرفر واللوحة بنجاح</b>
-
-🌐 <b>رابط VLESS الأساسي (Cloud Run):</b>
-<pre>${VLESS_LINK}</pre>
-
-📊 <b>رابط لوحة التحكم 3X-UI (Cloud Shell):</b>
-${PANEL_LINK}
-
-🔑 <b>بيانات الدخول للوحة:</b>
-اليوزر: <code>${USERNAME}</code>
-الباسورد: <code>${PASSWORD}</code>
-
-<i>ملاحظة هامة جداً:
-1- يجب فتح رابط اللوحة من نفس المتصفح المسجل به حساب Qwiklabs (الذي أرسلته للبوت)، وإلا ستظهر لك شاشة خطأ 500 أو 400 من جوجل للحماية.
-2- اللوحة مؤقتة تعمل فقط طالما الجلسة نشطة (سيغلقها البوت لاحقاً لإفساح المجال في الطابور).
-3- السيرفر الأساسي VLESS دائم ولن ينقطع.</i>"
-
-curl -s -X POST "https://api.telegram.org/bot<<TOKEN>>/sendMessage" \
-    -d chat_id="<<CHAT_ID>>" \
-    -d parse_mode="HTML" \
-    --data-urlencode text="$MSG"
-
-echo ""
-echo "=== VLESS_DEPLOYMENT_COMPLETE ==="
-"""
-    raw_script = raw_script.replace("<<REGION>>", region)
-    raw_script = raw_script.replace("<<TOKEN>>", token)
-    raw_script = raw_script.replace("<<CHAT_ID>>", str(chat_id))
-    
-    b64 = base64.b64encode(raw_script.encode('utf-8')).decode('utf-8')
-    return f"echo {b64} | base64 -d > deploy_vless.sh && bash deploy_vless.sh\n"
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  15 · STREAM ENGINE                                   ║
-# ╚═══════════════════════════════════════════════════════╝
-
-_TIMEOUT_KEYS = (
-    "urllib3", "requests", "readtimeout", "connection aborted",
-    "timeout", "read timed out", "max retries", "connecttimeout",
-)
-_DRIVER_KEYS = (
-    "invalid session id", "chrome not reachable",
-    "disconnected:", "crashed", "no such session",
-)
-
-
-def _update_stream(driver, chat_id, session, status, flash):
-    flash = not flash
-    icon = "🔴" if flash else "⭕"
-    now = datetime.now().strftime("%H:%M:%S")
-    proj = f"📁 {session['project_id']}" if session.get("project_id") else ""
-    extra = ""
-    if session.get("terminal_ready"):
-        extra += " | ⌨️"
-    loading = session.get("shell_loading_until", 0)
-    if time.time() < loading:
-        extra += f" | ⏳{int(loading - time.time())}s"
-
-    cap = f"{icon} بث مباشر\n{proj}\n📌 {status}{extra}\n⏱ {now}"
-
-    png = driver.get_screenshot_as_png()
-    bio = io.BytesIO(png)
-    bio.name = f"l_{int(time.time())}_{random.randint(10,99)}.png"
-
-    try:
-        bot.edit_message_media(
-            media=InputMediaPhoto(bio, caption=cap),
-            chat_id=chat_id,
-            message_id=session["msg_id"],
-            reply_markup=build_panel(session.get("cmd_mode", False)),
-        )
-    except Exception:
-        pass
-    bio.close()
-    del png
-    return flash
-
-
-def stream_loop(chat_id, gen):
-    with sessions_lock:
-        if chat_id not in user_sessions:
-            return
-        session = user_sessions[chat_id]
-
-    driver = session["driver"]
-    flash = True
-    err_n = 0
-    drv_err = 0
-    cycle = 0
-    cookies_saved = False
-
-    while session["running"] and session.get("gen") == gen:
-
-        if session.get("cmd_mode"):
-            time.sleep(Config.CMD_CHECK_INTERVAL)
-            try:
-                if driver and is_terminal_ready(driver):
-                    session["terminal_ready"] = True
-            except Exception:
-                pass
-            
-            # 💡 نظام التنظيف الذاتي (Auto Cleanup) والإيقاف عند الانتهاء
-            if session.get("vless_installed"):
-                term_text = read_terminal(driver) or ""
-                if "=== VLESS_DEPLOYMENT_COMPLETE ===" in term_text:
-                    time.sleep(2) 
-                    
-                    if session.get("msg_id"):
-                        try: bot.delete_message(chat_id, session["msg_id"])
-                        except Exception: pass
-                        
-                    if session.get("status_msg_id"):
-                        try: bot.delete_message(chat_id, session["status_msg_id"])
-                        except Exception: pass
-                    
-                    cooldown_time = time.time() + (15 * 60)
-                    if users_col is not None:
-                        users_col.update_one({"_id": chat_id}, {"$set": {"vless_cooldown": cooldown_time}}, upsert=True)
+                elif state == "SILENT_BUILD":
+                    # وضع الصمت: البناء قيد التنفيذ، نتفحص الشاشة بحثاً عن الأخطاء أو النجاح
+                    page_source = driver.page_source
+                    if "ERROR_DEPLOYMENT_FAILED_WORM_AI_CATCH" in page_source:
+                        bot.send_message(chat_id, "❌ **فشل البناء (Deployment Error):**\nيبدو أن حسابك (Qwiklabs) قد انتهت صلاحيته، أو انتهت مساحته، أو تم حظره من قبل جوجل. جرب حساباً جديداً.", parse_mode="Markdown")
+                        break
+                    elif "SUCCESS_WORM_AI_FINISH" in page_source:
+                        bot.send_message(chat_id, "✅ **تم تأكيد النجاح.** السيرفر يعمل. (انظر الرسالة أعلاه)")
+                        break
                     else:
-                        local_cooldowns[chat_id] = cooldown_time
-                    
-                    session["running"] = False
-                    break
-            continue
-
-        time.sleep(random.uniform(*Config.STREAM_INTERVAL))
-        if not session["running"] or session.get("gen") != gen:
-            break
-        cycle += 1
-
-        try:
-            _focus_terminal(driver)
-            status = handle_google_pages(driver, session, chat_id)
-            cur = current_url(driver)
-
-            try:
-                if time.time() >= session.get("shell_loading_until", 0):
-                    flash = _update_stream(
-                        driver, chat_id, session, status, flash
-                    )
-                err_n = 0
-                drv_err = 0
-            except Exception as e:
-                if "message is not modified" not in str(e).lower():
-                    raise
-
-            on_console = any(
-                k in cur for k in (
-                    "console.cloud.google.com", "myaccount.google.com"
-                )
-            )
-            on_shell = is_shell_page(driver)
-
-            if session.get("waiting_for_region"):
-                if time.time() - session.get("region_prompt_time", time.time()) > 30:
-                    send_safe(chat_id, "⏱️ **انتهى الوقت!**\nلم تقم باختيار السيرفر خلال 30 ثانية. تم إيقاف العملية لإفساح المجال في الطابور.\nيرجى إرسال الرابط وإعادة المحاولة.", parse_mode="Markdown")
-                    if session.get("status_msg_id"):
-                        try: bot.delete_message(chat_id, session["status_msg_id"])
-                        except: pass
-                    if session.get("msg_id"):
-                        try: bot.delete_message(chat_id, session["msg_id"])
-                        except: pass
-                    session["running"] = False
-                    break
-            elif (session.get("project_id")
-                    and not session.get("run_api_checked")
-                    and on_console):
-                popup = status not in ("مراقبة...", "📊 Console",
-                                       "✅ Terminal جاهز")
-                auth_url = any(k in cur.lower() for k in
-                               ("signin", "challenge", "speedbump",
-                                "accounts.google.com"))
-                if not popup and not auth_url:
-                    gc.collect()
-                    if do_cloud_run_extraction(driver, chat_id, session):
-                        session["run_api_checked"] = True
-
-            elif on_shell and not session.get("terminal_notified"):
-                if is_terminal_ready(driver):
-                    session["terminal_ready"] = True
-                    session["terminal_notified"] = True
-                    session["cmd_mode"] = True
-
-                    # 💡 حفظ الكوكيز بمجرد الوصول للتيرمنال بنجاح
-                    if not cookies_saved:
-                        save_user_cookies(driver, chat_id)
-                        cookies_saved = True
-
-                    region = session.get("selected_region")
-                    if region and not session.get("vless_installed"):
-                        session["vless_installed"] = True
-                        
-                        cmd = _generate_vless_cmd(region, Config.TOKEN, chat_id)
-                        send_command(driver, cmd)
-                        
-                        try:
-                            _update_stream(driver, chat_id, session, "⚙️ Deploying VLESS...", flash)
-                        except Exception:
-                            pass
-                    else:
-                        send_safe(
-                            chat_id,
-                            "🖥️ **Terminal جاهز تماماً!** ✅\n\n"
-                            "تم تفعيل **⌨️ وضع الأوامر** تلقائياً.\n"
-                            "أرسل أوامرك مباشرة كرسالة عادية.",
-                            parse_mode="Markdown",
-                        )
-                        try:
-                            _update_stream(driver, chat_id, session, "✅ Terminal Ready", flash)
-                        except Exception:
-                            pass
-
-            if cycle % 8 == 0:
-                gc.collect()
-
-        except Exception as e:
-            em = str(e).lower()
-            if "message is not modified" in em:
-                continue
-            if any(k in em for k in _TIMEOUT_KEYS):
-                time.sleep(2)
-                continue
-            if time.time() < session.get("shell_loading_until", 0):
-                time.sleep(3)
-                continue
-
-            err_n += 1
-            log.warning(f"Stream err ({err_n}): {str(e)[:120]}")
-
-            if "too many requests" in em or "retry after" in em:
-                w = re.search(r"retry after (\d+)", em)
-                time.sleep(int(w.group(1)) if w else 5)
-            elif any(k in em for k in _DRIVER_KEYS):
-                drv_err += 1
-                if drv_err >= Config.MAX_DRV_ERR_BEFORE_RESTART:
-                    _restart_driver(chat_id, session)
-                    driver = session["driver"]
-                    drv_err = 0
-                    err_n = 0
-                    time.sleep(5)
-            elif err_n >= Config.MAX_ERR_BEFORE_REFRESH:
-                try:
-                    driver.refresh()
-                    err_n = 0
-                except Exception:
-                    drv_err += 1
-
-    log.info(f"🛑 Stream ended: {chat_id}")
-    gc.collect()
-
-
-def _restart_driver(chat_id, session):
-    send_safe(chat_id, "🔁 إعادة تشغيل المتصفح...")
-    try:
-        safe_quit(session.get("driver"))
-        new_drv = create_driver()
-        session["driver"] = new_drv
-        
-        # 💡 محاولة تحميل الكوكيز بعد إعادة التشغيل أيضاً
-        load_user_cookies(new_drv, chat_id)
-        
-        new_drv.get(session.get("url", "about:blank"))
-        session.update({
-            "shell_opened": False,
-            "auth": False,
-            "terminal_ready": False,
-            "terminal_notified": False,
-            "run_api_checked": False,
-            "shell_loading_until": 0,
-        })
-        send_safe(chat_id, "✅ تم إعادة التشغيل بنجاح!")
-    except Exception as e:
-        send_safe(chat_id, f"❌ فشل إعادة التشغيل:\n`{str(e)[:200]}`",
-                  parse_mode="Markdown")
-        session["running"] = False
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  16 · START STREAM (Synchronous for Queue)            ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def start_stream_sync(chat_id, url):
-    """دالة البدء المخصصة لنظام الطابور لضمان عدم تداخل العمليات"""
-    old_drv = None
-    with sessions_lock:
-        if chat_id in user_sessions:
-            old = user_sessions[chat_id]
-            old["running"] = False
-            old["gen"] = old.get("gen", 0) + 1
-            old_drv = old.get("driver")
-
-    status_msg = send_safe(chat_id, "⚡ جاري التجهيز للبدء بعمليتك...")
-    status_msg_id = status_msg.message_id if status_msg else None
-
-    if old_drv:
-        safe_quit(old_drv)
-        time.sleep(2)
-
-    project_id = extract_project_id(url)
-
-    try:
-        driver = create_driver()
-        if status_msg_id: edit_safe(chat_id, status_msg_id, "✅ المتصفح جاهز\n🌐 جاري حقن الكوكيز وفتح الرابط...")
-        
-        # 💡 تحميل الكوكيز قبل فتح الرابط الأساسي لتخطي الدخول
-        load_user_cookies(driver, chat_id)
-        
-    except Exception as e:
-        if status_msg_id: edit_safe(chat_id, status_msg_id, f"❌ فشل تشغيل المتصفح:\n`{str(e)[:300]}`", parse_mode="Markdown")
-        return
-
-    gen = int(time.time())
-    with sessions_lock:
-        user_sessions[chat_id] = _new_session_dict(
-            driver, url, project_id, gen
-        )
-        session = user_sessions[chat_id]
-
-    try:
-        driver.get(url)
-    except Exception as e:
-        pass
-    time.sleep(5)
-
-    try:
-        _focus_terminal(driver)
-        png = driver.get_screenshot_as_png()
-        bio = io.BytesIO(png)
-        bio.name = f"s_{int(time.time())}.png"
-        
-        if status_msg_id:
-            try: bot.delete_message(chat_id, status_msg_id)
-            except: pass
-
-        msg = bot.send_photo(
-            chat_id, bio,
-            caption="🔴 بث مباشر\n📌 جاري البدء...",
-            reply_markup=build_panel(),
-        )
-        bio.close()
-        del png
-
-        with sessions_lock:
-            session["msg_id"] = msg.message_id
-            session["running"] = True
-
-        stream_loop(chat_id, gen)
-
-    except Exception as e:
-        cleanup_session(chat_id)
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  16.5 · QUEUE WORKER SYSTEM                           ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def queue_worker():
-    """هذه الدالة تعمل باستمرار لمعالجة الطلبات في الطابور واحداً تلو الآخر"""
-    global active_task_cid
-    while not shutdown_event.is_set():
-        try:
-            task = deployment_queue.get(timeout=2)
-            cid = task["chat_id"]
-            url = task["url"]
-            
-            with queue_lock:
-                active_task_cid = cid
+                        update_live_stream(chat_id, status_msg_id, driver, f"⚙️ جاري بناء حاوية Docker على السحابة... (يستغرق 2-4 دقائق)\n[الرجاء الانتظار، البوت يراقب بصمت]\n\nالمدة المنقضية: {loop_count*4} ثانية")
+                        continue
+                else:
+                    update_live_stream(chat_id, status_msg_id, driver, f"🌐 {current_url}\n🔄 المرحلة: {state}")
                 
-            log.info(f"🚀 بدء معالجة طلب الطابور للمستخدم: {cid}")
-            start_stream_sync(cid, url)
-            
-            # عند الانتهاء (أو الإيقاف)، يتم تنظيف المتغير وأخذ الطلب التالي
-            cleanup_session(cid)
-            with queue_lock:
-                active_task_cid = None
-            deployment_queue.task_done()
-            
-        except queue.Empty:
-            continue
+                # ── تجاوز نوافذ الترحيب ──
+                try:
+                    agree_btns = driver.find_elements(By.XPATH, "//button[contains(., 'Agree and continue') or contains(., 'موافق ومتابعة') or contains(., 'Akkoord en doorgaan')]")
+                    visible_btn = next((b for b in agree_btns if b.is_displayed()), None)
+                    if visible_btn:
+                        checkboxes = driver.find_elements(By.XPATH, "//*[@role='checkbox'] | //mat-checkbox | //input[@type='checkbox']")
+                        for cb in checkboxes:
+                            driver.execute_script("arguments[0].click();", cb)
+                        time.sleep(1) 
+                        driver.execute_script("arguments[0].click();", visible_btn)
+                except Exception:
+                    pass
+                
+                # ── آلة الحالة (State Machine) ──
+                if state == "INIT":
+                    if 'accounts.google.com' in current_url:
+                        try:
+                            elements = driver.find_elements(By.XPATH, "//*[@id='confirm'] | //input[@type='submit'] | //button | //div[@role='button'] | //span")
+                            for el in elements:
+                                text = (el.text or el.get_attribute('value') or '').lower()
+                                el_id = el.get_attribute('id') or ''
+                                if 'understand' in text or 'begrijp' in text or 'accept' in text or 'أفهم' in text or 'موافق' in text or el_id == 'confirm':
+                                    driver.execute_script("arguments[0].click();", el)
+                                    break
+                        except:
+                            pass
+                    elif 'console.cloud.google.com' in current_url:
+                        match = re.search(r'project=([^&#]+)', current_url)
+                        if match:
+                            project_id = match.group(1)
+                            target_url = f"https://console.cloud.google.com/run/services?project={project_id}"
+                            driver.get(target_url)
+                            state = "WAIT_DEPLOY" 
+                            
+                elif state == "WAIT_DEPLOY":
+                    try:
+                        deploy_btn = driver.find_element(By.XPATH, "//*[contains(text(), 'Deploy container')]")
+                        if deploy_btn.is_displayed():
+                            driver.execute_script("arguments[0].click();", deploy_btn)
+                            state = "WAIT_REGION"
+                    except Exception:
+                        pass 
+                        
+                elif state == "WAIT_REGION":
+                    try:
+                        try: driver.execute_script("document.querySelectorAll('button').forEach(b => { if(b.innerText.includes('OK, got it') || b.innerText.includes('Accept')) b.click() })")
+                        except: pass
+                        region_elem = driver.find_element(By.XPATH, "//*[contains(text(), 'Region') and not(contains(text(), 'Regions'))]")
+                        if region_elem.is_displayed():
+                            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", region_elem)
+                            time.sleep(1) 
+                            driver.execute_script("arguments[0].click();", region_elem)
+                            state = "EXTRACT_REGIONS" 
+                    except Exception:
+                        driver.execute_script("window.scrollBy(0, 300);")
+                        
+                elif state == "EXTRACT_REGIONS":
+                    try:
+                        time.sleep(2) 
+                        options = driver.find_elements(By.XPATH, "//*[@role='option'] | //mat-option | //*[contains(@class, 'mat-option-text')]")
+                        regions_list = []
+                        for opt in options:
+                            text = (opt.get_attribute('textContent') or opt.text or '').strip()
+                            if len(text) > 3 and "Select" not in text and text not in [r['raw'] for r in regions_list]:
+                                text = " ".join(text.split())
+                                match = re.search(r'^([a-z0-9-]+)\s*\(([^)]+)\)', text)
+                                if match:
+                                    reg_id, reg_name = match.group(1), match.group(2)
+                                else:
+                                    reg_id, reg_name = text.split()[0], text
+                                
+                                if reg_id.startswith('us-') or reg_id.startswith('northamerica-') or reg_id.startswith('southamerica-'): continent = 'أمريكا 🌎'
+                                elif reg_id.startswith('europe-'): continent = 'أوروبا 🌍'
+                                elif reg_id.startswith('asia-'): continent = 'آسيا 🌏'
+                                elif reg_id.startswith('australia-'): continent = 'أستراليا 🦘'
+                                elif reg_id.startswith('me-') or reg_id.startswith('africa-'): continent = 'الشرق الأوسط وأفريقيا 🐪'
+                                else: continent = 'أخرى 🗺️'
+                                    
+                                regions_list.append({'id': reg_id, 'name': reg_name, 'continent': continent, 'raw': text})
+                                
+                        if len(regions_list) > 0: 
+                            grouped_regions = {}
+                            for r in regions_list:
+                                grouped_regions.setdefault(r['continent'], []).append(r)
+                                
+                            user_sessions[chat_id]['available_regions'] = grouped_regions
+                            user_sessions[chat_id]['project_id'] = project_id
+                            
+                            markup = InlineKeyboardMarkup(row_width=2)
+                            markup.add(*[InlineKeyboardButton(text=c, callback_data=f"cont_{c}") for c in grouped_regions.keys()])
+                            bot.send_message(chat_id, "💀 **WORM-AI: REGIONS EXTRACTED.**\n\n👇 الرجاء اختيار القارة لإنشاء السيرفر:", reply_markup=markup, parse_mode="Markdown")
+                            
+                            state = "WAIT_USER_SELECTION"
+                        else:
+                            extract_retries += 1
+                            if extract_retries > 3: state = "DONE"
+                            else:
+                                driver.execute_script("document.body.click();") 
+                                time.sleep(1)
+                                try:
+                                    current_val = driver.find_element(By.XPATH, "//*[contains(text(), 'Region')]/following::*[@role='combobox'][1]")
+                                    ActionChains(driver).move_to_element(current_val).click().perform()
+                                except: pass
+                    except Exception:
+                        state = "DONE"
+                        
+                elif state == "AUTHORIZE_SHELL":
+                    js_fast_click = """
+                    function attemptClick(rootDoc) {
+                        if (!rootDoc) return false;
+                        let elements = rootDoc.querySelectorAll('button, span.mdc-button__label, modal-action button, a, [role="button"]');
+                        for (let el of elements) {
+                            let text = (el.innerText || el.textContent || '').trim();
+                            if (['Continue', 'Doorgaan', 'متابعة', 'Continuer'].includes(text)) { try { el.click(); } catch(e) {} }
+                            if (['Authorize', 'Autoriser', 'تخويل', 'Autoriseren'].includes(text) || (text.includes('Authorize') && text.length <= 15)) {
+                                try { el.click(); } catch(e) {}
+                                el.querySelectorAll('span').forEach(s => { try{ s.click() } catch(e){} });
+                                return true;
+                            }
+                        }
+                        for (let el of rootDoc.querySelectorAll('*')) {
+                            if (el.shadowRoot && attemptClick(el.shadowRoot)) return true;
+                        }
+                        return false;
+                    }
+                    if (attemptClick(document)) return true;
+                    for (let f of document.querySelectorAll('iframe')) {
+                        try { if (attemptClick(f.contentDocument)) return true; } catch(e) {}
+                    }
+                    return false;
+                    """
+                    if driver.execute_script(js_fast_click):
+                        state = "WAIT_TERMINAL_BOOT"
+
+                elif state == "WAIT_TERMINAL_BOOT":
+                    js_check_term = """
+                    function checkTerm(root) {
+                        if (root.querySelector('textarea.xterm-helper-textarea')) return true;
+                        for (let f of root.querySelectorAll('iframe')) {
+                            try { if (checkTerm(f.contentDocument)) return true; } catch(e) {}
+                        }
+                        return false;
+                    }
+                    return checkTerm(document);
+                    """
+                    if driver.execute_script(js_check_term):
+                        time.sleep(2) 
+                        state = "INJECT_PAYLOAD"
+
+                elif state == "INJECT_PAYLOAD":
+                    selected_reg = user_sessions[chat_id].get('selected_region', 'europe-west4')
+                    protocol = user_sessions[chat_id].get('protocol', 'vless')
+                    
+                    inbound_cfg = ""
+                    link_gen = ""
+                    proto_name = protocol.upper()
+                    
+                    if protocol == 'vmess':
+                        inbound_cfg = r"""{
+  "log": {"loglevel": "none"},
+  "inbounds": [{
+    "listen": "0.0.0.0", "port": ${PORT}, "protocol": "vmess",
+    "settings": {"clients": [{"id": "${UUID}", "alterId": 0}]},
+    "streamSettings": {"network": "ws", "wsSettings": {"path": "${WS_PATH}", "maxEarlyData": 2560, "earlyDataHeaderName": "Sec-WebSocket-Protocol"}},
+    "sniffing": {"enabled": false}
+  }],
+  "outbounds": [{"protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}],
+  "policy": {"levels": {"0": {"handshake": 1, "connIdle": 600, "uplinkOnly": 1, "downlinkOnly": 1}}}
+}"""
+                        link_gen = r"""VMESS_JSON="{\"v\":\"2\",\"ps\":\"𝗢 𝗖 𝗫 ⚡️\",\"add\":\"vpn.googleapis.com\",\"port\":\"443\",\"id\":\"${UUID}\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"${SERVICE_HOST}\",\"path\":\"/%40O_C_X7\",\"tls\":\"tls\",\"sni\":\"yt.be\"}"
+VPN_LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)" """
+
+                    elif protocol == 'trojan':
+                        inbound_cfg = r"""{
+  "log": {"loglevel": "none"},
+  "inbounds": [{
+    "listen": "0.0.0.0", "port": ${PORT}, "protocol": "trojan",
+    "settings": {"clients": [{"password": "${UUID}"}]},
+    "streamSettings": {"network": "ws", "wsSettings": {"path": "${WS_PATH}", "maxEarlyData": 2560, "earlyDataHeaderName": "Sec-WebSocket-Protocol"}},
+    "sniffing": {"enabled": false}
+  }],
+  "outbounds": [{"protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}],
+  "policy": {"levels": {"0": {"handshake": 1, "connIdle": 600, "uplinkOnly": 1, "downlinkOnly": 1}}}
+}"""
+                        link_gen = r"""VPN_LINK="trojan://${UUID}@vpn.googleapis.com:443?path=/%40O_C_X7&security=tls&host=${SERVICE_HOST}&type=ws&sni=yt.be#𝗢 𝗖 𝗫 ⚡️" """
+                    
+                    else: # vless fallback
+                        inbound_cfg = r"""{
+  "log": {"loglevel": "none"},
+  "inbounds": [{
+    "listen": "0.0.0.0", "port": ${PORT}, "protocol": "vless",
+    "settings": {"clients": [{"id": "${UUID}", "level": 0}], "decryption": "none"},
+    "streamSettings": {"network": "ws", "wsSettings": {"path": "${WS_PATH}", "maxEarlyData": 2560, "earlyDataHeaderName": "Sec-WebSocket-Protocol"}},
+    "sniffing": {"enabled": false}
+  }],
+  "outbounds": [{"protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}],
+  "policy": {"levels": {"0": {"handshake": 1, "connIdle": 600, "uplinkOnly": 1, "downlinkOnly": 1}}}
+}"""
+                        link_gen = r"""VPN_LINK="vless://${UUID}@vpn.googleapis.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${SERVICE_HOST}&type=ws&sni=yt.be#𝗢 𝗖 𝗫 ⚡️" """
+
+                    final_script = VPN_SCRIPT_TEMPLATE.replace("<INBOUND_CONFIG_PLACEHOLDER>", inbound_cfg)
+                    final_script = final_script.replace("<LINK_GENERATION_PLACEHOLDER>", link_gen)
+                    final_script = final_script.replace("TARGET_REGION_PLACEHOLDER", selected_reg)
+                    final_script = final_script.replace("PROTOCOL_NAME_PLACEHOLDER", proto_name)
+                    final_script = final_script.replace("<BOT_TOKEN_PLACEHOLDER>", BOT_TOKEN)
+                    final_script = final_script.replace("<CHAT_ID_PLACEHOLDER>", str(chat_id))
+                    
+                    b64_script = base64.b64encode(final_script.encode('utf-8')).decode('utf-8')
+                    cmd_payload = f"clear && echo '{b64_script}' | base64 -d > deploy.sh && chmod +x deploy.sh && ./deploy.sh\n"
+                    
+                    js_inject = """
+                    function pasteToTerminal(root, text) {
+                        let textareas = root.querySelectorAll('textarea.xterm-helper-textarea');
+                        for (let ta of textareas) {
+                            ta.focus();
+                            const dt = new DataTransfer();
+                            dt.setData('text/plain', text);
+                            ta.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true}));
+                            setTimeout(() => {
+                                ta.dispatchEvent(new KeyboardEvent('keydown', {bubbles: true, cancelable: true, keyCode: 13, key: 'Enter'}));
+                            }, 500);
+                            return true;
+                        }
+                        for (let f of root.querySelectorAll('iframe')) {
+                            try { if (pasteToTerminal(f.contentDocument, text)) return true; } catch(e) {}
+                        }
+                        return false;
+                    }
+                    return pasteToTerminal(document, arguments[0]);
+                    """
+                    success = driver.execute_script(js_inject, cmd_payload)
+                    if success:
+                        time.sleep(1)
+                        try: ActionChains(driver).send_keys(Keys.ENTER).perform() 
+                        except: pass
+                    else:
+                        ActionChains(driver).send_keys(cmd_payload).send_keys(Keys.ENTER).perform()
+                    
+                    state = "SILENT_BUILD"
+                    
+            if not user_sessions.get(chat_id, {}).get('active'):
+                try: bot.delete_message(chat_id, status_msg_id)
+                except: pass
+                
         except Exception as e:
-            log.error(f"Queue worker error: {e}")
-            with queue_lock:
-                active_task_cid = None
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  17 · COMMAND EXECUTOR                                ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def _adaptive_wait(command):
-    cl = command.lower()
-    if any(k in cl for k in Config.SLOW_CMDS):
-        return 10
-    if any(k in cl for k in Config.FAST_CMDS):
-        return 2
-    if "|" in command or ">" in command:
-        return 5
-    return 3
-
-
-def execute_command(chat_id, command):
-    session = get_session(chat_id)
-    if not session:
-        send_safe(chat_id, "❌ لا توجد جلسة نشطة.\nأرسل رابط SSO أولاً.")
-        return
-
-    driver = session.get("driver")
-    if not driver:
-        send_safe(chat_id, "❌ المتصفح غير متوفر.")
-        return
-
-    if not is_shell_page(driver):
-        send_safe(chat_id,
-            "⚠️ لست في Cloud Shell بعد.\n"
-            "انتظر حتى يصل البوت للتيرمنال.")
-        return
-
-    session["terminal_ready"] = True
-    session["last_activity"] = time.time()
-
-    history = session.setdefault("cmd_history", [])
-    history.append({"cmd": command, "ts": datetime.now().isoformat()})
-    if len(history) > 20:
-        history.pop(0)
-
-    status_msg = send_safe(chat_id, f"⏳ جاري تنفيذ:\n`{command}`",
-                           parse_mode="Markdown")
-
-    text_before = read_terminal(driver) or ""
-    success = send_command(driver, command)
-
-    if not success:
-        send_safe(chat_id,
-            "⚠️ فشل إرسال الأمر للتيرمنال.\n"
-            "جرّب 🔄 تحديث ثم أعد المحاولة.")
-        if status_msg:
-            try: bot.delete_message(chat_id, status_msg.message_id)
-            except: pass
-        return
-
-    wait = _adaptive_wait(command)
-    time.sleep(wait)
-
-    text_after = read_terminal(driver) or ""
-    output = ""
-
-    if text_after and text_after != text_before:
-        if len(text_after) > len(text_before):
-            new_part = text_after[len(text_before):].strip()
-            output = new_part or extract_result(text_after, command) or ""
-        else:
-            output = extract_result(text_after, command) or ""
-    elif text_after:
-        output = extract_result(text_after, command) or ""
-
-    if output:
-        lines = output.split("\n")
-        cleaned = []
-        skip_first = False
-        for ln in lines:
-            if not skip_first and command in ln:
-                skip_first = True
-                continue
-            cleaned.append(ln)
-        output = "\n".join(cleaned).strip()
-
-    bio = take_screenshot(driver)
-
-    if output:
-        if len(output) > 3900:
-            output = output[:3900] + "\n… (تم اقتطاع النص)"
-        try:
-            send_safe(
-                chat_id,
-                f"✅ **الأمر:**\n`{command}`\n\n"
-                f"📋 **النتيجة:**\n```\n{output}\n```",
-                parse_mode="Markdown",
-                reply_markup=build_panel(cmd_mode=True),
-            )
-        except Exception:
-            send_safe(
-                chat_id,
-                f"✅ الأمر: {command}\n\n📋 النتيجة:\n{output}",
-                reply_markup=build_panel(cmd_mode=True),
-            )
-    else:
-        send_safe(
-            chat_id,
-            f"✅ تم تنفيذ: `{command}`\n📋 لم يُلتقط نص (شاهد الصورة)",
-            parse_mode="Markdown",
-        )
-
-    if bio:
-        try:
-            bot.send_photo(
-                chat_id, bio,
-                caption=f"📸 بعد: `{command}`",
-                parse_mode="Markdown",
-                reply_markup=build_panel(cmd_mode=True),
-            )
-        except Exception:
-            pass
-        bio.close()
-
-    if status_msg:
-        try: bot.delete_message(chat_id, status_msg.message_id)
-        except: pass
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  18 · BOT COMMAND HANDLERS                            ║
-# ╚═══════════════════════════════════════════════════════╝
-
-@bot.message_handler(commands=["start"])
-def cmd_start(msg):
-    bot.reply_to(msg, WELCOME_MSG, parse_mode="Markdown")
-
-@bot.message_handler(commands=["help", "h"])
-def cmd_help(msg):
-    bot.reply_to(msg, HELP_MSG, parse_mode="Markdown")
-
-@bot.message_handler(commands=["clearcookies"])
-def cmd_clearcookies(msg):
-    """أمر جديد لحذف الكوكيز في حال أراد المستخدم تغيير الحساب"""
-    cid = msg.chat.id
-    try:
-        if users_col is not None:
-            users_col.update_one({"_id": cid}, {"$unset": {"cookies": ""}})
-        if cid in session_cookies:
-            del session_cookies[cid]
-        bot.reply_to(msg, "🗑️ **تم مسح جلسة المتصفح (Cookies) بنجاح!**\nالرابط القادم سيطلب تسجيل الدخول من جديد.", parse_mode="Markdown")
-    except Exception as e:
-        bot.reply_to(msg, f"❌ حدث خطأ أثناء مسح الكوكيز: {e}")
-
-
-@bot.message_handler(commands=["status"])
-def cmd_status(msg):
-    cid = msg.chat.id
-    s = get_session(cid)
-    if not s:
-        in_queue = any(t["chat_id"] == cid for t in list(deployment_queue.queue))
-        if in_queue:
-            bot.reply_to(msg, "⏳ أنت حالياً في طابور الانتظار. سيتم البدء فور توفر مساحة.")
-        else:
-            bot.reply_to(msg, "❌ لا توجد جلسة نشطة.\nأرسل رابط SSO للبدء.")
-        return
-
-    uptime = fmt_duration(time.time() - s.get("created_at", time.time()))
-    drv = s.get("driver")
-    cur = current_url(drv) if drv else "غير متوفر"
-    hist = s.get("cmd_history", [])
-    last_cmds = "\n".join(
-        [f"  • `{h['cmd']}`" for h in hist[-5:]]
-    ) if hist else "  لا يوجد"
-
-    text = (
-        "ℹ️ **حالة الجلسة**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"📁 **المشروع:** `{s.get('project_id', 'غير معروف')}`\n"
-        f"🔄 **الحالة:** {'🟢 يعمل' if s.get('running') else '🔴 متوقف'}\n"
-        f"⌨️ **Terminal:** {'✅ جاهز' if s.get('terminal_ready') else '⏳ غير جاهز'}\n"
-        f"🎯 **الوضع:** {'⌨️ أوامر' if s.get('cmd_mode') else '👁️ بث'}\n"
-        f"⏱️ **المدة:** {uptime}\n"
-        f"🌐 **الصفحة:**\n  `{cur[:80]}`\n"
-        f"\n📜 **آخر الأوامر:**\n{last_cmds}"
-    )
-    bot.reply_to(msg, text, parse_mode="Markdown")
-
-@bot.message_handler(commands=["stop", "s"])
-def cmd_stop(msg):
-    cid = msg.chat.id
-    s = get_session(cid)
-    if not s:
-        removed = False
-        with deployment_queue.mutex:
-            for i, item in enumerate(deployment_queue.queue):
-                if item['chat_id'] == cid:
-                    del deployment_queue.queue[i]
-                    removed = True
-                    break
-        if removed:
-            bot.reply_to(msg, "🛑 تم سحب طلبك من الطابور بنجاح.")
-        else:
-            bot.reply_to(msg, "❌ لا توجد جلسة نشطة أو طلب في الطابور لإيقافه.")
-        return
-        
-    s["running"] = False
-    s["gen"] = s.get("gen", 0) + 1
-    try:
-        bot.edit_message_caption(
-            "🛑 تم الإيقاف",
-            chat_id=cid, message_id=s.get("msg_id"),
-        )
-    except Exception:
-        pass
-    cleanup_session(cid)
-    bot.reply_to(msg, "🛑 تم إيقاف الجلسة بنجاح.\nجاري إفساح المجال للشخص التالي...")
-
-@bot.message_handler(commands=["restart"])
-def cmd_restart(msg):
-    cid = msg.chat.id
-    s = get_session(cid)
-    if not s:
-        bot.reply_to(msg, "❌ لا توجد جلسة.")
-        return
-    threading.Thread(
-        target=_restart_driver, args=(cid, s), daemon=True
-    ).start()
-
-@bot.message_handler(commands=["url"])
-def cmd_url(msg):
-    cid = msg.chat.id
-    s = get_session(cid)
-    if not s or not s.get("driver"):
-        bot.reply_to(msg, "❌ لا توجد جلسة نشطة.")
-        return
-    u = current_url(s["driver"])
-    bot.reply_to(msg, f"🌐 الصفحة الحالية:\n`{u}`", parse_mode="Markdown")
-
-@bot.message_handler(commands=["cmd"])
-def cmd_command(msg):
-    parts = msg.text.split(maxsplit=1)
-    if len(parts) < 2:
-        bot.reply_to(
-            msg,
-            "💡 **الاستخدام:**\n"
-            "`/cmd ls -la`\n"
-            "`/cmd gcloud config list`",
-            parse_mode="Markdown",
-        )
-        return
-    threading.Thread(
-        target=execute_command,
-        args=(msg.chat.id, parts[1]),
-        daemon=True,
-    ).start()
-
-@bot.message_handler(commands=["screenshot", "ss"])
-def cmd_ss(msg):
-    cid = msg.chat.id
-    s = get_session(cid)
-    if not s or not s.get("driver"):
-        bot.reply_to(msg, "❌ لا توجد جلسة نشطة.")
-        return
-    bio = take_screenshot(s["driver"])
-    if bio:
-        now = datetime.now().strftime("%H:%M:%S")
-        bot.send_photo(
-            cid, bio,
-            caption=f"📸 لقطة شاشة — {now}",
-            reply_markup=build_panel(s.get("cmd_mode", False)),
-        )
-        bio.close()
-    else:
-        bot.reply_to(msg, "❌ فشل التقاط الشاشة.")
-
-# ── معالج الروابط ──
-@bot.message_handler(func=lambda m: (
-    m.text and m.text.startswith("https://www.skills.google/google_sso")
-))
-def handle_url_msg(msg):
-    cid = msg.chat.id
-    url = msg.text.strip()
-    
-    cooldown_expiry = 0
-    if users_col is not None:
-        user_record = users_col.find_one({"_id": cid})
-        if user_record and "vless_cooldown" in user_record:
-            cooldown_expiry = user_record["vless_cooldown"]
-    else:
-        cooldown_expiry = local_cooldowns.get(cid, 0)
-
-    if time.time() < cooldown_expiry:
-        bot.reply_to(msg, "⏳ **يرجى الانتظار!**\nلديك سيرفر VLESS قيد العمل حالياً.\nيرجى الانتظار حتى ينتهي وقت السيرفر السابق لتتمكن من إنشاء واحد جديد.", parse_mode="Markdown")
-        return
-
-    with sessions_lock:
-        if cid in user_sessions and user_sessions[cid].get("running"):
-            bot.reply_to(msg, "❌ لديك جلسة تعمل حالياً.\nيرجى انتظار انتهائها أو إيقافها باستخدام أمر /stop.")
-            return
+            bot.send_message(chat_id, f"❌ حدث خطأ داخلي:\n{str(e)[:100]}")
+        finally:
+            if driver:
+                driver.quit() 
+            user_sessions.pop(chat_id, None)
+            task_queue.task_done()
             
-    in_queue = any(t["chat_id"] == cid for t in list(deployment_queue.queue))
-    if in_queue or active_task_cid == cid:
-        bot.reply_to(msg, "❌ طلبك قيد المعالجة أو في الطابور بالفعل. يرجى الانتظار.")
-        return
-        
-    pos = deployment_queue.qsize()
-    
-    if active_task_cid is not None:
-        bot.reply_to(msg, f"⏳ **البوت مشغول حالياً!**\n\nتم وضع طلبك في طابور الانتظار بأمان.\n🔹 ترتيبك في الطابور: `{pos + 1}`\n\nسيبدأ البوت تلقائياً بمجرد انتهاء الشخص الذي قبلك.", parse_mode="Markdown")
-    
-    deployment_queue.put({"chat_id": cid, "url": url})
+            if not task_queue.empty():
+                bot.send_message(chat_id, f"🔄 الطابور يتحرك. متبقي {task_queue.qsize()} طلبات.")
 
+threading.Thread(target=worker_loop, daemon=True).start()
 
-@bot.message_handler(func=lambda m: m.text and m.text.startswith("http"))
-def handle_bad_url(msg):
-    bot.reply_to(
-        msg,
-        "❌ الرابط غير صحيح.\n\n"
-        "يجب أن يبدأ بـ:\n"
-        "`https://www.skills.google/google_sso`",
-        parse_mode="Markdown",
-    )
-
-# ── معالج النصوص (الأوامر المباشرة) ──
-@bot.message_handler(func=lambda m: (
-    m.text
-    and not m.text.startswith("/")
-    and not m.text.startswith("http")
-))
-def handle_text(msg):
-    cid = msg.chat.id
-    s = get_session(cid)
-    if not s:
-        return
-
-    waiting = s.get("waiting_for_input")
-    if waiting in ["email", "password"]:
-        try:
-            drv = s.get("driver")
-            if waiting == "email":
-                els = drv.find_elements(By.XPATH, "//input[@type='email']")
-                if els:
-                    els[0].clear()
-                    els[0].send_keys(msg.text)
-                    els[0].send_keys(Keys.RETURN)
-                    s["waiting_for_input"] = None
-                    send_safe(cid, "✅ تم إدخال اسم المستخدم، يرجى الانتظار...")
-                else:
-                    send_safe(cid, "❌ حقل إدخال البريد الإلكتروني لم يعد متاحاً على الشاشة.")
-            elif waiting == "password":
-                els = drv.find_elements(By.XPATH, "//input[@type='password']")
-                if els:
-                    els[0].clear()
-                    els[0].send_keys(msg.text)
-                    els[0].send_keys(Keys.RETURN)
-                    s["waiting_for_input"] = None
-                    send_safe(cid, "✅ تم إدخال كلمة المرور بنجاح، يرجى الانتظار...")
-                else:
-                    send_safe(cid, "❌ حقل إدخال كلمة المرور لم يعد متاحاً على الشاشة.")
-        except Exception as e:
-            send_safe(cid, f"❌ حدث خطأ أثناء إدخال البيانات: {e}")
-        return
-
-    if s.get("cmd_mode"):
-        threading.Thread(
-            target=execute_command,
-            args=(cid, msg.text),
-            daemon=True,
-        ).start()
-    elif is_shell_page(s.get("driver")):
-        bot.reply_to(
-            msg,
-            "💡 اضغط **⌨️ وضع الأوامر** أولاً\n"
-            f"أو أرسل: `/cmd {msg.text}`",
-            parse_mode="Markdown",
-        )
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  19 · CALLBACK HANDLER                                ║
-# ╚═══════════════════════════════════════════════════════╝
-
+# ── إدارة الأزرار (Callbacks) ──
 @bot.callback_query_handler(func=lambda call: True)
-def on_callback(call):
-    cid = call.message.chat.id
-    try:
-        s = get_session(cid)
-        if not s:
-            bot.answer_callback_query(call.id, "لا توجد جلسة نشطة.")
-            return
+def handle_query(call):
+    chat_id = call.message.chat.id
+    data = call.data
+    
+    if data == "abort_mission":
+        if chat_id in user_sessions:
+            user_sessions[chat_id]['active'] = False
+            bot.answer_callback_query(call.id, "تم إرسال أمر الإلغاء!")
+            bot.edit_message_caption(chat_id=chat_id, message_id=call.message.message_id, caption="🛑 **تم إلغاء المهمة يدوياً.**", parse_mode="Markdown")
+        else:
+            bot.answer_callback_query(call.id, "لا توجد مهمة نشطة لإلغائها.")
+        return
 
-        action = call.data
+    if chat_id not in user_sessions or not user_sessions[chat_id].get('active'):
+        bot.answer_callback_query(call.id, "❌ الجلسة انتهت أو أُلغيت.")
+        return
+        
+    if data.startswith("cont_"):
+        continent = data.split("cont_")[1]
+        regions = user_sessions[chat_id].get('available_regions', {}).get(continent, [])
+        markup = InlineKeyboardMarkup(row_width=1)
+        for r in regions:
+            translated_name = translate_region(r['name'])
+            btn_text = f"{translated_name} ({r['id']})"
+            markup.add(InlineKeyboardButton(text=btn_text, callback_data=f"reg_{r['id']}"))
+        markup.add(InlineKeyboardButton(text="🔙 رجوع للقارات", callback_data="back_to_conts"))
+        bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=f"📍 سيرفرات {continent}:", reply_markup=markup)
+        
+    elif data.startswith("reg_"):
+        reg_id = data.split("reg_")[1]
+        user_sessions[chat_id]['selected_region'] = reg_id
+        markup = InlineKeyboardMarkup(row_width=3)
+        markup.add(
+            InlineKeyboardButton("⚡ VLESS", callback_data="proto_vless"),
+            InlineKeyboardButton("🛡️ VMESS", callback_data="proto_vmess"),
+            InlineKeyboardButton("🐎 TROJAN", callback_data="proto_trojan")
+        )
+        bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, 
+                              text=f"✅ تم اختيار السيرفر: {reg_id}\n\n👇 الرجاء اختيار بروتوكول الاتصال النهائي:", reply_markup=markup)
+                              
+    elif data.startswith("proto_"):
+        protocol = data.split("_")[1]
+        user_sessions[chat_id]['protocol'] = protocol
+        reg_id = user_sessions[chat_id].get('selected_region', 'غير معروف')
+        
+        bot.answer_callback_query(call.id, f"تم اختيار {protocol.upper()} ⚡")
+        
+        confirmation_text = (
+            f"✅ **تم تأكيد المعطيات بنجاح!**\n\n"
+            f"📍 المنطقة: `{reg_id}`\n"
+            f"🛡️ البروتوكول: `{protocol.upper()}`\n\n"
+            f"💀🔥 WORM-AI: INITIATING FINAL INJECTION...\n"
+            f"يرجى مراقبة البث المباشر في الأعلى 👆"
+        )
+        bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=confirmation_text, parse_mode="Markdown")
 
-        if action.startswith("setreg_"):
-            region = action.split("_")[1]
-            s["selected_region"] = region
-            s["waiting_for_region"] = False
-            bot.answer_callback_query(call.id, f"تم اختيار {region}")
-            
-            msg_id = s.get("status_msg_id")
-            if msg_id:
-                edit_safe(cid, msg_id, f"✅ تم اختيار السيرفر: `{region}`\n🚀 جاري الانتقال إلى Terminal وبدء التثبيت التلقائي...\n⚙️ يرجى مراقبة البث المباشر. سيصلك الرابط فور الانتهاء.", parse_mode="Markdown", reply_markup=None)
-            
-            pid = s.get("project_id")
-            if pid:
-                drv = s.get("driver")
-                try:
-                    drv.get("about:blank")
-                    time.sleep(1.5)
-                    gc.collect()
-                except Exception:
-                    pass
-                shell = (
-                    f"https://shell.cloud.google.com/"
-                    f"?enableapi=true&project={pid}&pli=1&show=terminal"
-                )
-                safe_navigate(drv, shell)
-                s["shell_loading_until"] = time.time() + 10
-            return
+    elif data == "back_to_conts":
+        grouped_regions = user_sessions[chat_id].get('available_regions', {})
+        markup = InlineKeyboardMarkup(row_width=2)
+        buttons = [InlineKeyboardButton(text=c, callback_data=f"cont_{c}") for c in grouped_regions.keys()]
+        markup.add(*buttons)
+        bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text="💀 WORM-AI: REGIONS EXTRACTED.\n\n👇 الرجاء اختيار القارة:", reply_markup=markup)
 
-        elif action == "stop":
-            s["running"] = False
-            s["gen"] = s.get("gen", 0) + 1
-            bot.answer_callback_query(call.id, "🛑 إيقاف...")
-            try:
-                bot.edit_message_caption(
-                    "🛑 تم الإيقاف",
-                    chat_id=cid, message_id=s.get("msg_id"),
-                )
-            except Exception:
-                pass
-            cleanup_session(cid)
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    text = "💀🔥 WORM-AI V100.1 (APEX BUILD) ONLINE.\n\nأرسل رابط القنصل (Console) لتبدأ."
+    bot.reply_to(message, text)
 
-        elif action == "refresh":
-            bot.answer_callback_query(call.id, "🔄 تحديث...")
-            drv = s.get("driver")
-            if drv:
-                try:
-                    drv.refresh()
-                except Exception:
-                    pass
+@bot.message_handler(func=lambda message: message.text.startswith('http'))
+def handle_url(message):
+    chat_id = message.chat.id
+    url = message.text
 
-        elif action == "screenshot":
-            bot.answer_callback_query(call.id, "📸 جاري التقاط...")
-            drv = s.get("driver")
-            if drv:
-                bio = take_screenshot(drv)
-                if bio:
-                    now = datetime.now().strftime("%H:%M:%S")
-                    bot.send_photo(
-                        cid, bio,
-                        caption=f"📸 {now}",
-                        reply_markup=build_panel(s.get("cmd_mode", False)),
-                    )
-                    bio.close()
+    if chat_id in user_sessions and user_sessions[chat_id].get('active'):
+        bot.reply_to(message, "⚠️ لديك مهمة نشطة بالفعل. الرجاء إنهاؤها أو إلغاؤها أولاً.")
+        return
 
-        elif action == "cmd_mode":
-            s["cmd_mode"] = True
-            drv = s.get("driver")
-            if drv and is_shell_page(drv):
-                s["terminal_ready"] = True
-            bot.answer_callback_query(call.id, "⌨️ وضع الأوامر")
-            send_safe(
-                cid,
-                "⌨️ **وضع الأوامر مُفعّل!**\n\n"
-                "أرسل أي أمر مباشرة كرسالة:\n"
-                "• `ls -la`\n"
-                "• `gcloud config list`\n"
-                "• `cat file.txt`\n\n"
-                "🔙 للرجوع للبث اضغط الزر",
-                parse_mode="Markdown",
-            )
-
-        elif action == "watch_mode":
-            s["cmd_mode"] = False
-            bot.answer_callback_query(call.id, "👁️ وضع البث")
-            send_safe(cid, "👁️ تم الرجوع لوضع البث المباشر.")
-
-        elif action == "info":
-            bot.answer_callback_query(call.id, "ℹ️")
-            uptime = fmt_duration(
-                time.time() - s.get("created_at", time.time())
-            )
-            drv = s.get("driver")
-            u = current_url(drv)[:60] if drv else "—"
-            text = (
-                f"ℹ️ **الحالة:**\n"
-                f"📁 `{s.get('project_id', '—')}`\n"
-                f"⌨️ Terminal: {'✅' if s.get('terminal_ready') else '⏳'}\n"
-                f"⏱️ {uptime}\n"
-                f"🌐 `{u}`"
-            )
-            send_safe(cid, text, parse_mode="Markdown")
-
-        elif action == "restart_browser":
-            bot.answer_callback_query(call.id, "🔁 إعادة تشغيل...")
-            threading.Thread(
-                target=_restart_driver, args=(cid, s), daemon=True
-            ).start()
-
-    except Exception as e:
-        log.debug(f"Callback error: {e}")
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  20 · BOOT CHECK & GRACEFUL SHUTDOWN                  ║
-# ╚═══════════════════════════════════════════════════════╝
-
-def boot_check():
-    """فحص التبعيات عند بدء التشغيل"""
-    log.info("🔍 فحص التبعيات...")
-
-    browser = find_path(
-        ["chromium", "chromium-browser"],
-        ["/usr/bin/chromium", "/usr/bin/chromium-browser"],
-    )
-    drv = find_path(
-        ["chromedriver"],
-        ["/usr/bin/chromedriver", "/usr/lib/chromium/chromedriver"],
-    )
-
-    if not browser:
-        log.critical("❌ Chromium غير موجود!")
-        sys.exit(1)
-    log.info(f"  ✅ Browser: {browser}")
-
-    if not drv:
-        log.critical("❌ ChromeDriver غير موجود!")
-        sys.exit(1)
-    log.info(f"  ✅ Driver:  {drv}")
-
-    ver = browser_version(browser)
-    log.info(f"  ✅ Version: {ver}")
-    log.info(f"  ✅ Display: {'Active' if display else 'None'}")
-    log.info("✅ جميع التبعيات متوفرة!")
-
-
-def graceful_shutdown(signum, frame):
-    """إنهاء نظيف عند إيقاف التطبيق"""
-    log.info("🛑 إيقاف نظيف...")
-    shutdown_event.set()
-
-    with sessions_lock:
-        for cid in list(user_sessions):
-            try:
-                s = user_sessions[cid]
-                s["running"] = False
-                safe_quit(s.get("driver"))
-            except Exception:
-                pass
-        user_sessions.clear()
-
-    log.info("👋 تم الإنهاء.")
-    sys.exit(0)
-
-
-signal.signal(signal.SIGTERM, graceful_shutdown)
-signal.signal(signal.SIGINT, graceful_shutdown)
-
-
-# ╔═══════════════════════════════════════════════════════╗
-# ║  21 · MAIN ENTRY POINT                                ║
-# ╚═══════════════════════════════════════════════════════╝
+    user_sessions[chat_id] = {'active': False}
+    task_queue.put({'chat_id': chat_id, 'url': url})
+    
+    position = task_queue.qsize()
+    if position == 1 and task_queue.unfinished_tasks == 1:
+        bot.reply_to(message, "💀🔥 تم الاستلام. جاري بدء الاختراق فوراً...")
+    else:
+        bot.reply_to(message, f"⌛ تم وضعك في الطابور.\nأنت رقم #{position} في الانتظار. السيرفر يعالج طلباً آخر حالياً للحفاظ على الذاكرة.")
 
 if __name__ == "__main__":
-    print("═" * 55)
-    print("  🤖 Google Cloud Shell Bot — Premium v3.0-Queue")
-    print(f"  🌐 Port: {Config.PORT}")
-    print("═" * 55)
-
-    # فحص التبعيات
-    boot_check()
-
-    # خادم الصحة
-    threading.Thread(target=_health_server, daemon=True).start()
-
-    # تنظيف تلقائي
-    threading.Thread(target=_auto_cleanup_loop, daemon=True).start()
-    
-    # 💡 عامل الطابور (الذي يعالج الروابط بالترتيب)
-    threading.Thread(target=queue_worker, daemon=True).start()
-
-    # حل مشكلة التعارض 409
-    try:
-        bot.remove_webhook()
-        time.sleep(1)
-    except Exception as e:
-        log.warning(f"Webhook removal: {e}")
-
-    log.info("🚀 البوت يعمل الآن ويستقبل الطلبات في الطابور!")
-
-    while not shutdown_event.is_set():
-        try:
-            bot.polling(
-                non_stop=True,
-                skip_pending=True,
-                timeout=60,
-                long_polling_timeout=60,
-            )
-        except Exception as e:
-            log.error(f"Polling error: {e}")
-            if shutdown_event.is_set():
-                break
-            time.sleep(5)
+    print("WORM-AI V100 IS ACTIVE...")
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)
