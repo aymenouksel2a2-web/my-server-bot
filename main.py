@@ -4,7 +4,7 @@ import threading
 import queue
 import io
 import telebot
-from telebot.types import InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 import re
 import base64
 import pymongo
@@ -651,15 +651,14 @@ def send_welcome(message):
         "للبدء، يمكنك إرسال رابط Qwiklabs مباشرة، أو استخدام أزرار التحكم بالأسفل:"
     )
     
-    markup = InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        InlineKeyboardButton("🚀 بدء اختراق (أرسل الرابط مباشرة)", callback_data="btn_dummy"),
-        InlineKeyboardButton("🔄 تصفير وإلغاء جلستي الحالية", callback_data="user_reset")
-    )
+    # ── استخدام لوحة المفاتيح السفلية الثابتة ──
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(KeyboardButton("🚀 بدء اختراق"))
+    markup.add(KeyboardButton("🔄 تصفير جلستي"))
     
     # إضافة زر لوحة الإدارة إذا كان المستخدم هو الآدمن
     if str(chat_id) == str(ADMIN_ID):
-        markup.add(InlineKeyboardButton("👑 الدخول للوحة الإدارة", callback_data="admin_panel"))
+        markup.add(KeyboardButton("👑 لوحة الإدارة"))
 
     bot.reply_to(message, text, reply_markup=markup, parse_mode="Markdown")
 
@@ -681,7 +680,40 @@ def process_del_vip(message):
         bot.reply_to(message, "❌ معرف غير صالح.")
 
 # ==========================================
-# 🎛️ إدارة الأزرار (Callbacks Handler)
+# ⌨️ التعامل مع أزرار لوحة التحكم السفلية
+# ==========================================
+@bot.message_handler(func=lambda message: message.text in ["🚀 بدء اختراق", "🔄 تصفير جلستي", "👑 لوحة الإدارة"])
+def handle_reply_keyboard(message):
+    chat_id = message.chat.id
+    text = message.text
+    
+    if not is_vip(chat_id):
+        send_unauthorized_msg(chat_id)
+        return
+        
+    if text == "🚀 بدء اختراق":
+        bot.reply_to(message, "قم بنسخ رابط Qwiklabs ولصقه هنا في المحادثة لتبدأ العملية فوراً ⚡")
+        
+    elif text == "🔄 تصفير جلستي":
+        clear_session(chat_id)
+        bot.reply_to(message, "🔄 تم مسح الجلسات المعلقة الخاصة بك بنجاح. يمكنك إرسال رابط جديد الآن.")
+        
+    elif text == "👑 لوحة الإدارة" and str(chat_id) == str(ADMIN_ID):
+        # لوحة الإدارة تبقى كأزرار شفافة مدمجة مع الرسالة لسهولة الاستخدام
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("👥 قائمة الـ VIP", callback_data="admin_vips"),
+            InlineKeyboardButton("📊 حالة النظام", callback_data="admin_status")
+        )
+        markup.add(
+            InlineKeyboardButton("➕ إضافة عميل", callback_data="admin_add_vip"),
+            InlineKeyboardButton("➖ إزالة عميل", callback_data="admin_del_vip")
+        )
+        bot.reply_to(message, "👑 **لوحة تحكم الإدارة (Admin Dashboard)** 👑\n\nاختر الإجراء المطلوب:", reply_markup=markup, parse_mode="Markdown")
+
+
+# ==========================================
+# 🎛️ إدارة الأزرار الشفافة (Inline Callbacks)
 # ==========================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
@@ -690,16 +722,6 @@ def handle_query(call):
     
     if not is_vip(chat_id):
         bot.answer_callback_query(call.id, "❌ ليس لديك صلاحية.", show_alert=True)
-        return
-        
-    # ── أزرار المستخدم العادي ──
-    if data == "user_reset":
-        clear_session(chat_id)
-        bot.answer_callback_query(call.id, "تم تصفير جلستك بنجاح!")
-        bot.send_message(chat_id, "🔄 تم مسح الجلسات المعلقة الخاصة بك. يمكنك إرسال رابط جديد الآن.")
-        return
-    elif data == "btn_dummy":
-        bot.answer_callback_query(call.id, "قم بنسخ رابط Qwiklabs ولصقه هنا في المحادثة.")
         return
         
     # ── أزرار لوحة الإدارة ──
