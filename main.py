@@ -796,4 +796,9 @@ def handle_query(call):
 # طباعة تأكيدية عند تشغيل السيرفر
 if __name__ == "__main__":
     print("💎 WORM-AI PRO SYSTEM IS ACTIVE...")
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except Exception:
+        pass
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
