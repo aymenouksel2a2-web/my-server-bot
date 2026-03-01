@@ -124,19 +124,23 @@ def clear_session(chat_id):
     })
 
 # ==========================================
-# 🚀 محرك المتصفح (Web Driver)
+# 🚀 محرك المتصفح (Web Driver - Chrome Crash Fix)
 # ==========================================
 def get_driver():
     options = Options()
-    options.add_argument('--incognito')
+    # أوامر لمنع انهيار متصفح Chrome في خوادم Railway / Docker
+    options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1280,800')
     options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_argument('--disable-infobars')
+    options.add_argument('--disable-extensions')
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option('useAutomationExtension', False)
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36')
+    
     driver = webdriver.Chrome(options=options)
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
         "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
@@ -306,6 +310,9 @@ def translate_region(name):
 # ⚙️ محرك الطابور والاختراق
 # ==========================================
 def worker_loop():
+    display = Display(visible=0, size=(1280, 800))
+    display.start()
+    
     while True:
         task = task_queue.get()
         chat_id = task['chat_id']
@@ -621,10 +628,11 @@ VPN_LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)" """
                 except: pass
                 
         except Exception as e:
-            bot.send_message(chat_id, f"❌ حدث خطأ داخلي:\n{str(e)[:100]}")
+            bot.send_message(chat_id, f"❌ حدث خطأ داخلي. يرجى تصفير الجلسة والمحاولة لاحقاً.\n`{str(e)[:150]}`", parse_mode="Markdown")
         finally:
             if driver:
-                driver.quit() 
+                try: driver.quit()
+                except: pass 
             
             clear_session(chat_id)
             task_queue.task_done()
@@ -859,12 +867,21 @@ def handle_url(message):
     else:
         bot.reply_to(message, f"⌛ السيرفر مشغول حالياً.\nأنت رقم `{queue_pos}` في الطابور. سيبدأ البوت تلقائياً عند دورك.", parse_mode="Markdown")
 
-# طباعة تأكيدية عند تشغيل السيرفر
+# طباعة تأكيدية عند تشغيل السيرفر وحل مشكلة الـ Polling
 if __name__ == "__main__":
     print("💎 WORM-AI PRO SYSTEM IS ACTIVE...")
+    
+    # محاولة تنظيف الـ Webhook والـ Updates لتجنب خطأ 409
     try:
         bot.remove_webhook()
         time.sleep(1)
     except Exception:
         pass
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+        
+    # تشغيل البوت مع تخطي الأخطاء لكي لا ينهار أبداً
+    while True:
+        try:
+            bot.polling(none_stop=True, timeout=60, long_polling_timeout=60)
+        except Exception as e:
+            print(f"⚠️ Polling Error: {e} - Retrying in 5 seconds...")
+            time.sleep(5)
