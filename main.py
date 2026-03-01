@@ -150,11 +150,11 @@ def clear_session(chat_id):
     })
 
 # ==========================================
-# 🚀 محرك المتصفح (Web Driver - Chrome Crash Fix)
+# 🚀 محرك المتصفح (Web Driver - Original Working Engine)
 # ==========================================
 def get_driver():
     options = Options()
-    # إرجاع الوضع الخفي وإزالة الـ Headless ليعمل عبر الـ Xvfb كالسابق
+    # إرجاع الإعدادات الأصلية القوية التي تتخطى حماية جوجل بالاعتماد على الشاشة الوهمية Xvfb
     options.add_argument('--incognito')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
@@ -163,7 +163,7 @@ def get_driver():
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option('useAutomationExtension', False)
-    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36')
+    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
     
     driver = webdriver.Chrome(options=options)
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
@@ -282,7 +282,6 @@ fi
 
 echo "[4/4] 📡 Finalizing Link..."
 
-# التكوين الحرفي والدقيق للرابط كما تم الاتفاق عليه
 SERVICE_HOST="${SERVICE_NAME}-${PROJECT_NUMBER}.${REGION}.run.app"
 <LINK_GENERATION_PLACEHOLDER>
 
@@ -428,7 +427,7 @@ def worker_loop():
                             for el in elements:
                                 text = (el.text or el.get_attribute('value') or '').lower()
                                 el_id = el.get_attribute('id') or ''
-                                # إضافة 'continue' و 'متابعة' لتخطي زر (Verify it's you) الأزرق
+                                # الضغط التلقائي لتجاوز شاشة التحقق إن ظهرت
                                 if 'understand' in text or 'begrijp' in text or 'accept' in text or 'أفهم' in text or 'موافق' in text or 'continue' in text or 'متابعة' in text or el_id == 'confirm':
                                     driver.execute_script("arguments[0].click();", el)
                                     break
