@@ -636,102 +636,117 @@ VPN_LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)" """
 threading.Thread(target=worker_loop, daemon=True).start()
 
 # ==========================================
-# 👑 أوامر وإدارة الآدمن (Admin Commands)
-# ==========================================
-@bot.message_handler(commands=['addvip'])
-def add_vip_cmd(message):
-    if str(message.chat.id) != str(ADMIN_ID): return
-    parts = message.text.split()
-    if len(parts) < 2:
-        bot.reply_to(message, "⚠️ الاستخدام الصحيح:\n`/addvip <ID>`")
-        return
-    add_vip_user(parts[1])
-    bot.reply_to(message, f"✅ تم إضافة العميل `{parts[1]}` إلى قائمة الـ VIP.", parse_mode="Markdown")
-
-@bot.message_handler(commands=['delvip'])
-def del_vip_cmd(message):
-    if str(message.chat.id) != str(ADMIN_ID): return
-    parts = message.text.split()
-    if len(parts) < 2:
-        bot.reply_to(message, "⚠️ الاستخدام الصحيح:\n`/delvip <ID>`")
-        return
-    remove_vip_user(parts[1])
-    bot.reply_to(message, f"🗑️ تم إزالة العميل `{parts[1]}` من قائمة الـ VIP.", parse_mode="Markdown")
-
-@bot.message_handler(commands=['vips'])
-def list_vips_cmd(message):
-    if str(message.chat.id) != str(ADMIN_ID): return
-    vips = get_all_vips()
-    if not vips:
-        bot.reply_to(message, "قائمة الـ VIP فارغة.")
-    else:
-        text = "👥 **قائمة العملاء (VIPs):**\n\n" + "\n".join([f"🔹 `{uid}`" for uid in vips])
-        bot.reply_to(message, text, parse_mode="Markdown")
-
-# ==========================================
-# 🎮 أوامر واستجابات المستخدمين (User Flow)
+# 👑 أوامر الدعم ولوحة التحكم (Dashboard UI)
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    if not is_vip(message.chat.id):
-        send_unauthorized_msg(message.chat.id)
+    chat_id = message.chat.id
+    if not is_vip(chat_id):
+        send_unauthorized_msg(chat_id)
         return
         
     text = (
         "💎 **مرحباً بك في نظام OCX PRO** 💎\n\n"
         "أنت تمتلك صلاحية VIP.\n"
-        "للبدء، فقط أرسل رابط حساب Qwiklabs وسنقوم باللازم."
+        "للبدء، يمكنك إرسال رابط Qwiklabs مباشرة، أو استخدام أزرار التحكم بالأسفل:"
     )
-    bot.reply_to(message, text, parse_mode="Markdown")
+    
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("🚀 بدء اختراق (أرسل الرابط مباشرة)", callback_data="btn_dummy"),
+        InlineKeyboardButton("🔄 تصفير وإلغاء جلستي الحالية", callback_data="user_reset")
+    )
+    
+    # إضافة زر لوحة الإدارة إذا كان المستخدم هو الآدمن
+    if str(chat_id) == str(ADMIN_ID):
+        markup.add(InlineKeyboardButton("👑 الدخول للوحة الإدارة", callback_data="admin_panel"))
 
-@bot.message_handler(commands=['reset'])
-def reset_user(message):
-    if not is_vip(message.chat.id): return
-    clear_session(message.chat.id)
-    bot.reply_to(message, "🔄 تم مسح الجلسات المعلقة الخاصة بك.")
+    bot.reply_to(message, text, reply_markup=markup, parse_mode="Markdown")
 
-@bot.message_handler(func=lambda message: message.text.startswith('http'))
-def handle_url(message):
-    chat_id = message.chat.id
-    
-    # 1. فحص الصلاحية
-    if not is_vip(chat_id):
-        send_unauthorized_msg(chat_id)
-        return
-        
-    url = message.text
-    session = get_session(chat_id)
-    
-    # 2. فحص المهام النشطة
-    if session.get('active'):
-        bot.reply_to(message, "⚠️ لديك مهمة قيد التنفيذ أو في الطابور بالفعل. إذا كان البوت معلقاً، أرسل أمر /reset")
-        return
-
-    # 3. إدخال الطابور
-    is_busy = task_queue.unfinished_tasks > 0
-    update_session(chat_id, {'active': True, 'status': 'queued', 'target_url': url})
-    task_queue.put({'chat_id': chat_id, 'url': url})
-    
-    queue_pos = task_queue.qsize()
-    
-    if not is_busy:
-        bot.reply_to(message, "🚀 تم استلام الرابط. جاري بدء العملية فوراً...")
+# دالة مساعدة لعمليات إضافة وحذف الـ VIP
+def process_add_vip(message):
+    new_id = message.text.strip()
+    if new_id.isdigit():
+        add_vip_user(new_id)
+        bot.reply_to(message, f"✅ تم إضافة العميل `{new_id}` بنجاح.", parse_mode="Markdown")
     else:
-        bot.reply_to(message, f"⌛ السيرفر مشغول حالياً.\nأنت رقم `{queue_pos}` في الطابور. سيبدأ البوت تلقائياً عند دورك.", parse_mode="Markdown")
+        bot.reply_to(message, "❌ معرف غير صالح. يجب أن يحتوي على أرقام فقط.")
+
+def process_del_vip(message):
+    del_id = message.text.strip()
+    if del_id.isdigit():
+        remove_vip_user(del_id)
+        bot.reply_to(message, f"🗑️ تم حذف العميل `{del_id}` بنجاح.", parse_mode="Markdown")
+    else:
+        bot.reply_to(message, "❌ معرف غير صالح.")
 
 # ==========================================
-# 🎛️ إدارة الأزرار (Callbacks)
+# 🎛️ إدارة الأزرار (Callbacks Handler)
 # ==========================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
     chat_id = call.message.chat.id
     data = call.data
     
-    # حماية الأزرار من المتطفلين أيضاً
     if not is_vip(chat_id):
         bot.answer_callback_query(call.id, "❌ ليس لديك صلاحية.", show_alert=True)
         return
         
+    # ── أزرار المستخدم العادي ──
+    if data == "user_reset":
+        clear_session(chat_id)
+        bot.answer_callback_query(call.id, "تم تصفير جلستك بنجاح!")
+        bot.send_message(chat_id, "🔄 تم مسح الجلسات المعلقة الخاصة بك. يمكنك إرسال رابط جديد الآن.")
+        return
+    elif data == "btn_dummy":
+        bot.answer_callback_query(call.id, "قم بنسخ رابط Qwiklabs ولصقه هنا في المحادثة.")
+        return
+        
+    # ── أزرار لوحة الإدارة ──
+    if str(chat_id) == str(ADMIN_ID):
+        if data == "admin_panel":
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton("👥 قائمة الـ VIP", callback_data="admin_vips"),
+                InlineKeyboardButton("📊 حالة النظام", callback_data="admin_status")
+            )
+            markup.add(
+                InlineKeyboardButton("➕ إضافة عميل", callback_data="admin_add_vip"),
+                InlineKeyboardButton("➖ إزالة عميل", callback_data="admin_del_vip")
+            )
+            bot.edit_message_text("👑 **لوحة تحكم الإدارة (Admin Dashboard)** 👑\n\nاختر الإجراء المطلوب:", 
+                                  chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+            return
+            
+        elif data == "admin_vips":
+            vips = get_all_vips()
+            text = "👥 **قائمة العملاء (VIPs):**\n\n" + ("\n".join([f"🔹 `{uid}`" for uid in vips]) if vips else "القائمة فارغة.")
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("🔙 رجوع للوحة", callback_data="admin_panel"))
+            bot.edit_message_text(text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+            return
+            
+        elif data == "admin_status":
+            q_size = task_queue.qsize()
+            text = f"📊 **حالة النظام:**\n\nعدد المهام في الطابور: `{q_size}`\nحالة التخزين: `{'MongoDB' if USE_MONGO else 'RAM'}`"
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("🔙 رجوع للوحة", callback_data="admin_panel"))
+            bot.edit_message_text(text, chat_id=chat_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+            return
+            
+        elif data == "admin_add_vip":
+            msg = bot.send_message(chat_id, "✏️ **الرجاء إرسال الـ ID الخاص بالعميل الجديد الآن:**", parse_mode="Markdown")
+            bot.register_next_step_handler(msg, process_add_vip)
+            bot.answer_callback_query(call.id)
+            return
+            
+        elif data == "admin_del_vip":
+            msg = bot.send_message(chat_id, "✏️ **الرجاء إرسال الـ ID الخاص بالعميل المراد حذفه:**", parse_mode="Markdown")
+            bot.register_next_step_handler(msg, process_del_vip)
+            bot.answer_callback_query(call.id)
+            return
+
+    # ── أزرار عملية الاختراق ──
     session = get_session(chat_id)
     
     if data == "abort_mission":
@@ -792,6 +807,35 @@ def handle_query(call):
         buttons = [InlineKeyboardButton(text=c, callback_data=f"cont_{c}") for c in grouped_regions.keys()]
         markup.add(*buttons)
         bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text="📍 **تم جلب السيرفرات المتاحة.**\n\n👇 الرجاء اختيار القارة:", reply_markup=markup, parse_mode="Markdown")
+
+# ==========================================
+# 📥 استقبال الروابط (URL Handler)
+# ==========================================
+@bot.message_handler(func=lambda message: message.text.startswith('http'))
+def handle_url(message):
+    chat_id = message.chat.id
+    
+    if not is_vip(chat_id):
+        send_unauthorized_msg(chat_id)
+        return
+        
+    url = message.text
+    session = get_session(chat_id)
+    
+    if session.get('active'):
+        bot.reply_to(message, "⚠️ لديك مهمة قيد التنفيذ أو في الطابور بالفعل. لإلغائها اضغط على زر تصفير الجلسة في القائمة الرئيسية.")
+        return
+
+    is_busy = task_queue.unfinished_tasks > 0
+    update_session(chat_id, {'active': True, 'status': 'queued', 'target_url': url})
+    task_queue.put({'chat_id': chat_id, 'url': url})
+    
+    queue_pos = task_queue.qsize()
+    
+    if not is_busy:
+        bot.reply_to(message, "🚀 تم استلام الرابط. جاري بدء العملية فوراً...")
+    else:
+        bot.reply_to(message, f"⌛ السيرفر مشغول حالياً.\nأنت رقم `{queue_pos}` في الطابور. سيبدأ البوت تلقائياً عند دورك.", parse_mode="Markdown")
 
 # طباعة تأكيدية عند تشغيل السيرفر
 if __name__ == "__main__":
