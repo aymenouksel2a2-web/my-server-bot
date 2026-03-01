@@ -3,6 +3,8 @@ import time
 import threading
 import queue
 import io
+import http.server
+import socketserver
 import telebot
 from telebot.types import InputMediaPhoto, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 import re
@@ -50,6 +52,30 @@ else:
     print("⚠️ WORM-AI PRO: RAM Mode Active.")
 
 task_queue = queue.Queue()
+
+# ==========================================
+# 🟢 خادم فحص الصحة (Railway Health Check Server)
+# ==========================================
+class HealthCheckHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b"OK")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+def run_health_server():
+    PORT = 8080
+    socketserver.TCPServer.allow_reuse_address = True
+    with socketserver.TCPServer(("", PORT), HealthCheckHandler) as httpd:
+        print(f"✅ Health Check Server running on port {PORT}")
+        httpd.serve_forever()
+
+# تشغيل خادم الصحة في الخلفية فوراً
+threading.Thread(target=run_health_server, daemon=True).start()
 
 # ==========================================
 # 🛡️ نظام الحماية وصلاحيات الـ VIP
@@ -128,15 +154,13 @@ def clear_session(chat_id):
 # ==========================================
 def get_driver():
     options = Options()
-    # أوامر لمنع انهيار متصفح Chrome في خوادم Railway / Docker
-    options.add_argument('--headless=new')
+    # إرجاع الوضع الخفي وإزالة الـ Headless ليعمل عبر الـ Xvfb كالسابق
+    options.add_argument('--incognito')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1280,800')
     options.add_argument('--disable-blink-features=AutomationControlled')
-    options.add_argument('--disable-infobars')
-    options.add_argument('--disable-extensions')
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option('useAutomationExtension', False)
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36')
@@ -404,7 +428,8 @@ def worker_loop():
                             for el in elements:
                                 text = (el.text or el.get_attribute('value') or '').lower()
                                 el_id = el.get_attribute('id') or ''
-                                if 'understand' in text or 'begrijp' in text or 'accept' in text or 'أفهم' in text or 'موافق' in text or el_id == 'confirm':
+                                # إضافة 'continue' و 'متابعة' لتخطي زر (Verify it's you) الأزرق
+                                if 'understand' in text or 'begrijp' in text or 'accept' in text or 'أفهم' in text or 'موافق' in text or 'continue' in text or 'متابعة' in text or el_id == 'confirm':
                                     driver.execute_script("arguments[0].click();", el)
                                     break
                         except:
