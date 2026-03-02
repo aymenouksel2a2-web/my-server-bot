@@ -955,6 +955,22 @@ def handle_url(message):
     update_session(chat_id, {'active': True, 'status': 'queued', 'target_url': url, 'ui_msg_id': msg.message_id})
     task_queue.put({'chat_id': chat_id, 'url': url})
 
+# ==========================================
+# 🗑️ نظام التنظيف الفوري (حذف الرسائل العشوائية)
+# ==========================================
+@bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'sticker', 'voice'])
+def delete_spam_and_unrelated_messages(message):
+    """
+    هذه الدالة موضوعة في نهاية الكود لتلتقط أي رسالة لم يتم التعرف عليها 
+    (مثل الخرابيط kjkj، الملصقات، الخ) وتقوم بحذفها فوراً لتنظيف المحادثة.
+    """
+    chat_id = message.chat.id
+    try:
+        # حذف الرسالة العشوائية فوراً
+        bot.delete_message(chat_id, message.message_id)
+    except:
+        pass
+
 if __name__ == "__main__":
     print("💎 OCX PRO SYSTEM IS ACTIVE & READY...")
     try: bot.remove_webhook()
