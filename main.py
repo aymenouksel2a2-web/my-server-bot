@@ -862,6 +862,8 @@ def handle_query(call):
     if data == "cancel_ui":
         clear_session(chat_id)
         bot.edit_message_text("🛑 تم إلغاء العملية بأمر منك.", chat_id=chat_id, message_id=call.message.message_id)
+        # حذف رسالة الإلغاء بعد 5 دقائق (300 ثانية)
+        threading.Timer(300.0, lambda: bot.delete_message(chat_id, call.message.message_id)).start()
         return
 
     if data == "abort_mission":
@@ -869,7 +871,9 @@ def handle_query(call):
         bot.answer_callback_query(call.id, "تم الإلغاء الفوري!")
         try: bot.delete_message(chat_id, call.message.message_id)
         except: pass
-        bot.send_message(chat_id, "🛑 **تم إلغاء المهمة وتفريغ الجلسة.**\nالنظام الآن جاهز لاستقبال رابط جديد.", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, "🛑 **تم إلغاء المهمة وتفريغ الجلسة.**\nالنظام الآن جاهز لاستقبال رابط جديد.", parse_mode="Markdown")
+        # حذف رسالة الإلغاء بعد 5 دقائق (300 ثانية)
+        threading.Timer(300.0, lambda: bot.delete_message(chat_id, msg.message_id)).start()
         return
 
     if data in ["replace_server", "add_new_server"]:
@@ -931,6 +935,10 @@ def handle_url(message):
 
     if not is_vip(chat_id):
         send_unauthorized_msg(chat_id)
+        return
+
+    # التقييد: قبول فقط الروابط التي تبدأ بهذا الرابط، وتجاهل الباقي بصمت
+    if not url.startswith("https://www.skills.google/google_sso"):
         return
 
     session = get_session(chat_id)
