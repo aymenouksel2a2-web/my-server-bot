@@ -105,7 +105,10 @@ def send_unauthorized_msg(chat_id):
         bot.delete_message(chat_id, m.message_id)
     except: pass
     markup = InlineKeyboardMarkup().add(InlineKeyboardButton("📞 التواصل لشراء البوت", url="https://t.me/aynX1"))
-    bot.send_message(chat_id, "⛔️ **عذراً، أنت غير مشترك في هذا البوت.**\n\nللاشتراك والحصول على الصلاحيات، يرجى التواصل مع الإدارة.", reply_markup=markup, parse_mode="Markdown")
+    msg = bot.send_message(chat_id, "⛔️ **عذراً، أنت غير مشترك في هذا البوت.**\n\nللاشتراك والحصول على الصلاحيات، يرجى التواصل مع الإدارة.", reply_markup=markup, parse_mode="Markdown")
+    
+    # حفظ آيدي رسالة الرفض لكي نمسحها لاحقاً عند التفعيل
+    update_session(chat_id, {'unauth_msg_id': msg.message_id})
 
 # ==========================================
 # ⚙️ إدارة الجلسات
@@ -766,6 +769,25 @@ def process_add_vip(message):
     if new_id.isdigit():
         add_vip_user(new_id)
         bot.reply_to(message, f"✅ تم إضافة العميل `{new_id}` بنجاح إلى قائمة الـ VIP.", parse_mode="Markdown")
+        
+        # --- إشعار العميل الجديد وحذف رسالة الرفض السابقة ---
+        try:
+            session = get_session(new_id)
+            unauth_msg_id = session.get('unauth_msg_id')
+            if unauth_msg_id:
+                try: bot.delete_message(new_id, unauth_msg_id)
+                except: pass
+                update_session(new_id, {'unauth_msg_id': None})
+            
+            welcome_text = (
+                "🎉 **تم تفعيل اشتراكك بنجاح!**\n\n"
+                "💎 **مرحباً بك في نظام OCX PRO** 💎\n\n"
+                "⚡ أسرع نظام لإنشاء سيرفرات Qwiklabs المشفرة.\n"
+                "🔗 **فقط قم بإرسال رابط الدخول المباشر لبدء العملية.**"
+            )
+            bot.send_message(new_id, welcome_text, parse_mode="Markdown")
+        except: pass
+        # -----------------------------------------------
     else:
         bot.reply_to(message, "❌ معرف خاطئ، الرجاء إرسال أرقام فقط.")
 
@@ -774,6 +796,14 @@ def process_del_vip(message):
     if del_id.isdigit():
         remove_vip_user(del_id)
         bot.reply_to(message, f"🗑️ تم حذف العميل `{del_id}` بنجاح وتم سحب صلاحياته.", parse_mode="Markdown")
+        
+        # --- إشعار العميل بإلغاء اشتراكه ---
+        try:
+            bot.send_message(del_id, "⛔️ **تم سحب صلاحياتك وإلغاء اشتراكك من البوت.**\nللاستفسار، يرجى التواصل مع الإدارة.", parse_mode="Markdown")
+        except: pass
+        # -----------------------------------
+    else:
+        bot.reply_to(message, "❌ معرف خاطئ، الرجاء إرسال أرقام فقط.")
 
 def process_broadcast(message):
     text = message.text
