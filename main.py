@@ -407,10 +407,10 @@ def worker_loop():
                 current_url = driver.current_url
                 current_session = get_session(chat_id)
 
-                # --- نظام الطرد التلقائي (30 ثانية من الخمول) ---
+                # --- نظام الطرد التلقائي (90 ثانية من الخمول) ---
                 if current_session.get('status') == 'waiting_credentials' or state == "WAIT_USER_SELECTION":
                     last_interaction = current_session.get('interaction_time', time.time())
-                    if time.time() - last_interaction > 30:
+                    if time.time() - last_interaction > 90:
                         try: bot.delete_message(chat_id, status_msg_id)
                         except: pass
                         ui_msg = current_session.get('ui_msg_id')
@@ -418,7 +418,7 @@ def worker_loop():
                             try: bot.delete_message(chat_id, ui_msg)
                             except: pass
                         
-                        msg_to = bot.send_message(chat_id, "⏳ **تم إنهاء الجلسة تلقائياً!**\n\nتجاوزت مهلة الاستجابة (30 ثانية). تم طردك وإخلاء مكانك في الطابور للسماح بدخول المستخدم التالي.\nيرجى إعادة المحاولة عندما تكون جاهزاً.", parse_mode="Markdown")
+                        msg_to = bot.send_message(chat_id, "⏳ **تم إنهاء الجلسة تلقائياً!**\n\nتجاوزت مهلة الاستجابة (دقيقة ونصف). تم طردك وإخلاء مكانك في الطابور للسماح بدخول المستخدم التالي.\nيرجى إعادة المحاولة عندما تكون جاهزاً.", parse_mode="Markdown")
                         threading.Timer(300.0, lambda m=msg_to.message_id: bot.delete_message(chat_id, m)).start()
                         break
                 # ------------------------------------------------
