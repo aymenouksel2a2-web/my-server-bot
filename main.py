@@ -130,7 +130,7 @@ def clear_session(chat_id):
     update_session(chat_id, {
         "active": False, "status": "idle", "selected_region": None, 
         "protocol": None, "target_url": None, "available_regions": {}, "replace_mode": False,
-        "ui_msg_id": None, "email": None, "password": None
+        "ui_msg_id": None, "email": None, "password": None, "interaction_time": 0
     })
 
 def get_server_by_url(url):
@@ -176,8 +176,8 @@ rm -rf ~/ultra-v4 && mkdir -p ~/ultra-v4 && cd ~/ultra-v4
 cat > Dockerfile << 'DEOF'
 FROM alpine:3.19
 RUN apk add --no-cache wget unzip ca-certificates bash curl jq
-RUN LATEST=$(wget -qO- https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep tag_name | cut -d'"' -f4) && \
-    wget -qO /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${LATEST}/Xray-linux-64.zip" && \
+# تم استبدال سحب الإصدار الديناميكي برابط مباشر ومستقر لتفادي حظر (GitHub API Rate Limit) الذي يسبب فشل البناء
+RUN wget -qO /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v1.8.7/Xray-linux-64.zip" && \
     mkdir -p /opt/xray && unzip /tmp/xray.zip -d /opt/xray && chmod +x /opt/xray/xray && \
     rm -f /tmp/xray.zip && apk del wget unzip && rm -rf /var/cache/apk/*
 COPY config.json /opt/xray/config.json
@@ -407,6 +407,22 @@ def worker_loop():
                 current_url = driver.current_url
                 current_session = get_session(chat_id)
 
+                # --- نظام الطرد التلقائي (30 ثانية من الخمول) ---
+                if current_session.get('status') == 'waiting_credentials' or state == "WAIT_USER_SELECTION":
+                    last_interaction = current_session.get('interaction_time', time.time())
+                    if time.time() - last_interaction > 30:
+                        try: bot.delete_message(chat_id, status_msg_id)
+                        except: pass
+                        ui_msg = current_session.get('ui_msg_id')
+                        if ui_msg:
+                            try: bot.delete_message(chat_id, ui_msg)
+                            except: pass
+                        
+                        msg_to = bot.send_message(chat_id, "⏳ **تم إنهاء الجلسة تلقائياً!**\n\nتجاوزت مهلة الاستجابة (30 ثانية). تم طردك وإخلاء مكانك في الطابور للسماح بدخول المستخدم التالي.\nيرجى إعادة المحاولة عندما تكون جاهزاً.", parse_mode="Markdown")
+                        threading.Timer(300.0, lambda m=msg_to.message_id: bot.delete_message(chat_id, m)).start()
+                        break
+                # ------------------------------------------------
+
                 if 'accounts.google.com' in current_url:
                     email_inputs = driver.find_elements(By.XPATH, "//input[@type='email']")
                     pass_inputs = driver.find_elements(By.XPATH, "//input[@type='password']")
@@ -431,7 +447,7 @@ def worker_loop():
                             try: bot.delete_message(chat_id, status_msg_id)
                             except: pass
                             msg = bot.send_message(chat_id, "⚠️ **توقف - مطلوب بيانات الدخول.**\n\nالرجاء إرسال **الإيميل** و **الباسورد** الخاصين بـ Qwiklabs في رسالة واحدة (كل واحد في سطر).\n\nمثال:\n`student-02-xxx@qwiklabs.net`\n`Password123`", parse_mode="Markdown")
-                            update_session(chat_id, {'status': 'waiting_credentials', 'ui_msg_id': msg.message_id})
+                            update_session(chat_id, {'status': 'waiting_credentials', 'ui_msg_id': msg.message_id, 'interaction_time': time.time()})
                             status_msg_id = msg.message_id
                             continue
                     
@@ -473,11 +489,6 @@ def worker_loop():
                         if project_id:
                             driver.get(f"https://shell.cloud.google.com/?enableapi=true&project={project_id}&pli=1&show=terminal")
                             state = "AUTHORIZE_SHELL" 
-                    else:
-                        selection_timeout += 1
-                        if selection_timeout > 60:
-                            update_live_stream(chat_id, status_msg_id, "إلغاء تلقائي", "[نظام] انتهى وقت الاختيار. تم الإلغاء لتوفير الموارد.")
-                            break
                     continue
                     
                 elif state == "SILENT_BUILD":
@@ -612,7 +623,7 @@ def worker_loop():
                             markup = InlineKeyboardMarkup(row_width=2)
                             markup.add(*[InlineKeyboardButton(text=c, callback_data=f"cont_{c}") for c in grouped_regions.keys()])
                             msg = bot.send_message(chat_id, "📍 **تم جلب السيرفرات المتاحة بنجاح.**\n\n👇 الرجاء اختيار القارة لتحديد السيرفر:", reply_markup=markup, parse_mode="Markdown")
-                            update_session(chat_id, {'ui_msg_id': msg.message_id})
+                            update_session(chat_id, {'ui_msg_id': msg.message_id, 'interaction_time': time.time()})
                             state = "WAIT_USER_SELECTION"
                         else:
                             driver.execute_script("document.body.click();") 
@@ -871,7 +882,7 @@ def handle_credentials(message):
     chat_id = message.chat.id
     lines = message.text.strip().split('\n')
     if len(lines) >= 2:
-        update_session(chat_id, {'email': lines[0].strip(), 'password': lines[1].strip(), 'status': 'processing'})
+        update_session(chat_id, {'email': lines[0].strip(), 'password': lines[1].strip(), 'status': 'processing', 'interaction_time': time.time()})
         try: bot.delete_message(chat_id, message.message_id)
         except: pass
         bot.send_message(chat_id, "✅ **تم استلام البيانات بنجاح!**\nيتم الآن المصادقة عبر المحرك...", parse_mode="Markdown")
@@ -888,12 +899,13 @@ def handle_query(call):
         return
 
     session = get_session(chat_id)
+    update_session(chat_id, {'interaction_time': time.time()})
     
     if data == "cancel_ui":
         clear_session(chat_id)
         bot.edit_message_text("🛑 تم إلغاء العملية بأمر منك.", chat_id=chat_id, message_id=call.message.message_id)
         # حذف رسالة الإلغاء بعد 5 دقائق (300 ثانية)
-        threading.Timer(300.0, lambda: bot.delete_message(chat_id, call.message.message_id)).start()
+        threading.Timer(300.0, lambda m=call.message.message_id: bot.delete_message(chat_id, m)).start()
         return
 
     if data == "abort_mission":
@@ -903,7 +915,7 @@ def handle_query(call):
         except: pass
         msg = bot.send_message(chat_id, "🛑 **تم إلغاء المهمة وتفريغ الجلسة.**\nالنظام الآن جاهز لاستقبال رابط جديد.", parse_mode="Markdown")
         # حذف رسالة الإلغاء بعد 5 دقائق (300 ثانية)
-        threading.Timer(300.0, lambda: bot.delete_message(chat_id, msg.message_id)).start()
+        threading.Timer(300.0, lambda m=msg.message_id: bot.delete_message(chat_id, m)).start()
         return
 
     if data in ["replace_server", "add_new_server"]:
@@ -1000,7 +1012,7 @@ def handle_url(message):
 def delete_spam_and_unrelated_messages(message):
     """
     هذه الدالة موضوعة في نهاية الكود لتلتقط أي رسالة لم يتم التعرف عليها 
-    (مثل الخرابيط kjkj، الملصقات، الخ) وتقوم بحذفها فوراً لتنظيف المحادثة.
+    (مثل النصوص العشوائية، الملصقات، الخ) وتقوم بحذفها فوراً لتنظيف المحادثة.
     """
     chat_id = message.chat.id
     try:
