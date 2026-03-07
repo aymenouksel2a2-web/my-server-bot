@@ -107,7 +107,6 @@ def send_unauthorized_msg(chat_id):
     markup = InlineKeyboardMarkup().add(InlineKeyboardButton("📞 التواصل لشراء البوت", url="https://t.me/aynX1"))
     msg = bot.send_message(chat_id, "⛔️ **عذراً، أنت غير مشترك في هذا البوت.**\n\nللاشتراك والحصول على الصلاحيات، يرجى التواصل مع الإدارة.", reply_markup=markup, parse_mode="Markdown")
     
-    # حفظ آيدي رسالة الرفض لكي نمسحها لاحقاً عند التفعيل
     update_session(chat_id, {'unauth_msg_id': msg.message_id})
 
 # ==========================================
@@ -153,11 +152,14 @@ def update_server_cookies(url, cookies):
         servers_col[url]['cookies'] = cookies
 
 # ==========================================
-# 💀 السكربت المولد (BASH PAYLOAD)
+# 💀 السكربت المولد (BASH PAYLOAD - محسن ومحمي)
 # ==========================================
 VPN_SCRIPT_TEMPLATE = r"""#!/bin/bash
 PROJECT_ID=$(gcloud config get-value project)
 PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+
+# تفعيل الـ APIs المطلوبة لتفادي أخطاء الحسابات الجديدة
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com --quiet 2>/dev/null || true
 
 UUID=$(cat /proc/sys/kernel/random/uuid)
 if [ "REPLACE_MODE_PLACEHOLDER" == "True" ]; then
@@ -176,7 +178,6 @@ rm -rf ~/ultra-v4 && mkdir -p ~/ultra-v4 && cd ~/ultra-v4
 cat > Dockerfile << 'DEOF'
 FROM alpine:3.19
 RUN apk add --no-cache wget unzip ca-certificates bash curl jq
-# تم استبدال سحب الإصدار الديناميكي برابط مباشر ومستقر لتفادي حظر (GitHub API Rate Limit) الذي يسبب فشل البناء
 RUN wget -qO /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v1.8.7/Xray-linux-64.zip" && \
     mkdir -p /opt/xray && unzip /tmp/xray.zip -d /opt/xray && chmod +x /opt/xray/xray && \
     rm -f /tmp/xray.zip && apk del wget unzip && rm -rf /var/cache/apk/*
@@ -184,8 +185,8 @@ COPY config.json /opt/xray/config.json
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
 ENV XRAY_LOCATION_ASSET=/opt/xray
-ENV GOMAXPROCS=2
-ENV GOMEMLIMIT=3500MiB
+ENV GOMAXPROCS=1
+ENV GOMEMLIMIT=800MiB
 EXPOSE 8080
 CMD ["/start.sh"]
 DEOF
@@ -206,25 +207,32 @@ cat > .dockerignore << 'EOF'
 *.md
 EOF
 
+# تخفيض استهلاك الموارد لتفادي الحظر من Qwiklabs (cpu=1, memory=1024Mi)
 gcloud run deploy ${SERVICE_NAME} \
   --source . \
   --region=${REGION} \
   --platform=managed \
   --allow-unauthenticated \
-  --execution-environment=gen2 \
-  --no-cpu-throttling \
-  --cpu=2 \
-  --memory=4096Mi \
+  --cpu=1 \
+  --memory=1024Mi \
   --min-instances=1 \
   --max-instances=8 \
   --concurrency=250 \
   --timeout=3600 \
   --port=${PORT} \
-  --cpu-boost \
-  --session-affinity \
   --quiet
 
 if [ $? -ne 0 ]; then
+    # إرسال رسالة توضيحية للمستخدم في حال رفض Google للعملية
+    ERROR_PAYLOAD=$(jq -n \
+      --arg chat_id "<CHAT_ID_PLACEHOLDER>" \
+      --arg text "❌ **فشل البناء (Deployment Failed):**\n\nنظام حماية Google قام برفض العملية. الأسباب المحتملة:\n1️⃣ الحساب (Qwiklabs) مقيد، محظور، أو لا يملك صلاحيات.\n2️⃣ لا توجد موارد (سيرفرات) كافية في منطقة \`${REGION}\`.\n\n💡 **الحل:** استخدم أمر /cancel ، وجرب منطقة (Region) مختلفة، أو استخدم حساب Qwiklabs جديد." \
+      '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
+      
+    curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
+      -H "Content-Type: application/json" \
+      -d "$ERROR_PAYLOAD" > /dev/null
+      
     echo "ERROR_DEPLOYMENT_FAILED_OCX_CATCH"
     exit 1
 fi
@@ -234,25 +242,12 @@ SERVICE_HOST="${SERVICE_NAME}-${PROJECT_NUMBER}.${REGION}.run.app"
 
 <LINK_GENERATION_PLACEHOLDER>
 
-# مزامنة البيانات مع البايثون
 echo "OCX_DATA_SYNC: ${SERVICE_NAME}|${REGION}|${PROTOCOL}|${UUID}"
 sleep 2
 
-# إرسال رسالة النجاح عبر Curl
 JSON_PAYLOAD=$(jq -n \
   --arg chat_id "<CHAT_ID_PLACEHOLDER>" \
-  --arg text "✅ **تم بناء السيرفر بنجاح واحترافية!** 🚀🔥
-
-🛡️ **البروتوكول:** \`${PROTOCOL}\`
-📍 **المنطقـــة:** \`${REGION}\`
-🆔 **المعرف (UUID):** \`${UUID}\`
-
-🔗 **رابط الاتصال المباشر (اضغط للنسخ):**
-\`\`\`copy
-${VPN_LINK}
-\`\`\`
-
-*تمت العملية بواسطة 💎 OCX PRO System.*" \
+  --arg text "✅ **تم بناء السيرفر بنجاح واحترافية!** 🚀🔥\n\n🛡️ **البروتوكول:** \`${PROTOCOL}\`\n📍 **المنطقـــة:** \`${REGION}\`\n🆔 **المعرف (UUID):** \`${UUID}\`\n\n🔗 **رابط الاتصال المباشر (اضغط للنسخ):**\n\`\`\`copy\n${VPN_LINK}\n\`\`\`\n\n*تمت العملية بواسطة 💎 OCX PRO System.*" \
   '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
 
 curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
@@ -407,7 +402,6 @@ def worker_loop():
                 current_url = driver.current_url
                 current_session = get_session(chat_id)
 
-                # --- نظام الطرد التلقائي (90 ثانية من الخمول) ---
                 if current_session.get('status') == 'waiting_credentials' or state == "WAIT_USER_SELECTION":
                     last_interaction = current_session.get('interaction_time', time.time())
                     if time.time() - last_interaction > 90:
@@ -418,10 +412,9 @@ def worker_loop():
                             try: bot.delete_message(chat_id, ui_msg)
                             except: pass
                         
-                        msg_to = bot.send_message(chat_id, "⏳ **تم إنهاء الجلسة تلقائياً!**\n\nتجاوزت مهلة الاستجابة (دقيقة ونصف). تم طردك وإخلاء مكانك في الطابور للسماح بدخول المستخدم التالي.\nيرجى إعادة المحاولة عندما تكون جاهزاً.", parse_mode="Markdown")
+                        msg_to = bot.send_message(chat_id, "⏳ **تم إنهاء الجلسة تلقائياً!**\n\nتجاوزت مهلة الاستجابة (دقيقة ونصف). تم طردك وإخلاء مكانك في الطابور للسماح بدخول المستخدم التالي.\nيرجى إرسال الرابط مرة أخرى عندما تكون جاهزاً.", parse_mode="Markdown")
                         threading.Timer(300.0, lambda m=msg_to.message_id: bot.delete_message(chat_id, m)).start()
                         break
-                # ------------------------------------------------
 
                 if 'accounts.google.com' in current_url:
                     email_inputs = driver.find_elements(By.XPATH, "//input[@type='email']")
@@ -446,7 +439,7 @@ def worker_loop():
                         elif current_session.get('status') != 'waiting_credentials' and not current_session.get('email'):
                             try: bot.delete_message(chat_id, status_msg_id)
                             except: pass
-                            msg = bot.send_message(chat_id, "⚠️ **توقف - مطلوب بيانات الدخول.**\n\nالرجاء إرسال **الإيميل** و **الباسورد** الخاصين بـ Qwiklabs في رسالة واحدة (كل واحد في سطر).\n\nمثال:\n`student-02-xxx@qwiklabs.net`\n`Password123`", parse_mode="Markdown")
+                            msg = bot.send_message(chat_id, "⚠️ **توقف - مطلوب بيانات الدخول.**\n\nالرجاء إرسال **الإيميل** و **الباسورد** الخاصين بـ Qwiklabs.\n*(يمكنك إرسالهم في سطر واحد أو سطرين)*\n\nمثال:\n`student-02-xxx@qwiklabs.net Password123`", parse_mode="Markdown")
                             update_session(chat_id, {'status': 'waiting_credentials', 'ui_msg_id': msg.message_id, 'interaction_time': time.time()})
                             status_msg_id = msg.message_id
                             continue
@@ -496,7 +489,7 @@ def worker_loop():
                     if "ERROR_DEPLOYMENT_FAILED_OCX_CATCH" in page_source:
                         try: bot.delete_message(chat_id, status_msg_id)
                         except: pass
-                        bot.send_message(chat_id, "❌ **فشل البناء:**\nنظام الحماية لدى Google قام برفض العملية (قد يكون الحساب محظوراً).", parse_mode="Markdown")
+                        # رسالة الخطأ أصبحت تُرسل مباشرة من الباش (Bash) للمستخدم، لذا نكتفي بإنهاء الدورة هنا
                         break
                     
                     sync_match = re.search(r'OCX_DATA_SYNC:\s*(.*?)\|(.*?)\|(.*?)\|(.*?)(?:\n|<)', page_source)
@@ -775,13 +768,22 @@ def send_welcome(message):
     else:
         bot.send_message(chat_id, text, reply_markup=telebot.types.ReplyKeyboardRemove(), parse_mode="Markdown")
 
+# --- أمر الإلغاء الإجباري لحل مشكلة تعليق الجلسة ---
+@bot.message_handler(commands=['cancel', 'stop'])
+def force_cancel(message):
+    chat_id = message.chat.id
+    if not is_vip(chat_id): return
+    try: bot.delete_message(chat_id, message.message_id)
+    except: pass
+    clear_session(chat_id)
+    bot.send_message(chat_id, "🛑 **تم إلغاء أي مهام قيد التنفيذ وتفريغ الجلسة بنجاح.**\nيمكنك الآن إرسال رابط جديد بحرية.", parse_mode="Markdown")
+
 def process_add_vip(message):
     new_id = message.text.strip()
     if new_id.isdigit():
         add_vip_user(new_id)
         bot.reply_to(message, f"✅ تم إضافة العميل `{new_id}` بنجاح إلى قائمة الـ VIP.", parse_mode="Markdown")
         
-        # --- إشعار العميل الجديد وحذف رسالة الرفض السابقة ---
         try:
             session = get_session(new_id)
             unauth_msg_id = session.get('unauth_msg_id')
@@ -798,7 +800,6 @@ def process_add_vip(message):
             )
             bot.send_message(new_id, welcome_text, parse_mode="Markdown")
         except: pass
-        # -----------------------------------------------
     else:
         bot.reply_to(message, "❌ معرف خاطئ، الرجاء إرسال أرقام فقط.")
 
@@ -808,11 +809,9 @@ def process_del_vip(message):
         remove_vip_user(del_id)
         bot.reply_to(message, f"🗑️ تم حذف العميل `{del_id}` بنجاح وتم سحب صلاحياته.", parse_mode="Markdown")
         
-        # --- إشعار العميل بإلغاء اشتراكه ---
         try:
             bot.send_message(del_id, "⛔️ **تم سحب صلاحياتك وإلغاء اشتراكك من البوت.**\nللاستفسار، يرجى التواصل مع الإدارة.", parse_mode="Markdown")
         except: pass
-        # -----------------------------------
     else:
         bot.reply_to(message, "❌ معرف خاطئ، الرجاء إرسال أرقام فقط.")
 
@@ -877,17 +876,28 @@ def handle_admin_keyboard(message):
         markup.add(KeyboardButton("👑 لوحة الإدارة"))
         bot.reply_to(message, "🔙 تم الرجوع للواجهة الرئيسية.", reply_markup=markup)
 
+# --- المحلل الذكي لاستخراج الإيميل والباسورد (Smart Parser) ---
 @bot.message_handler(func=lambda message: get_session(message.chat.id).get('status') == 'waiting_credentials')
 def handle_credentials(message):
     chat_id = message.chat.id
-    lines = message.text.strip().split('\n')
-    if len(lines) >= 2:
-        update_session(chat_id, {'email': lines[0].strip(), 'password': lines[1].strip(), 'status': 'processing', 'interaction_time': time.time()})
-        try: bot.delete_message(chat_id, message.message_id)
-        except: pass
-        bot.send_message(chat_id, "✅ **تم استلام البيانات بنجاح!**\nيتم الآن المصادقة عبر المحرك...", parse_mode="Markdown")
-    else:
-        bot.send_message(chat_id, "⚠️ **تنسيق خاطئ!**\nالرجاء إرسال الإيميل والباسورد في رسالة واحدة، كل واحد في سطر.\n\nمثال:\n`student-02-1234@qwiklabs.net`\n`MyPassword123`", parse_mode="Markdown")
+    text = message.text.strip()
+    
+    # البحث الذكي عن أي إيميل في النص
+    email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
+    
+    if email_match:
+        email = email_match.group(0)
+        # إزالة الإيميل من النص لاعتبار الباقي هو الباسورد
+        password = text.replace(email, '').strip()
+        
+        if password:
+            update_session(chat_id, {'email': email, 'password': password, 'status': 'processing', 'interaction_time': time.time()})
+            try: bot.delete_message(chat_id, message.message_id)
+            except: pass
+            bot.send_message(chat_id, "✅ **تم استلام البيانات بنجاح!**\nيتم الآن المصادقة عبر المحرك...", parse_mode="Markdown")
+            return
+            
+    bot.send_message(chat_id, "⚠️ **تنسيق خاطئ!**\nالرجاء إرسال الإيميل والباسورد معاً بأي شكل (سطر واحد أو سطرين).\n\nمثال:\n`student-02-1234@qwiklabs.net Password123`", parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
@@ -904,7 +914,6 @@ def handle_query(call):
     if data == "cancel_ui":
         clear_session(chat_id)
         bot.edit_message_text("🛑 تم إلغاء العملية بأمر منك.", chat_id=chat_id, message_id=call.message.message_id)
-        # حذف رسالة الإلغاء بعد 5 دقائق (300 ثانية)
         threading.Timer(300.0, lambda m=call.message.message_id: bot.delete_message(chat_id, m)).start()
         return
 
@@ -914,7 +923,6 @@ def handle_query(call):
         try: bot.delete_message(chat_id, call.message.message_id)
         except: pass
         msg = bot.send_message(chat_id, "🛑 **تم إلغاء المهمة وتفريغ الجلسة.**\nالنظام الآن جاهز لاستقبال رابط جديد.", parse_mode="Markdown")
-        # حذف رسالة الإلغاء بعد 5 دقائق (300 ثانية)
         threading.Timer(300.0, lambda m=msg.message_id: bot.delete_message(chat_id, m)).start()
         return
 
@@ -979,13 +987,14 @@ def handle_url(message):
         send_unauthorized_msg(chat_id)
         return
 
-    # التقييد: قبول فقط الروابط التي تبدأ بهذا الرابط، وتجاهل الباقي بصمت
     if not url.startswith("https://www.skills.google/google_sso"):
         return
 
     session = get_session(chat_id)
     if session.get('active'):
-        bot.send_message(chat_id, "⚠️ **تنبيه:** لديك مهمة قيد التنفيذ حالياً. قم بإلغائها أولاً لطلب مهمة جديدة.", parse_mode="Markdown")
+        # إضافة نص توضيحي لكيفية الإلغاء باستخدام الأمر الجديد
+        msg = bot.send_message(chat_id, "⚠️ **تنبيه: لديك مهمة قيد التنفيذ حالياً!**\n\nإذا كنت عالقاً، أرسل الأمر /cancel لإلغاء الجلسة السابقة، ثم أرسل الرابط الجديد.", parse_mode="Markdown")
+        threading.Timer(15.0, lambda m=msg.message_id: bot.delete_message(chat_id, m)).start()
         return
 
     existing_server = get_server_by_url(url)
@@ -1010,13 +1019,8 @@ def handle_url(message):
 # ==========================================
 @bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'sticker', 'voice'])
 def delete_spam_and_unrelated_messages(message):
-    """
-    هذه الدالة موضوعة في نهاية الكود لتلتقط أي رسالة لم يتم التعرف عليها 
-    (مثل النصوص العشوائية، الملصقات، الخ) وتقوم بحذفها فوراً لتنظيف المحادثة.
-    """
     chat_id = message.chat.id
     try:
-        # حذف الرسالة العشوائية فوراً
         bot.delete_message(chat_id, message.message_id)
     except:
         pass
