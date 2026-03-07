@@ -223,10 +223,16 @@ gcloud run deploy ${SERVICE_NAME} \
   --quiet
 
 if [ $? -ne 0 ]; then
-    # إرسال رسالة توضيحية للمستخدم في حال رفض Google للعملية
+    # إرسال رسالة توضيحية للمستخدم في حال رفض Google للعملية بتنسيق نظيف
     ERROR_PAYLOAD=$(jq -n \
       --arg chat_id "<CHAT_ID_PLACEHOLDER>" \
-      --arg text "❌ **فشل البناء (Deployment Failed):**\n\nنظام حماية Google قام برفض العملية. الأسباب المحتملة:\n1️⃣ الحساب (Qwiklabs) مقيد، محظور، أو لا يملك صلاحيات.\n2️⃣ لا توجد موارد (سيرفرات) كافية في منطقة \`${REGION}\`.\n\n💡 **الحل:** استخدم أمر /cancel ، وجرب منطقة (Region) مختلفة، أو استخدم حساب Qwiklabs جديد." \
+      --arg text "❌ **فشل البناء (Deployment Failed):**
+
+نظام حماية Google قام برفض العملية. الأسباب المحتملة:
+1️⃣ الحساب (Qwiklabs) مقيد، محظور، أو لا يملك صلاحيات.
+2️⃣ لا توجد موارد (سيرفرات) كافية في منطقة \`${REGION}\`.
+
+💡 **الحل:** استخدم أمر /cancel ، وجرب منطقة (Region) مختلفة، أو استخدم حساب Qwiklabs جديد." \
       '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
       
     curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
@@ -245,9 +251,21 @@ SERVICE_HOST="${SERVICE_NAME}-${PROJECT_NUMBER}.${REGION}.run.app"
 echo "OCX_DATA_SYNC: ${SERVICE_NAME}|${REGION}|${PROTOCOL}|${UUID}"
 sleep 2
 
+# حل مشكلة تشوه الرسالة وظهور الأسطر بطريقة خاطئة: الاعتماد على أسطر حقيقية (Multiline)
 JSON_PAYLOAD=$(jq -n \
   --arg chat_id "<CHAT_ID_PLACEHOLDER>" \
-  --arg text "✅ **تم بناء السيرفر بنجاح واحترافية!** 🚀🔥\n\n🛡️ **البروتوكول:** \`${PROTOCOL}\`\n📍 **المنطقـــة:** \`${REGION}\`\n🆔 **المعرف (UUID):** \`${UUID}\`\n\n🔗 **رابط الاتصال المباشر (اضغط للنسخ):**\n\`\`\`copy\n${VPN_LINK}\n\`\`\`\n\n*تمت العملية بواسطة 💎 OCX PRO System.*" \
+  --arg text "✅ **تم بناء السيرفر بنجاح واحترافية!** 🚀🔥
+
+🛡️ **البروتوكول:** \`${PROTOCOL}\`
+📍 **المنطقـــة:** \`${REGION}\`
+🆔 **المعرف (UUID):** \`${UUID}\`
+
+🔗 **رابط الاتصال المباشر (اضغط للنسخ):**
+\`\`\`
+${VPN_LINK}
+\`\`\`
+
+*تمت العملية بواسطة 💎 OCX PRO System.*" \
   '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
 
 curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
@@ -489,7 +507,6 @@ def worker_loop():
                     if "ERROR_DEPLOYMENT_FAILED_OCX_CATCH" in page_source:
                         try: bot.delete_message(chat_id, status_msg_id)
                         except: pass
-                        # رسالة الخطأ أصبحت تُرسل مباشرة من الباش (Bash) للمستخدم، لذا نكتفي بإنهاء الدورة هنا
                         break
                     
                     sync_match = re.search(r'OCX_DATA_SYNC:\s*(.*?)\|(.*?)\|(.*?)\|(.*?)(?:\n|<)', page_source)
@@ -768,7 +785,6 @@ def send_welcome(message):
     else:
         bot.send_message(chat_id, text, reply_markup=telebot.types.ReplyKeyboardRemove(), parse_mode="Markdown")
 
-# --- أمر الإلغاء الإجباري لحل مشكلة تعليق الجلسة ---
 @bot.message_handler(commands=['cancel', 'stop'])
 def force_cancel(message):
     chat_id = message.chat.id
@@ -876,18 +892,15 @@ def handle_admin_keyboard(message):
         markup.add(KeyboardButton("👑 لوحة الإدارة"))
         bot.reply_to(message, "🔙 تم الرجوع للواجهة الرئيسية.", reply_markup=markup)
 
-# --- المحلل الذكي لاستخراج الإيميل والباسورد (Smart Parser) ---
 @bot.message_handler(func=lambda message: get_session(message.chat.id).get('status') == 'waiting_credentials')
 def handle_credentials(message):
     chat_id = message.chat.id
     text = message.text.strip()
     
-    # البحث الذكي عن أي إيميل في النص
     email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
     
     if email_match:
         email = email_match.group(0)
-        # إزالة الإيميل من النص لاعتبار الباقي هو الباسورد
         password = text.replace(email, '').strip()
         
         if password:
@@ -992,7 +1005,6 @@ def handle_url(message):
 
     session = get_session(chat_id)
     if session.get('active'):
-        # إضافة نص توضيحي لكيفية الإلغاء باستخدام الأمر الجديد
         msg = bot.send_message(chat_id, "⚠️ **تنبيه: لديك مهمة قيد التنفيذ حالياً!**\n\nإذا كنت عالقاً، أرسل الأمر /cancel لإلغاء الجلسة السابقة، ثم أرسل الرابط الجديد.", parse_mode="Markdown")
         threading.Timer(15.0, lambda m=msg.message_id: bot.delete_message(chat_id, m)).start()
         return
@@ -1014,9 +1026,6 @@ def handle_url(message):
     update_session(chat_id, {'active': True, 'status': 'queued', 'target_url': url, 'ui_msg_id': msg.message_id})
     task_queue.put({'chat_id': chat_id, 'url': url})
 
-# ==========================================
-# 🗑️ نظام التنظيف الفوري (حذف الرسائل العشوائية)
-# ==========================================
 @bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'sticker', 'voice'])
 def delete_spam_and_unrelated_messages(message):
     chat_id = message.chat.id
