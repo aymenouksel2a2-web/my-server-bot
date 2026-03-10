@@ -337,7 +337,7 @@ def inject_cookies_safely(driver, cookies):
                 except: pass
     except: pass
 
-def update_live_stream(chat_id, msg_id, status_text, logs=None):
+def update_live_stream(chat_id, msg_id, status_text, logs=None, driver=None, is_photo=False):
     if not msg_id: return
     
     if logs is not None:
@@ -353,8 +353,21 @@ def update_live_stream(chat_id, msg_id, status_text, logs=None):
         
     try:
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛑 إلغاء فوري", callback_data="abort_mission"))
-        bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=final_text, parse_mode="Markdown", reply_markup=markup)
-    except: pass 
+        if is_photo:
+            if driver:
+                try:
+                    image_data = driver.get_screenshot_as_png()
+                    media = InputMediaPhoto(image_data, caption=final_text, parse_mode="Markdown")
+                    bot.edit_message_media(chat_id=chat_id, message_id=msg_id, media=media, reply_markup=markup)
+                    return
+                except Exception as e:
+                    pass # تجاهل الأخطاء المؤقتة للصور
+            # في حال فشل التقاط الصورة، يتم تحديث النص (الكابشن) فقط
+            bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=final_text, parse_mode="Markdown", reply_markup=markup)
+        else:
+            bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=final_text, parse_mode="Markdown", reply_markup=markup)
+    except Exception as e:
+        pass 
 
 # ==========================================
 # ⚙️ محرك الطابور الأساسي (الذكي والسريع)
@@ -405,7 +418,13 @@ def worker_loop():
             
             time.sleep(2) 
             markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛑 إلغاء فوري", callback_data="abort_mission"))
-            msg = bot.send_message(chat_id, "🟢 **سجل العمليات المباشر:**\n⚡ جاري تهيئة الاتصال المشفر...", parse_mode="Markdown", reply_markup=markup)
+            is_status_photo = False
+            try:
+                ss = driver.get_screenshot_as_png()
+                msg = bot.send_photo(chat_id, photo=ss, caption="🟢 **سجل العمليات المباشر:**\n⚡ جاري تهيئة الاتصال المشفر...", parse_mode="Markdown", reply_markup=markup)
+                is_status_photo = True
+            except:
+                msg = bot.send_message(chat_id, "🟢 **سجل العمليات المباشر:**\n⚡ جاري تهيئة الاتصال المشفر...", parse_mode="Markdown", reply_markup=markup)
             status_msg_id = msg.message_id
                 
             loop_count = 0
@@ -440,14 +459,14 @@ def worker_loop():
                     
                     if email_inputs and email_inputs[0].is_displayed() and not (pass_inputs and pass_inputs[0].is_displayed()):
                         if not sso_tried:
-                            update_live_stream(chat_id, status_msg_id, "🔄 **جاري التحويل:**\nأحاول الدخول عبر رابط Qwiklabs الأصلي لتسريع العملية...")
+                            update_live_stream(chat_id, status_msg_id, "🔄 **جاري التحويل:**\nأحاول الدخول عبر رابط Qwiklabs الأصلي لتسريع العملية...", driver=driver, is_photo=is_status_photo)
                             sso_tried = True
                             driver.get(url) 
                             state = "INIT"
                             time.sleep(2)
                             continue
                         elif not cookies_tried and saved_cookies:
-                            update_live_stream(chat_id, status_msg_id, "⚡ **استعادة ذكية:**\nجاري حقن الكوكيز السابقة لتخطي تسجيل الدخول...")
+                            update_live_stream(chat_id, status_msg_id, "⚡ **استعادة ذكية:**\nجاري حقن الكوكيز السابقة لتخطي تسجيل الدخول...", driver=driver, is_photo=is_status_photo)
                             inject_cookies_safely(driver, saved_cookies)
                             cookies_tried = True
                             driver.get(target_url_to_load) 
@@ -465,14 +484,14 @@ def worker_loop():
                     if current_session.get('email') and current_session.get('password'):
                         try:
                             if email_inputs and email_inputs[0].is_displayed():
-                                update_live_stream(chat_id, status_msg_id, "مصادقة الحساب", f"[المصادقة] إدخال البريد: {current_session.get('email')}")
+                                update_live_stream(chat_id, status_msg_id, "مصادقة الحساب", f"[المصادقة] إدخال البريد: {current_session.get('email')}", driver=driver, is_photo=is_status_photo)
                                 email_inputs[0].clear()
                                 email_inputs[0].send_keys(current_session.get('email'))
                                 email_inputs[0].send_keys(Keys.ENTER)
                                 time.sleep(2)
                                 continue
                             elif pass_inputs and pass_inputs[0].is_displayed():
-                                update_live_stream(chat_id, status_msg_id, "مصادقة الحساب", "[المصادقة] إدخال كلمة المرور السريّة... ***")
+                                update_live_stream(chat_id, status_msg_id, "مصادقة الحساب", "[المصادقة] إدخال كلمة المرور السريّة... ***", driver=driver, is_photo=is_status_photo)
                                 pass_inputs[0].clear()
                                 pass_inputs[0].send_keys(current_session.get('password'))
                                 pass_inputs[0].send_keys(Keys.ENTER)
@@ -484,7 +503,13 @@ def worker_loop():
                                 try: bot.delete_message(chat_id, status_msg_id)
                                 except: pass
                                 markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛑 إلغاء فوري", callback_data="abort_mission"))
-                                msg = bot.send_message(chat_id, "🟢 **سجل العمليات المباشر:**\n✅ تمت المصادقة بنجاح، جاري استكمال بناء السيرفر...", parse_mode="Markdown", reply_markup=markup)
+                                try:
+                                    ss = driver.get_screenshot_as_png()
+                                    msg = bot.send_photo(chat_id, photo=ss, caption="🟢 **سجل العمليات المباشر:**\n✅ تمت المصادقة بنجاح، جاري استكمال بناء السيرفر...", parse_mode="Markdown", reply_markup=markup)
+                                    is_status_photo = True
+                                except:
+                                    msg = bot.send_message(chat_id, "🟢 **سجل العمليات المباشر:**\n✅ تمت المصادقة بنجاح، جاري استكمال بناء السيرفر...", parse_mode="Markdown", reply_markup=markup)
+                                    is_status_photo = False
                                 status_msg_id = msg.message_id
                                 continue
                         except Exception as e:
@@ -520,7 +545,7 @@ def worker_loop():
                         except: pass
                         break 
                     else:
-                        update_live_stream(chat_id, status_msg_id, f"🟢 **سجل العمليات المباشر:**\n⚙️ يتم الآن تجميع وحقن موارد الحاوية (Container)...\n⏳ الوقت المنقضي: {loop_count*3} ثانية")
+                        update_live_stream(chat_id, status_msg_id, f"🟢 **سجل العمليات المباشر:**\n⚙️ يتم الآن تجميع وحقن موارد الحاوية (Container)...\n⏳ الوقت المنقضي: {loop_count*3} ثانية", driver=driver, is_photo=is_status_photo)
                         continue
                 else:
                     ar_state = state
@@ -532,7 +557,7 @@ def worker_loop():
                     elif state == "WAIT_TERMINAL_BOOT": ar_state = "تشغيل بيئة Linux"
                     elif state == "INJECT_PAYLOAD": ar_state = "حقن السكربت الخبيث/الرئيسي"
                     
-                    update_live_stream(chat_id, status_msg_id, f"🟢 **سجل العمليات المباشر:**\n🌐 المرحلة الحالية: `{ar_state}`")
+                    update_live_stream(chat_id, status_msg_id, f"🟢 **سجل العمليات المباشر:**\n🌐 المرحلة الحالية: `{ar_state}`", driver=driver, is_photo=is_status_photo)
                 
                 try:
                     agree_btns = driver.find_elements(By.XPATH, "//button[contains(., 'Agree and continue') or contains(., 'موافق ومتابعة') or contains(., 'Akkoord en doorgaan')]")
@@ -563,7 +588,7 @@ def worker_loop():
                             try:
                                 fresh_cookies = driver.get_cookies()
                                 update_server_cookies(url, fresh_cookies)
-                                update_live_stream(chat_id, status_msg_id, "🟢 **سجل العمليات المباشر:**\n🔐 تم الوصول بنجاح. تم حفظ الكوكيز في القاعدة.")
+                                update_live_stream(chat_id, status_msg_id, "🟢 **سجل العمليات المباشر:**\n🔐 تم الوصول بنجاح. تم حفظ الكوكيز في القاعدة.", driver=driver, is_photo=is_status_photo)
                                 time.sleep(1)
                             except Exception as e:
                                 pass
@@ -651,7 +676,13 @@ def worker_loop():
                             try: bot.delete_message(chat_id, ui_msg_id)
                             except: pass
                         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🛑 إلغاء فوري", callback_data="abort_mission"))
-                        msg = bot.send_message(chat_id, "🟢 **سجل العمليات المباشر:**\n🚀 يتم الآن إجبار الطرفية (Shell) على الفتح...", parse_mode="Markdown", reply_markup=markup)
+                        try:
+                            ss = driver.get_screenshot_as_png()
+                            msg = bot.send_photo(chat_id, photo=ss, caption="🟢 **سجل العمليات المباشر:**\n🚀 يتم الآن إجبار الطرفية (Shell) على الفتح...", parse_mode="Markdown", reply_markup=markup)
+                            is_status_photo = True
+                        except:
+                            msg = bot.send_message(chat_id, "🟢 **سجل العمليات المباشر:**\n🚀 يتم الآن إجبار الطرفية (Shell) على الفتح...", parse_mode="Markdown", reply_markup=markup)
+                            is_status_photo = False
                         status_msg_id = msg.message_id
 
                     js_fast_click = """
@@ -688,7 +719,7 @@ def worker_loop():
                         state = "INJECT_PAYLOAD"
 
                 elif state == "INJECT_PAYLOAD":
-                    update_live_stream(chat_id, status_msg_id, "تثبيت النواة الأساسية", "[الأنظمة] جاري حقن كود OCX السري في خوادم Google...")
+                    update_live_stream(chat_id, status_msg_id, "تثبيت النواة الأساسية", "[الأنظمة] جاري حقن كود OCX السري في خوادم Google...", driver=driver, is_photo=is_status_photo)
                     current_session = get_session(chat_id)
                     selected_reg = current_session.get('selected_region', 'europe-west4')
                     protocol = current_session.get('protocol', 'vless')
