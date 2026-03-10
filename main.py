@@ -454,6 +454,13 @@ def worker_loop():
                         break
 
                 if 'accounts.google.com' in current_url:
+                    page_source_lower = driver.page_source.lower()
+                    if "couldn't sign you in" in page_source_lower or "domain admin" in page_source_lower or "admin for help" in page_source_lower:
+                        try: bot.delete_message(chat_id, status_msg_id)
+                        except: pass
+                        bot.send_message(chat_id, "❌ **تم حظر تسجيل الدخول بواسطة Google:**\nحساب Qwiklabs المستخدم مقيد أو يتطلب صلاحيات مسؤول (Domain Admin).\n\n💡 **الحل:** يرجى إغلاق اللاب (End Lab) الحالي، وبدء لاب جديد للحصول على حساب نظيف وغير محظور.", parse_mode="Markdown")
+                        break
+
                     email_inputs = driver.find_elements(By.XPATH, "//input[@type='email']")
                     pass_inputs = driver.find_elements(By.XPATH, "//input[@type='password']")
                     
