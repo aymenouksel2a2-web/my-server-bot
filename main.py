@@ -217,7 +217,7 @@ gcloud run deploy ${SERVICE_NAME} \
   --memory=2048Mi \
   --min-instances=1 \
   --max-instances=8 \
-  --concurrency=80 \
+  --concurrency=250 \
   --no-cpu-throttling \
   --session-affinity \
   --timeout=3600 \
