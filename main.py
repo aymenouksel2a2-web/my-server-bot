@@ -152,7 +152,7 @@ def update_server_cookies(url, cookies):
         servers_col[url]['cookies'] = cookies
 
 # ==========================================
-# 💀 السكربت المولد (BASH PAYLOAD - محسن ومحمي)
+# 💀 السكربت المولد (BASH PAYLOAD - محسن ومحمي ومطور للألعاب)
 # ==========================================
 VPN_SCRIPT_TEMPLATE = r"""#!/bin/bash
 PROJECT_ID=$(gcloud config get-value project)
@@ -185,8 +185,8 @@ COPY config.json /opt/xray/config.json
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
 ENV XRAY_LOCATION_ASSET=/opt/xray
-ENV GOMAXPROCS=1
-ENV GOMEMLIMIT=800MiB
+ENV GOMAXPROCS=2
+ENV GOMEMLIMIT=1500MiB
 EXPOSE 8080
 CMD ["/start.sh"]
 DEOF
@@ -207,17 +207,19 @@ cat > .dockerignore << 'EOF'
 *.md
 EOF
 
-# تخفيض استهلاك الموارد لتفادي الحظر من Qwiklabs (cpu=1, memory=1024Mi)
+# إعدادات الأداء القصوى للألعاب والتصفح (VLESS Optimized)
 gcloud run deploy ${SERVICE_NAME} \
   --source . \
   --region=${REGION} \
   --platform=managed \
   --allow-unauthenticated \
-  --cpu=1 \
-  --memory=1024Mi \
+  --cpu=2 \
+  --memory=2048Mi \
   --min-instances=1 \
   --max-instances=8 \
-  --concurrency=250 \
+  --concurrency=80 \
+  --no-cpu-throttling \
+  --session-affinity \
   --timeout=3600 \
   --port=${PORT} \
   --quiet
@@ -229,7 +231,7 @@ if [ $? -ne 0 ]; then
       --arg text "❌ **فشل البناء (Deployment Failed):**
 
 نظام حماية Google قام برفض العملية. الأسباب المحتملة:
-1️⃣ الحساب (Qwiklabs) مقيد، محظور، أو لا يملك صلاحيات.
+1️⃣ الحساب مقيد، محظور، أو لا يملك صلاحيات لتفعيل ميزة (No CPU Throttling).
 2️⃣ لا توجد موارد (سيرفرات) كافية في منطقة \`${REGION}\`.
 
 💡 **الحل:** استخدم أمر /cancel ، وجرب منطقة (Region) مختلفة، أو استخدم حساب Qwiklabs جديد." \
@@ -737,13 +739,13 @@ def worker_loop():
                     proto_name = protocol.upper()
                     
                     if protocol == 'vmess':
-                        inbound_cfg = r"""{"log": {"loglevel": "none"},"inbounds": [{"listen": "0.0.0.0", "port": ${PORT}, "protocol": "vmess","settings": {"clients": [{"id": "${UUID}", "alterId": 0}]},"streamSettings": {"network": "ws", "wsSettings": {"path": "${WS_PATH}", "maxEarlyData": 2560, "earlyDataHeaderName": "Sec-WebSocket-Protocol"}},"sniffing": {"enabled": false}}],"outbounds": [{"protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}],"policy": {"levels": {"0": {"handshake": 1, "connIdle": 600, "uplinkOnly": 1, "downlinkOnly": 1}}}}"""
+                        inbound_cfg = r"""{"log": {"loglevel": "none"},"inbounds": [{"listen": "0.0.0.0", "port": ${PORT}, "protocol": "vmess","settings": {"clients": [{"id": "${UUID}", "alterId": 0}]},"streamSettings": {"network": "ws", "wsSettings": {"path": "${WS_PATH}", "maxEarlyData": 1024, "earlyDataHeaderName": "Sec-WebSocket-Protocol"}},"sniffing": {"enabled": false}}],"outbounds": [{"protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}],"policy": {"levels": {"0": {"handshake": 1, "connIdle": 600, "uplinkOnly": 1, "downlinkOnly": 1}}}}"""
                         link_gen = r"""VMESS_JSON="{\"v\":\"2\",\"ps\":\"𝗢 𝗖 𝗫 ⚡️\",\"add\":\"vpn.googleapis.com\",\"port\":\"443\",\"id\":\"${UUID}\",\"aid\":\"0\",\"net\":\"ws\",\"type\":\"none\",\"host\":\"${SERVICE_HOST}\",\"path\":\"/%40O_C_X7\",\"tls\":\"tls\",\"sni\":\"yt.be\"}" && VPN_LINK="vmess://$(echo -n "$VMESS_JSON" | base64 -w 0)" """
                     elif protocol == 'trojan':
-                        inbound_cfg = r"""{"log": {"loglevel": "none"},"inbounds": [{"listen": "0.0.0.0", "port": ${PORT}, "protocol": "trojan","settings": {"clients": [{"password": "${UUID}"}]},"streamSettings": {"network": "ws", "wsSettings": {"path": "${WS_PATH}", "maxEarlyData": 2560, "earlyDataHeaderName": "Sec-WebSocket-Protocol"}},"sniffing": {"enabled": false}}],"outbounds": [{"protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}],"policy": {"levels": {"0": {"handshake": 1, "connIdle": 600, "uplinkOnly": 1, "downlinkOnly": 1}}}}"""
+                        inbound_cfg = r"""{"log": {"loglevel": "none"},"inbounds": [{"listen": "0.0.0.0", "port": ${PORT}, "protocol": "trojan","settings": {"clients": [{"password": "${UUID}"}]},"streamSettings": {"network": "ws", "wsSettings": {"path": "${WS_PATH}", "maxEarlyData": 1024, "earlyDataHeaderName": "Sec-WebSocket-Protocol"}},"sniffing": {"enabled": false}}],"outbounds": [{"protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}],"policy": {"levels": {"0": {"handshake": 1, "connIdle": 600, "uplinkOnly": 1, "downlinkOnly": 1}}}}"""
                         link_gen = r"""VPN_LINK="trojan://${UUID}@vpn.googleapis.com:443?path=/%40O_C_X7&security=tls&host=${SERVICE_HOST}&type=ws&sni=yt.be#𝗢 𝗖 𝗫 ⚡️" """
                     else:
-                        inbound_cfg = r"""{"log": {"loglevel": "none"},"inbounds": [{"listen": "0.0.0.0", "port": ${PORT}, "protocol": "vless","settings": {"clients": [{"id": "${UUID}", "level": 0}], "decryption": "none"},"streamSettings": {"network": "ws", "wsSettings": {"path": "${WS_PATH}", "maxEarlyData": 2560, "earlyDataHeaderName": "Sec-WebSocket-Protocol"}},"sniffing": {"enabled": false}}],"outbounds": [{"protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}],"policy": {"levels": {"0": {"handshake": 1, "connIdle": 600, "uplinkOnly": 1, "downlinkOnly": 1}}}}"""
+                        inbound_cfg = r"""{"log": {"loglevel": "none"},"inbounds": [{"listen": "0.0.0.0", "port": ${PORT}, "protocol": "vless","settings": {"clients": [{"id": "${UUID}", "level": 0}], "decryption": "none"},"streamSettings": {"network": "ws", "wsSettings": {"path": "${WS_PATH}", "maxEarlyData": 1024, "earlyDataHeaderName": "Sec-WebSocket-Protocol"}},"sniffing": {"enabled": false}}],"outbounds": [{"protocol": "freedom", "settings": {"domainStrategy": "AsIs"}}],"policy": {"levels": {"0": {"handshake": 1, "connIdle": 600, "uplinkOnly": 1, "downlinkOnly": 1}}}}"""
                         link_gen = r"""VPN_LINK="vless://${UUID}@vpn.googleapis.com:443?path=/%40O_C_X7&security=tls&encryption=none&host=${SERVICE_HOST}&type=ws&sni=yt.be#𝗢 𝗖 𝗫 ⚡️" """
 
                     final_script = VPN_SCRIPT_TEMPLATE.replace("<INBOUND_CONFIG_PLACEHOLDER>", inbound_cfg).replace("<LINK_GENERATION_PLACEHOLDER>", link_gen).replace("TARGET_REGION_PLACEHOLDER", selected_reg).replace("PROTOCOL_NAME_PLACEHOLDER", proto_name).replace("<BOT_TOKEN_PLACEHOLDER>", BOT_TOKEN).replace("<CHAT_ID_PLACEHOLDER>", str(chat_id))
