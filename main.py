@@ -244,10 +244,14 @@ if [ $? -ne 0 ]; then
         # إرسال رسالة توضيحية للمستخدم فقط إذا فشلت المحاولتان
         ERROR_PAYLOAD=$(jq -n \
           --arg chat_id "<CHAT_ID_PLACEHOLDER>" \
-          --arg text "❌ **فشل البناء النهائي (Deployment Failed):**\n\nحساب Qwiklabs هذا محظور كلياً أو مساحته ممتلئة ولا يقبل إنشاء أي خوادم جديدة في منطقة \`${REGION}\`.\n\n💡 **الحل:** استخدم أمر /cancel ، وجرب منطقة مختلفة تماماً (مثل us-central1)، أو قم بتسجيل الدخول بحساب Qwiklabs جديد ونظيف." \
+          --arg text "❌ **فشل البناء النهائي (Deployment Failed):**
+
+حساب Qwiklabs هذا محظور كلياً أو مساحته ممتلئة ولا يقبل إنشاء أي خوادم جديدة في منطقة \`${REGION}\`.
+
+💡 **الحل:** استخدم أمر /cancel ، وجرب منطقة مختلفة تماماً (مثل us-central1)، أو قم بتسجيل الدخول بحساب Qwiklabs جديد ونظيف." \
           '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
           
-        curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
+        curl -s -X POST "[https://api.telegram.org/bot](https://api.telegram.org/bot)<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
           -H "Content-Type: application/json" \
           -d "$ERROR_PAYLOAD" > /dev/null
           
@@ -266,10 +270,21 @@ sleep 2
 
 JSON_PAYLOAD=$(jq -n \
   --arg chat_id "<CHAT_ID_PLACEHOLDER>" \
-  --arg text "✅ **تم بناء السيرفر بنجاح واحترافية!** 🚀🔥\n\n🛡️ **البروتوكول:** \`${PROTOCOL}\`\n📍 **المنطقـــة:** \`${REGION}\`\n🆔 **المعرف (UUID):** \`${UUID}\`\n\n🔗 **رابط الاتصال المباشر (اضغط للنسخ):**\n\`\`\`\n${VPN_LINK}\n\`\`\`\n\n*تمت العملية بواسطة 💎 OCX PRO System.*" \
+  --arg text "✅ **تم بناء السيرفر بنجاح واحترافية!** 🚀🔥
+
+🛡️ **البروتوكول:** \`${PROTOCOL}\`
+📍 **المنطقـــة:** \`${REGION}\`
+🆔 **المعرف (UUID):** \`${UUID}\`
+
+🔗 **رابط الاتصال المباشر (اضغط للنسخ):**
+\`\`\`
+${VPN_LINK}
+\`\`\`
+
+*تمت العملية بواسطة 💎 OCX PRO System.*" \
   '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
 
-curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
+curl -s -X POST "[https://api.telegram.org/bot](https://api.telegram.org/bot)<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
   -H "Content-Type: application/json" \
   -d "$JSON_PAYLOAD" > /dev/null
 
