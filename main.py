@@ -260,8 +260,8 @@ if [ $? -ne 0 ]; then
     fi
 fi
 
-SERVICE_URL=$(gcloud run services describe ${SERVICE_NAME} --region=${REGION} --format='value(status.url)' 2>/dev/null)
-SERVICE_HOST=$(echo $SERVICE_URL | awk -F/ '{print $3}')
+# إجبار النظام على استخدام تنسيق الرابط الكلاسيكي برقم المشروع والمنطقة
+SERVICE_HOST="${SERVICE_NAME}-${PROJECT_NUMBER}.${REGION}.run.app"
 
 <LINK_GENERATION_PLACEHOLDER>
 
