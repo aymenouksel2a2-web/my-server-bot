@@ -241,7 +241,7 @@ if [ $? -ne 0 ]; then
       --quiet
       
     if [ $? -ne 0 ]; then
-        # إرسال رسالة توضيحية للمستخدم فقط إذا فشلت المحاولتان
+        # إرسال رسالة توضيحية للمستخدم فقط إذا فشلت المحاولتان مع الحفاظ على التنسيق
         ERROR_PAYLOAD=$(jq -n \
           --arg chat_id "<CHAT_ID_PLACEHOLDER>" \
           --arg text "❌ **فشل البناء النهائي (Deployment Failed):**
@@ -251,7 +251,7 @@ if [ $? -ne 0 ]; then
 💡 **الحل:** استخدم أمر /cancel ، وجرب منطقة مختلفة تماماً (مثل us-central1)، أو قم بتسجيل الدخول بحساب Qwiklabs جديد ونظيف." \
           '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
           
-        curl -s -X POST "[https://api.telegram.org/bot](https://api.telegram.org/bot)<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
+        curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
           -H "Content-Type: application/json" \
           -d "$ERROR_PAYLOAD" > /dev/null
           
@@ -268,6 +268,7 @@ SERVICE_HOST=$(echo $SERVICE_URL | awk -F/ '{print $3}')
 echo "OCX_DATA_SYNC: ${SERVICE_NAME}|${REGION}|${PROTOCOL}|${UUID}"
 sleep 2
 
+# رسالة النجاح منسقة بشكل صحيح لتظهر الروابط قابلة للنسخ
 JSON_PAYLOAD=$(jq -n \
   --arg chat_id "<CHAT_ID_PLACEHOLDER>" \
   --arg text "✅ **تم بناء السيرفر بنجاح واحترافية!** 🚀🔥
@@ -284,7 +285,7 @@ ${VPN_LINK}
 *تمت العملية بواسطة 💎 OCX PRO System.*" \
   '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
 
-curl -s -X POST "[https://api.telegram.org/bot](https://api.telegram.org/bot)<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
+curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
   -H "Content-Type: application/json" \
   -d "$JSON_PAYLOAD" > /dev/null
 
