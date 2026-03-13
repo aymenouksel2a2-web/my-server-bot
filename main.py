@@ -56,21 +56,20 @@ if ADMIN_ID and not USE_MONGO:
     ram_vips.add(str(ADMIN_ID))
 
 # ==========================================
-# 🧹 محرك تنظيف الكوكيز (كل 12 ساعة)
+# 🧹 محرك تنظيف الكوكيز
 # ==========================================
 def cookie_cleanup_worker():
-    """يقوم بحذف جميع الكوكيز المحفوظة كل 12 ساعة لتخفيف الضغط على قاعدة البيانات"""
-    cleanup_interval = 12 * 60 * 60 # 12 ساعة بالثواني
+    cleanup_interval = 12 * 60 * 60 
     while True:
         time.sleep(cleanup_interval)
         try:
             if USE_MONGO:
                 result = servers_col.update_many({}, {"$set": {"cookies": []}})
-                print(f"🧹 [System Cleanup] Cleared cookies from {result.modified_count} servers in MongoDB (12h cycle).")
+                print(f"🧹 [System Cleanup] Cleared cookies from {result.modified_count} servers.")
             else:
                 for url in servers_col:
                     servers_col[url]['cookies'] = []
-                print("🧹 [System Cleanup] Cleared cookies from RAM (12h cycle).")
+                print("🧹 [System Cleanup] Cleared cookies from RAM.")
         except Exception as e:
             print(f"❌ [Cleanup Error] {e}")
 
@@ -106,7 +105,6 @@ def send_unauthorized_msg(chat_id):
     except: pass
     markup = InlineKeyboardMarkup().add(InlineKeyboardButton("📞 التواصل لشراء البوت", url="https://t.me/aynX1"))
     msg = bot.send_message(chat_id, "⛔️ **عذراً، أنت غير مشترك في هذا البوت.**\n\nللاشتراك والحصول على الصلاحيات، يرجى التواصل مع الإدارة.", reply_markup=markup, parse_mode="Markdown")
-    
     update_session(chat_id, {'unauth_msg_id': msg.message_id})
 
 # ==========================================
@@ -152,13 +150,12 @@ def update_server_cookies(url, cookies):
         servers_col[url]['cookies'] = cookies
 
 # ==========================================
-# 💀 السكربت المولد (BASH PAYLOAD - محسن ومحمي ومطور للألعاب)
+# 💀 السكربت المولد (BASH PAYLOAD - Auto Fallback)
 # ==========================================
 VPN_SCRIPT_TEMPLATE = r"""#!/bin/bash
 PROJECT_ID=$(gcloud config get-value project)
 PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
 
-# تفعيل الـ APIs المطلوبة لتفادي أخطاء الحسابات الجديدة
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com --quiet 2>/dev/null || true
 
 UUID=$(cat /proc/sys/kernel/random/uuid)
@@ -207,7 +204,8 @@ cat > .dockerignore << 'EOF'
 *.md
 EOF
 
-# إعدادات الأداء القصوى للألعاب والتصفح (VLESS Optimized)
+echo "Attempting Ultimate Gaming Deployment..."
+# المحاولة الأولى: بأقصى قوة مع إلغاء خنق المعالج
 gcloud run deploy ${SERVICE_NAME} \
   --source . \
   --region=${REGION} \
@@ -216,58 +214,59 @@ gcloud run deploy ${SERVICE_NAME} \
   --cpu=2 \
   --memory=2048Mi \
   --min-instances=1 \
-  --max-instances=8 \
+  --max-instances=4 \
   --concurrency=250 \
-  --no-cpu-throttling \
-  --session-affinity \
   --timeout=3600 \
   --port=${PORT} \
+  --session-affinity \
+  --no-cpu-throttling \
   --quiet
 
+# نظام التعافي التلقائي (Fallback System) إذا رفض الحساب الإعدادات
 if [ $? -ne 0 ]; then
-    # إرسال رسالة توضيحية للمستخدم في حال رفض Google للعملية بتنسيق نظيف
-    ERROR_PAYLOAD=$(jq -n \
-      --arg chat_id "<CHAT_ID_PLACEHOLDER>" \
-      --arg text "❌ **فشل البناء (Deployment Failed):**
-
-نظام حماية Google قام برفض العملية. الأسباب المحتملة:
-1️⃣ الحساب مقيد، محظور، أو لا يملك صلاحيات لتفعيل ميزة (No CPU Throttling).
-2️⃣ لا توجد موارد (سيرفرات) كافية في منطقة \`${REGION}\`.
-
-💡 **الحل:** استخدم أمر /cancel ، وجرب منطقة (Region) مختلفة، أو استخدم حساب Qwiklabs جديد." \
-      '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
+    echo "First attempt rejected due to Qwiklabs Quota/Flags. Retrying with Safe Mode..."
+    gcloud run deploy ${SERVICE_NAME} \
+      --source . \
+      --region=${REGION} \
+      --platform=managed \
+      --allow-unauthenticated \
+      --cpu=2 \
+      --memory=2048Mi \
+      --min-instances=1 \
+      --max-instances=4 \
+      --concurrency=250 \
+      --timeout=3600 \
+      --port=${PORT} \
+      --session-affinity \
+      --quiet
       
-    curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
-      -H "Content-Type: application/json" \
-      -d "$ERROR_PAYLOAD" > /dev/null
-      
-    echo "ERROR_DEPLOYMENT_FAILED_OCX_CATCH"
-    exit 1
+    if [ $? -ne 0 ]; then
+        # إرسال رسالة توضيحية للمستخدم فقط إذا فشلت المحاولتان
+        ERROR_PAYLOAD=$(jq -n \
+          --arg chat_id "<CHAT_ID_PLACEHOLDER>" \
+          --arg text "❌ **فشل البناء النهائي (Deployment Failed):**\n\nحساب Qwiklabs هذا محظور كلياً أو مساحته ممتلئة ولا يقبل إنشاء أي خوادم جديدة في منطقة \`${REGION}\`.\n\n💡 **الحل:** استخدم أمر /cancel ، وجرب منطقة مختلفة تماماً (مثل us-central1)، أو قم بتسجيل الدخول بحساب Qwiklabs جديد ونظيف." \
+          '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
+          
+        curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
+          -H "Content-Type: application/json" \
+          -d "$ERROR_PAYLOAD" > /dev/null
+          
+        echo "ERROR_DEPLOYMENT_FAILED_OCX_CATCH"
+        exit 1
+    fi
 fi
 
 SERVICE_URL=$(gcloud run services describe ${SERVICE_NAME} --region=${REGION} --format='value(status.url)' 2>/dev/null)
-SERVICE_HOST="${SERVICE_NAME}-${PROJECT_NUMBER}.${REGION}.run.app"
+SERVICE_HOST=$(echo $SERVICE_URL | awk -F/ '{print $3}')
 
 <LINK_GENERATION_PLACEHOLDER>
 
 echo "OCX_DATA_SYNC: ${SERVICE_NAME}|${REGION}|${PROTOCOL}|${UUID}"
 sleep 2
 
-# حل مشكلة تشوه الرسالة وظهور الأسطر بطريقة خاطئة: الاعتماد على أسطر حقيقية (Multiline)
 JSON_PAYLOAD=$(jq -n \
   --arg chat_id "<CHAT_ID_PLACEHOLDER>" \
-  --arg text "✅ **تم بناء السيرفر بنجاح واحترافية!** 🚀🔥
-
-🛡️ **البروتوكول:** \`${PROTOCOL}\`
-📍 **المنطقـــة:** \`${REGION}\`
-🆔 **المعرف (UUID):** \`${UUID}\`
-
-🔗 **رابط الاتصال المباشر (اضغط للنسخ):**
-\`\`\`
-${VPN_LINK}
-\`\`\`
-
-*تمت العملية بواسطة 💎 OCX PRO System.*" \
+  --arg text "✅ **تم بناء السيرفر بنجاح واحترافية!** 🚀🔥\n\n🛡️ **البروتوكول:** \`${PROTOCOL}\`\n📍 **المنطقـــة:** \`${REGION}\`\n🆔 **المعرف (UUID):** \`${UUID}\`\n\n🔗 **رابط الاتصال المباشر (اضغط للنسخ):**\n\`\`\`\n${VPN_LINK}\n\`\`\`\n\n*تمت العملية بواسطة 💎 OCX PRO System.*" \
   '{chat_id: $chat_id, text: $text, parse_mode: "Markdown"}')
 
 curl -s -X POST "https://api.telegram.org/bot<BOT_TOKEN_PLACEHOLDER>/sendMessage" \
@@ -301,7 +300,7 @@ def run_health_server():
 threading.Thread(target=run_health_server, daemon=True).start()
 
 # ==========================================
-# 🚀 محرك المتصفح السريع (Optimized)
+# 🚀 محرك المتصفح السريع (Anti-Crash Optimized)
 # ==========================================
 display = Display(visible=0, size=(1280, 800))
 display.start()
@@ -311,8 +310,11 @@ def get_driver():
     options.add_argument('--headless=new')
     options.add_argument('--incognito')
     options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-dev-shm-usage') # يمنع انهيار الذاكرة المشتركة
     options.add_argument('--disable-gpu')
+    options.add_argument('--disable-software-rasterizer')
+    options.add_argument('--disable-features=site-per-process') # يقلل استهلاك الرام بشدة
+    options.add_argument('--js-flags=--max-old-space-size=512') # يحد من استهلاك الـ JS للذاكرة
     options.add_argument('--window-size=1280,800')
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.page_load_strategy = 'eager'
@@ -321,7 +323,7 @@ def get_driver():
     options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
     driver = webdriver.Chrome(options=options)
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"})
-    driver.set_page_load_timeout(30)
+    driver.set_page_load_timeout(45) # زيادة طفيفة لتفادي الانهيار مع الصفحات الثقيلة
     return driver
 
 def inject_cookies_safely(driver, cookies):
@@ -363,8 +365,7 @@ def update_live_stream(chat_id, msg_id, status_text, logs=None, driver=None, is_
                     bot.edit_message_media(chat_id=chat_id, message_id=msg_id, media=media, reply_markup=markup)
                     return
                 except Exception as e:
-                    pass # تجاهل الأخطاء المؤقتة للصور
-            # في حال فشل التقاط الصورة، يتم تحديث النص (الكابشن) فقط
+                    pass 
             bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=final_text, parse_mode="Markdown", reply_markup=markup)
         else:
             bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=final_text, parse_mode="Markdown", reply_markup=markup)
@@ -372,7 +373,7 @@ def update_live_stream(chat_id, msg_id, status_text, logs=None, driver=None, is_
         pass 
 
 # ==========================================
-# ⚙️ محرك الطابور الأساسي (الذكي والسريع)
+# ⚙️ محرك الطابور الأساسي 
 # ==========================================
 def worker_loop():
     while True:
@@ -554,7 +555,7 @@ def worker_loop():
                         except: pass
                         break 
                     else:
-                        update_live_stream(chat_id, status_msg_id, f"🟢 **سجل العمليات المباشر:**\n⚙️ يتم الآن تجميع وحقن موارد الحاوية (Container)...\n⏳ الوقت المنقضي: {loop_count*3} ثانية", driver=driver, is_photo=is_status_photo)
+                        update_live_stream(chat_id, status_msg_id, f"🟢 **سجل العمليات المباشر:**\n⚙️ يتم الآن تجميع وحقن موارد الحاوية (قد يستغرق 60 ثانية)...\n⏳ الوقت المنقضي: {loop_count*3} ثانية", driver=driver, is_photo=is_status_photo)
                         continue
                 else:
                     ar_state = state
@@ -728,7 +729,7 @@ def worker_loop():
                         state = "INJECT_PAYLOAD"
 
                 elif state == "INJECT_PAYLOAD":
-                    update_live_stream(chat_id, status_msg_id, "تثبيت النواة الأساسية", "[الأنظمة] جاري حقن كود OCX السري في خوادم Google...", driver=driver, is_photo=is_status_photo)
+                    update_live_stream(chat_id, status_msg_id, "تثبيت النواة الأساسية", "[الأنظمة] جاري حقن كود OCX المزدوج الذكي...", driver=driver, is_photo=is_status_photo)
                     current_session = get_session(chat_id)
                     selected_reg = current_session.get('selected_region', 'europe-west4')
                     protocol = current_session.get('protocol', 'vless')
@@ -789,7 +790,13 @@ def worker_loop():
         except Exception as e:
             try: bot.delete_message(chat_id, status_msg_id)
             except: pass
-            bot.send_message(chat_id, f"❌ **حدث خطأ داخلي غير متوقع:**\n`{str(e)[:150]}`", parse_mode="Markdown")
+            
+            # معالجة الخطأ المزعج بذكاء (Tab Crashed)
+            error_msg = str(e).lower()
+            if "tab crashed" in error_msg or "out of memory" in error_msg:
+                bot.send_message(chat_id, "⚠️ **تنبيه استهلاك الذاكرة:**\nواجه متصفح البوت ضغطاً كبيراً في الذاكرة أثناء المعالجة (Tab Crashed).\n\n💡 **الحل:** تم تنظيف الجلسة تلقائياً. يرجى إرسال الرابط مرة أخرى.", parse_mode="Markdown")
+            else:
+                bot.send_message(chat_id, f"❌ **حدث خطأ داخلي غير متوقع:**\n`{str(e)[:150]}`", parse_mode="Markdown")
         finally:
             if driver:
                 try: driver.quit()
@@ -800,7 +807,7 @@ def worker_loop():
 threading.Thread(target=worker_loop, daemon=True).start()
 
 # ==========================================
-# 🎛️ إدارة واجهة المستخدم الأحادية الاحترافية
+# 🎛️ إدارة واجهة المستخدم 
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -814,7 +821,7 @@ def send_welcome(message):
         
     text = (
         "💎 **مرحباً بك في نظام OCX PRO** 💎\n\n"
-        "⚡ أسرع نظام لإنشاء سيرفرات Qwiklabs المشفرة.\n"
+        "⚡ أسرع نظام لإنشاء سيرفرات Qwiklabs المخصصة للألعاب والتصفح.\n"
         "🔗 **فقط قم بإرسال رابط الدخول المباشر لبدء العملية.**"
     )
     
@@ -851,7 +858,7 @@ def process_add_vip(message):
             welcome_text = (
                 "🎉 **تم تفعيل اشتراكك بنجاح!**\n\n"
                 "💎 **مرحباً بك في نظام OCX PRO** 💎\n\n"
-                "⚡ أسرع نظام لإنشاء سيرفرات Qwiklabs المشفرة.\n"
+                "⚡ أسرع نظام لإنشاء سيرفرات Qwiklabs.\n"
                 "🔗 **فقط قم بإرسال رابط الدخول المباشر لبدء العملية.**"
             )
             bot.send_message(new_id, welcome_text, parse_mode="Markdown")
@@ -915,7 +922,7 @@ def handle_admin_keyboard(message):
             f"📊 **حالة النظام:**\n\n"
             f"📦 مهام في الطابور: `{q_size}`\n"
             f"💾 نوع التخزين: `{db_type}`\n"
-            f"🌐 المتصفح: `Headless v2 ⚡`"
+            f"🌐 المتصفح: `Headless v2 (Anti-Crash) ⚡`"
         )
         bot.reply_to(message, res_text, parse_mode="Markdown")
     elif text == "➕ إضافة عميل":
